@@ -283,8 +283,8 @@ def generate_heatmaps(trajectory_data, loaded_walkable_area, current_seed, densi
 # ==========================================
 # setup
 # ==========================================
-START_SEED = 1
-END_SEED = 1  # Adjust for multiple seeds (e.g., 5 or 100)
+START_SEED = 100098
+END_SEED = 100100  # Adjust for multiple seeds (e.g., 5 or 100)
 NUM_AGENTS = 100
 DPI = 300  # Default DPI for all saved figures
 
