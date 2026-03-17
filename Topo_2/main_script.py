@@ -12,6 +12,21 @@ from numpy.random import normal
 from shapely import GeometryCollection, Polygon
 from shapely.geometry import Polygon, LineString, Point, box
 from shapely.ops import unary_union
+import psutil
+
+def print_memory_usage(step_name, seed):
+    """ฟังก์ชันเสริมสำหรับพิมพ์สถานะ RAM ปัจจุบันของระบบและของ Process นี้"""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    sys_mem = psutil.virtual_memory()
+    
+    # แปลง Byte เป็น Megabyte (MB)
+    process_mb = mem_info.rss / 1024 ** 2
+    total_mb = sys_mem.total / 1024 ** 2
+    used_mb = sys_mem.used / 1024 ** 2
+    percent = sys_mem.percent
+    
+    print(f"[{seed}] [RAM '{step_name}'] Process: {process_mb:.1f} MB | System Used: {used_mb:.1f}/{total_mb:.1f} MB ({percent}%)")
 
 import jupedsim as jps
 import pedpy
@@ -40,6 +55,7 @@ def get_mid_line(poly):
 
 def run_pedsim_simulation(current_seed, num_agents, all_rooms, area, trajectory_file):
     """รัน simulation ของ Jupedsim"""
+    print_memory_usage("Start Simulation Setup", current_seed)
     print(f"[{current_seed}] Starting Setup...")
     rand_gen = random.Random(current_seed)
     
@@ -91,10 +107,13 @@ def run_pedsim_simulation(current_seed, num_agents, all_rooms, area, trajectory_
             )
         )
     
+    print_memory_usage("Before Running Iterate", current_seed)
     print(f"[{current_seed}] Running Simulation...")
     while simulation.agent_count() > 0:
         simulation.iterate()
     simulation._writer.close()
+    
+    print_memory_usage("After Iterate Finish", current_seed)
     return True, spawning_area, exit_area, pos_in_spawning_area
 
 def plot_simulation_configuration(
@@ -123,6 +142,7 @@ def plot_simulation_configuration(
 
 def generate_trajectory_plot(trajectory_file, current_seed, trajectory_line_dir, dpi):
     """อ่านข้อมูล trajectory และสร้างรูป Trajectory Line"""
+    print_memory_usage("Start Trajectory Plot", current_seed)
     print(f"[{current_seed}] Generating Trajectory Plot...")
     
     if read_sqlite_file is not None:
@@ -165,6 +185,7 @@ def generate_trajectory_plot(trajectory_file, current_seed, trajectory_line_dir,
 
 def generate_heatmaps(trajectory_data, loaded_walkable_area, current_seed, density_dir, speed_dir, dpi):
     """คำนวณและสร้างรูป Heatmap ของ Density และ Speed"""
+    print_memory_usage("Start Heatmaps calc", current_seed)
     print(f"[{current_seed}] Calculating Heatmaps...")
     individual_speed = pedpy.compute_individual_speed(
         traj_data=trajectory_data,
@@ -178,17 +199,22 @@ def generate_heatmaps(trajectory_data, loaded_walkable_area, current_seed, densi
         cut_off=pedpy.Cutoff(radius=0.8, quad_segments=3),
     )
 
-    merged_data = pd.merge(individual_voronoi_cells, individual_speed, on=["id", "frame"])
-
     sum_density = None
     sum_speed = None
     count = 0
     frame_n = 60
     grid_size = 0.5
-    frames_to_process = merged_data['frame'].unique()[::frame_n]
+    
+    # หาเฟรมทั้งหมดที่จะทำ (เพื่อทำ tqdm และ progress)
+    frames_to_process = individual_speed['frame'].unique()[::frame_n]
 
     for f in tqdm(frames_to_process, desc=f"Heatmap (Seed {current_seed})"):
-        frame_data = merged_data[merged_data.frame == f]
+        # กรองข้อมูลเฉพาะเฟรม f จากตารางดิบ
+        speed_f = individual_speed[individual_speed.frame == f]
+        cells_f = individual_voronoi_cells[individual_voronoi_cells.frame == f]
+        
+        # Merge เฉพาะของทีละเฟรม ช่วยลดขนาดตารางที่ต้องอยู่ใน RAM มหาศาล
+        frame_data = pd.merge(cells_f, speed_f, on=["id", "frame"])
 
         d_profile, s_profile = pedpy.compute_profiles(
             individual_voronoi_speed_data=frame_data,
@@ -204,6 +230,18 @@ def generate_heatmaps(trajectory_data, loaded_walkable_area, current_seed, densi
             sum_speed += s_profile[0]
 
         count += 1
+        
+        # เคลียร์ตัวแปรของเฟรมทิ้งให้ RAM กลับคืนมา
+        del frame_data
+        del speed_f
+        del cells_f
+
+    # ล้างตารางหลัก
+    del individual_voronoi_cells
+    del individual_speed
+    gc.collect()
+
+    print_memory_usage("After Heatmap loop", current_seed)
 
     if count > 0:
         mean_density_map = sum_density / count
@@ -292,11 +330,6 @@ if __name__ == "__main__":
         print(f"Processing Seed: {current_seed}")
         print(f"{'='*40}")
         
-        # --- Memory Cleanup ---
-        # เก็บกวาด RAM ก่อนเข้า Loop ถัดไป
-        gc.collect()
-        # ----------------------
-        
         trajectory_file = DATASWARM_DIR / f"double-botteleneck_{current_seed}.sqlite"
         
         # 1. Run Simulation
@@ -327,5 +360,18 @@ if __name__ == "__main__":
             trajectory_data, loaded_walkable_area, current_seed, 
             HEATMAP_DENSITY_DIR, HEATMAP_SPEED_DIR, DPI
         )
+        
+        # --- Aggressive Memory Cleanup ---
+        # คืนค่า RAM แบบบังคับลบตัวแปรใหญ่ๆ หลังจากจบรอบ
+        del trajectory_data
+        del loaded_walkable_area
+        del spawning_area
+        del exit_area
+        del pos_in_spawning_area
+        
+        plt.close('all') # ปิดกราฟทั้งหมดของ matplotlib ที่อาจค้างในหน่วยความจำ
+        gc.collect() # ขอให้ Python คืน Memory ให้ OS
+        print_memory_usage("End of Loop Cleanup", current_seed)
+        # --------------------------------
 
     print("\n=== All Tasks Completed ===")
