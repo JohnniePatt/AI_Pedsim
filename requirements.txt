@@ -1,0 +1,7 @@
+numpy
+pandas
+matplotlib
+shapely
+tqdm
+jupedsim
+pedpy>=1.0.0
