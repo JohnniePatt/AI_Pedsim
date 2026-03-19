@@ -1,4 +1,5 @@
 import os
+import time
 import pathlib
 import json
 import sqlite3
@@ -10,6 +11,7 @@ import matplotlib.pyplot as plt
 from shapely import GeometryCollection, Polygon
 from shapely.geometry import Polygon, LineString, Point, box
 from shapely.ops import unary_union
+from tqdm.auto import tqdm
 import psutil
 
 def print_memory_usage(step_name, seed):
@@ -42,8 +44,8 @@ def load_polygons_from_json(file_path):
         data = json.load(f)
     return [Polygon(poly_coords) for poly_coords in data]
 
-def run_pedsim_simulation(current_seed, num_agents, all_rooms, area, trajectory_file):
-    """รัน simulation ของ Jupedsim"""
+def run_pedsim_simulation(current_seed, num_agents, all_rooms, area, trajectory_file, timeout_minutes):
+    """รัน simulation ของ Jupedsim แบบมีจำกัดเวลาทำงานจริง"""
     print_memory_usage("Start Simulation Setup", current_seed)
     print(f"[{current_seed}] Starting Setup...")
     rand_gen = random.Random(current_seed)
@@ -98,8 +100,32 @@ def run_pedsim_simulation(current_seed, num_agents, all_rooms, area, trajectory_
     
     print_memory_usage("Before Running Iterate", current_seed)
     print(f"[{current_seed}] Running Simulation...")
-    while simulation.agent_count() > 0:
-        simulation.iterate()
+    
+    start_time = time.time()
+    max_duration_seconds = timeout_minutes * 60
+    
+    # ใช้หลอด tqdm ติดตามการอพยพของคน (จำนวนคนที่ออกจากพื้นที่แล้ว)
+    with tqdm(total=num_agents, desc=f"Simulating (Seed {current_seed})") as pbar:
+        last_count = num_agents
+        while simulation.agent_count() > 0:
+            simulation.iterate()
+            
+            # เช็คเวลาทำงานทุกรอบ
+            elapsed_time = time.time() - start_time
+            if elapsed_time > max_duration_seconds:
+                print(f"\n[!] ว้าวุ่นแล้ว: ทะเยอทะยานเกินไป หรือ Deadlock ทำยอดไม่สำเร็จ (ใช้เวลาเกิน {timeout_minutes} นาที)")
+                print(f"[!] ขอยกเลิกและลบข้อมูล Seed {current_seed} ทิ้งทันที!")
+                simulation._writer.close()
+                if pathlib.Path(trajectory_file).exists():
+                    os.remove(trajectory_file) # ลบไฟล์ฐานข้อมูลที่พังทิ้ง
+                return False, None, None, None
+            
+            current_count = simulation.agent_count()
+            # อัปเดตหลอดตามจำนวนคนที่หายไป (อพยพออกแล้ว)
+            if current_count < last_count:
+                pbar.update(last_count - current_count)
+                last_count = current_count
+                
     simulation._writer.close()
     
     print_memory_usage("After Iterate Finish", current_seed)
@@ -175,10 +201,11 @@ def generate_trajectory_plot(trajectory_file, current_seed, trajectory_line_dir,
 # ==========================================
 # setup
 # ==========================================
-START_SEED = 100095
-END_SEED = 100100  # Adjust for multiple seeds (e.g., 5 or 100)
+START_SEED = 100508
+END_SEED = 100600 # Adjust for multiple seeds (e.g., 5 or 100)
 NUM_AGENTS = 100
 DPI = 300  # Default DPI for all saved figures
+TIMEOUT_MINUTES = 5 # ให้เวลายอมแพ้ 2 นาที (ปรับได้ครับ)
 
 # Base directory setup (relative to this script's location)
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
@@ -224,9 +251,10 @@ if __name__ == "__main__":
         
         # 1. Run Simulation
         success, spawning_area, exit_area, pos_in_spawning_area = run_pedsim_simulation(
-            current_seed, NUM_AGENTS, all_rooms, area, trajectory_file
+            current_seed, NUM_AGENTS, all_rooms, area, trajectory_file, TIMEOUT_MINUTES
         )
         if not success:
+            print(f"[{current_seed}] Skipped or Aborted. (No valid trajectory saved)")
             continue
             
         # 1.1 Plot Simulation Configuration
