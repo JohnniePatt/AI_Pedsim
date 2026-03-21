@@ -41,12 +41,12 @@ SPAWN_EXIT_DIR = TOPO_DIR / "spawn_exit_area"
 OUTPUT_DIR = PROJECT_ROOT / "AI_Train" / "outputs" / "Topo2"
 
 CONFIG = {
-    "seq_len": 20,
-    "batch_size": 128,
-    "hidden_size": 128,
-    "num_layers": 2,
-    "lr": 1e-3,
-    "epochs": 20,
+    "seq_len": 20,        # ดูย้อนหลัง 20 เฟรม (กำลังดี ไม่สั้นไม่ยาวไป)
+    "batch_size": 1024,   # เพิ่มจาก 128 -> ป้อนทีละ 1024 ให้คุ้มพลังและ VRAM 10GB ของ RTX 3080 (ทำให้เทรนไวขึ้นมาก)
+    "hidden_size": 256,   # เพิ่มจาก 128 -> เพิ่มขนาดสมองเซลล์ LSTM ให้จำแพทเทิร์นได้เยอะและลึกขึ้น
+    "num_layers": 3,      # เพิ่มจาก 2 -> ซ้อนเลเยอร์ 3 ชั้น (Deep) เพื่อช่วยสกัดฟีเจอร์ที่ซับซ้อนของการชะลอตัวเวลาคนหนาแน่น
+    "lr": 1e-3,           # ความเร็วการเรียนรู้มาตรฐานของ Adam
+    "epochs": 100,        # รัน 100 รอบ เพื่อให้โมเดลมีเวลาเรียนรู้จนกว่าจะลู่เข้าหา Loss ที่ต่ำที่สุด (ปกติงานวิจัยรันข้ามคืน 100-300 รอบ)
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "feature_cols": [
         "x_norm", "y_norm", "vx_norm", "vy_norm", 
