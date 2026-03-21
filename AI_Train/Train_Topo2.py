@@ -48,6 +48,7 @@ CONFIG = {
     "lr": 1e-3,           # ความเร็วการเรียนรู้มาตรฐานของ Adam
     "epochs": 100,        # รัน 100 รอบ เพื่อให้โมเดลมีเวลาเรียนรู้จนกว่าจะลู่เข้าหา Loss ที่ต่ำที่สุด (ปกติงานวิจัยรันข้ามคืน 100-300 รอบ)
     "train_files_per_epoch": 60, # 🌟 จำนวนไฟล์ต่อ 1 รอบ (ชิฟต์สลับไปเรื่อยๆ) เพื่อให้ไม่ต้องรอนานกว่าจะขึ้น Validation
+    "pretrained_checkpoint": "-", # 🌟 นำเข้าโครงข่ายที่เก่งแล้ว (Fine-Tune) โดยใส่พาร์ทไฟ .pt เช่น "outputs/Topo2/best_lstm.pt" (ถ้าใส่ "-" คือเริ่มโง่ใหม่จากศูนย์)
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "feature_cols": [
         "x_norm", "y_norm", "vx_norm", "vy_norm", 
@@ -258,6 +259,9 @@ def load_chunk_dataset(sqlite_files_chunk, split_name: str, room_polys, corridor
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
+    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    
     device = torch.device(CONFIG["device"])
     
     print("\n" + "="*50)
@@ -302,6 +306,23 @@ def main():
         output_size=len(CONFIG["target_cols"])
     )
     
+    # 🌟 ฟีเจอร์ Transfer Learning: ถ่ายทอดวิชาความรู้เดิม (Pre-trained) ลงไปในสมอง
+    if CONFIG.get("pretrained_checkpoint", "-") != "-":
+        ckpt_path = Path(CONFIG["pretrained_checkpoint"])
+        if ckpt_path.exists():
+            print(f"\n🧠 [PRE-TRAINED] Loading Master Weights from: {ckpt_path.name}")
+            checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+            
+            # รองรับทั้งการโหลด Checkpoint รีดเต็ม และ การโหลดโมเดลเพียวๆ
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                print(f"      -> 📜 Resumed from History: Epoch {checkpoint.get('epoch', '?')} (Val Loss: {checkpoint.get('val_loss', 'N/A')})")
+            else:
+                model.load_state_dict(checkpoint) 
+                print("      -> ✨ Successfully Injected Weights (best_lstm style).")
+        else:
+            print(f"\n❌ [ERROR] Pre-trained file missing at: {ckpt_path}\n      -> ⚠️ Fallback: Training completely from SCRATCH (Blank Brain)!")
+
     # 🔥 ฟีเจอร์ลับสำหรับเซิร์ฟเวอร์รวยๆ: ตรวจจับหลายการ์ดจอ และกระจายงานแบ่งกันคำนวณ!
     if torch.cuda.device_count() > 1:
         print(f"🔥 Multi-GPU DETECTED: Distributing batch across {torch.cuda.device_count()} GPUs! 🔥")
@@ -380,7 +401,13 @@ def main():
         # -----------------------------
         model.eval()
         val_loss_accum = 0.0
-        val_ade_accum = 0.0 # Average Displacement Error (m)
+        val_mae_x_acc = 0.0
+        val_mae_y_acc = 0.0
+        val_mre_x_acc = 0.0
+        val_mre_y_acc = 0.0
+        val_mse_x_acc = 0.0
+        val_mse_y_acc = 0.0
+        val_ade_accum = 0.0 # Average Displacement Error (m) คือตัวเดียวกันกับ MDE
         val_sequences_seen = 0
         num_val_chunks = int(np.ceil(len(val_files) / chunk_size))
         
@@ -408,6 +435,22 @@ def main():
                     
                     err_dx_m = outputs[:, 0] - batch_y[:, 0]
                     err_dy_m = outputs[:, 1] - batch_y[:, 1]
+                    
+                    # 1. MAE (Mean Absolute Error)
+                    val_mae_x_acc += torch.abs(err_dx_m).sum().item()
+                    val_mae_y_acc += torch.abs(err_dy_m).sum().item()
+                    
+                    # 2. MSE สำหรับไปถอดรูทเป็น RMSE
+                    val_mse_x_acc += (err_dx_m**2).sum().item()
+                    val_mse_y_acc += (err_dy_m**2).sum().item()
+                    
+                    # 3. MRE (Mean Relative Error) - บวก 1e-4 ป้องกันกรณีคนหยุดนิ่ง (Target = 0) แล้วตาย
+                    mre_x = torch.abs(err_dx_m) / (torch.abs(batch_y[:, 0]) + 1e-4)
+                    mre_y = torch.abs(err_dy_m) / (torch.abs(batch_y[:, 1]) + 1e-4)
+                    val_mre_x_acc += mre_x.sum().item()
+                    val_mre_y_acc += mre_y.sum().item()
+                    
+                    # 4. ADE / MDE (Mean Displacement Error)
                     dist_err_m = torch.sqrt(err_dx_m**2 + err_dy_m**2)
                     val_ade_accum += dist_err_m.sum().item()
                     
@@ -416,18 +459,50 @@ def main():
                 val_pbar.close()
                 del X_chunk, y_chunk, dataset, loader 
 
-        avg_val_loss = val_loss_accum / max(1, val_sequences_seen)
-        avg_val_ade = val_ade_accum / max(1, val_sequences_seen)
+        n_seq = max(1, val_sequences_seen)
+        avg_val_loss = val_loss_accum / n_seq
         
-        epoch_logs.append({"epoch": epoch, "train_loss": avg_train_loss, "val_loss": avg_val_loss, "val_ade": avg_val_ade})
+        # คำนวณค่าสุดยอด Error ทุกสไตล์ย่อย
+        avg_mae_x = val_mae_x_acc / n_seq
+        avg_mae_y = val_mae_y_acc / n_seq
+        avg_rmse_x = float(np.sqrt(val_mse_x_acc / n_seq))
+        avg_rmse_y = float(np.sqrt(val_mse_y_acc / n_seq))
+        avg_mre_x = val_mre_x_acc / n_seq
+        avg_mre_y = val_mre_y_acc / n_seq
+        avg_val_ade = val_ade_accum / n_seq # ADE หรือ MDE 
         
-        print(f"🎯 Epoch {epoch:03d} Result | Train Loss (MSE): {avg_train_loss:.6f} | Val Loss (MSE): {avg_val_loss:.6f} | 📏 Val Error (ADE): {avg_val_ade:.3f} meters")
+        print(f"🎯 Epoch {epoch:03d} Result | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | 📏 ADE(MDE): {avg_val_ade:.3f} m")
+
+        epoch_logs.append({
+            "epoch": epoch, 
+            "train_loss": avg_train_loss, 
+            "val_loss": avg_val_loss, 
+            "val_ade": avg_val_ade,
+            "val_mae_x": avg_mae_x,
+            "val_mae_y": avg_mae_y,
+            "val_rmse_x": avg_rmse_x,
+            "val_rmse_y": avg_rmse_y,
+            "val_mre_x": avg_mre_x,
+            "val_mre_y": avg_mre_y
+        })
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             CONFIG["best_val_loss"] = best_val_loss
             torch.save(model.state_dict(), OUTPUT_DIR / "best_lstm.pt")
             print("   -> 🌟 New Best Model Saved!")
+            
+        # 💾 เก็บ Checkpoint สำรองเผื่อคอมดับ / ไฟกระชาก รันใหม่จะได้ไม่เริ่มจาก 0
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_loss': avg_train_loss,
+            'val_loss': avg_val_loss
+        }, CHECKPOINT_DIR / f"checkpoint_epoch_{epoch:03d}.pt")
+        
+        # 📝 อัปเดตสมุดพก (CSV) ตลอดเวลา เผื่อคุณกดหยุด (Ctrl+C) กลางอากาศกราฟจะได้ไม่หาย!
+        pd.DataFrame(epoch_logs).to_csv(OUTPUT_DIR / "train_log.csv", index=False)
 
     print(f"\nTraining Complete. Best Validation Loss: {best_val_loss:.6f}")
     
@@ -470,11 +545,10 @@ def main():
         CONFIG["final_test_loss"] = final_test_mse
 
     torch.save(model.state_dict(), OUTPUT_DIR / "last_lstm.pt")
-    pd.DataFrame(epoch_logs).to_csv(OUTPUT_DIR / "train_log.csv", index=False)
     with open(OUTPUT_DIR / "train_config.json", 'w') as f:
         json.dump(CONFIG, f, indent=4)
         
-    print(f"\nAll weights successfully saved to: {OUTPUT_DIR}")
+    print(f"\nAll weights and configs successfully saved to: {OUTPUT_DIR}")
 
 if __name__ == "__main__":
     main()
