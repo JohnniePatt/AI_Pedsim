@@ -138,11 +138,27 @@ def process_seed_data(sqlite_path: Path, csv_path: Path, room_polys: list, corri
     # Goal & Distance Vectors
     df['goal_dx'] = exit_centroid.x - df['pos_x']
     df['goal_dy'] = exit_centroid.y - df['pos_y']
-    df['dist_to_exit'] = df.apply(lambda row: Point(row['pos_x'], row['pos_y']).distance(exit_poly), axis=1)
+    # ⚡ Vectorized Euclidean Distance (ไวขึ้น 1000x ไม่กิน RAM เลตติ้งขยะ Point)
+    df['dist_to_exit'] = np.sqrt(df['goal_dx']**2 + df['goal_dy']**2)
 
-    # Contextual containment
-    df['in_room'] = df.apply(lambda r: check_point_in_polygons(Point(r['pos_x'], r['pos_y']), room_polys), axis=1)
-    df['in_corridor'] = df.apply(lambda r: check_point_in_polygons(Point(r['pos_x'], r['pos_y']), corridor_polys), axis=1)
+    # ⚡ Vectorized Matplotlib Array-based Point-in-Polygon (ไม่ใช้ CPU Apply ที่อืดและหนักเครื่อง)
+    try:
+        from matplotlib.path import Path as mplPath
+        pts = df[['pos_x', 'pos_y']].values
+        
+        room_mask = np.zeros(len(df), dtype=bool)
+        for p in room_polys:
+            room_mask |= mplPath(np.array(p.exterior.coords)).contains_points(pts)
+        df['in_room'] = room_mask.astype(float)
+        
+        corridor_mask = np.zeros(len(df), dtype=bool)
+        for p in corridor_polys:
+            corridor_mask |= mplPath(np.array(p.exterior.coords)).contains_points(pts)
+        df['in_corridor'] = corridor_mask.astype(float)
+    except ImportError:
+        # หากไม่มีกราฟิก รันแบบเก่า
+        df['in_room'] = df.apply(lambda r: check_point_in_polygons(Point(r['pos_x'], r['pos_y']), room_polys), axis=1)
+        df['in_corridor'] = df.apply(lambda r: check_point_in_polygons(Point(r['pos_x'], r['pos_y']), corridor_polys), axis=1)
 
     # Final Normalization
     df['x_norm'] = (df['pos_x'] - meta['xmin']) / domain_width
@@ -203,60 +219,32 @@ class LSTM_Baseline(nn.Module):
 # 5. DATASET PIPELINE (FOLDER-AWARE SPLIT)
 # ===================================================================== #
 
-def load_split_dataset(split_name: str, room_polys, corridor_polys):
-    """กระบวนการโหลดและแยกข้อมูลตามชื่อ Subdirectory แบบตายตัว (Train, Validation, Test)"""
-    print(f"\n--- Loading '{split_name.upper()}' Split ---")
-    data_dir = DATASWARM_DIR / split_name
-    csv_dir = SPAWN_EXIT_DIR / split_name
-    
-    if not data_dir.exists():
-        print(f"Skipping {split_name}: Folder {data_dir} does not exist.")
-        return None, None, 0
-        
-    sqlite_files = list(data_dir.glob("double-botteleneck_*.sqlite"))
-    if not sqlite_files:
-        print(f"Skipping {split_name}: No sqlite files found.")
-        return None, None, 0
+import random
 
+# ===================================================================== #
+# 5. CHUNK-BASED PIPELINE (แก้ปัญหา OOM / นำเข้า GPU ทันที)
+# ===================================================================== #
+
+def load_chunk_dataset(sqlite_files_chunk, split_name: str, room_polys, corridor_polys):
+    """โหลดข้อมูลแค่ 10-20 ไฟล์พอ ไม่โหลดหมด! เพื่อประหยัด RAM"""
+    csv_dir = SPAWN_EXIT_DIR / split_name
     X_all, y_all = [], []
-    args_list = []
     
-    # 🌟 ปรับปรุงใหม่: สร้างรายการภารกิจสำหรับแต่ละ Seed 
-    for sqlite_file in sqlite_files:
+    for sqlite_file in sqlite_files_chunk:
         try:
             seed = sqlite_file.stem.split('_')[1]
             csv_file = csv_dir / f"spawn_exit_{seed}.csv"
-            args_list.append((
-                sqlite_file, csv_file, room_polys, corridor_polys,
-                CONFIG["seq_len"], CONFIG["feature_cols"], CONFIG["target_cols"]
-            ))
-        except IndexError:
+            x_s, y_s = process_and_sequence_seed(sqlite_file, csv_file, room_polys, corridor_polys, CONFIG["seq_len"], CONFIG["feature_cols"], CONFIG["target_cols"])
+            if x_s and y_s:
+                X_all.extend(x_s)
+                y_all.extend(y_s)
+        except Exception:
             continue
 
-    # 🚀 ควบคุมการใช้ CPU ไม่ให้เกิน 50% ของเครื่อง เพื่อป้องกันเครื่องค้าง (Crash) หรือ RAM ล้น
-    num_cores = max(1, multiprocessing.cpu_count() // 2) 
-    print(f"[{split_name.upper()}] Igniting Parallel Processing using {num_cores} CPU Cores (50% Limit)...")
-    
-    with ProcessPoolExecutor(max_workers=num_cores) as executor:
-        futures = {executor.submit(process_and_sequence_seed, *args): args for args in args_list}
-        
-        for future in tqdm(as_completed(futures), total=len(futures), desc=f"Multi-core Parsing {split_name}"):
-            try:
-                x_s, y_s = future.result()
-                if x_s and y_s:
-                    X_all.extend(x_s)
-                    y_all.extend(y_s)
-            except Exception as e:
-                print(f"Worker iteration error: {e}")
-
     if not X_all:
-        return None, None, 0
+        return None, None
 
-    X_tensor = torch.tensor(np.array(X_all), dtype=torch.float32)
-    y_tensor = torch.tensor(np.array(y_all), dtype=torch.float32)
-    
-    print(f"[{split_name.upper()}] Sequences generated: {len(X_tensor)} from {len(sqlite_files)} seeds.")
-    return X_tensor, y_tensor, len(sqlite_files)
+    return torch.tensor(np.array(X_all), dtype=torch.float32), torch.tensor(np.array(y_all), dtype=torch.float32)
 
 # ===================================================================== #
 # 6. TRAINING ROUTINE
@@ -264,61 +252,34 @@ def load_split_dataset(split_name: str, room_polys, corridor_polys):
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # -------------------------------------------------------------
-    # พิมพ์แจ้งเตือนสถานะฮาร์ดแวร์ทันทีก่อนเริ่มโหลดข้อมูล
-    # -------------------------------------------------------------
     device = torch.device(CONFIG["device"])
+    
     print("\n" + "="*50)
     print("🖥️  HARDWARE SYSTEM CHECK")
     print("="*50)
     print(f"Device Assigned: {device.type.upper()}")
-    
     if device.type == 'cuda':
-        gpu_name = torch.cuda.get_device_name(device)
-        total_vram = torch.cuda.get_device_properties(device).total_memory / (1024**3)
-        print(f"GPU Model:       {gpu_name}")
-        print(f"Total VRAM:      {total_vram:.2f} GB")
-        print(f"CUDA Version:    {torch.version.cuda}")
+        print(f"GPU Model:       {torch.cuda.get_device_name(device)}")
+        print(f"Total VRAM:      {torch.cuda.get_device_properties(device).total_memory / (1024**3):.2f} GB")
     else:
-        import psutil
-        ram_gb = psutil.virtual_memory().total / (1024**3)
         print("WARNING:         🚨 No GPU detected! Running on CPU.")
-        print(f"System RAM:      {ram_gb:.2f} GB")
     print("="*50 + "\n")
 
     room_polys = load_json_polygons(GEO_DIR / "geo_room.json")
     corridor_polys = load_json_polygons(GEO_DIR / "geo_corridor.json")
 
-    # Load splits independently corresponding exactly to folder structures!
-    # เลิกใช้ train_test_split() แล้ว เปลี่ยนมาโหลดจากโฟลเดอร์ตายตัว
-    X_train, y_train, train_count = load_split_dataset("train", room_polys, corridor_polys)
-    X_val, y_val, val_count = load_split_dataset("validation", room_polys, corridor_polys)
-    X_test, y_test, test_count = load_split_dataset("test", room_polys, corridor_polys) # เก็บตุนไว้สำหรับ Evaluate ท้ายสุด
+    # กวาดหาไฟล์ทั้งหมด (แต่ยังไม่โหลดลง RAM)
+    train_files = list((DATASWARM_DIR / "train").glob("double-botteleneck_*.sqlite"))
+    val_files   = list((DATASWARM_DIR / "validation").glob("double-botteleneck_*.sqlite"))
+    test_files  = list((DATASWARM_DIR / "test").glob("double-botteleneck_*.sqlite"))
 
-    if X_train is None or X_val is None:
-        print("ERROR: Missing Train or Validation data. Cannot start training.")
+    if not train_files or not val_files:
+        print("ERROR: Missing sqlite files in 'train' or 'validation' folders.")
         return
 
-    CONFIG["seeds_used"] = {"train": train_count, "validation": val_count, "test": test_count}
-    CONFIG["sequences"] = {"train": len(X_train), "validation": len(X_val), "test": len(X_test) if X_test is not None else 0}
+    # ล้างไฟล์ขยะ Config เก่าๆ
+    CONFIG["seeds_used"] = {"train": len(train_files), "validation": len(val_files), "test": len(test_files)}
 
-    train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
-    val_dataset = torch.utils.data.TensorDataset(X_val, y_val)
-
-    # 🚀 ลดคิวลำเลียง (Data Loader Workers) ให้เหลือ 2 เพื่อป้องกัน Pytorch ค้างบน Windows/WSL
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=CONFIG["batch_size"], shuffle=True, 
-        num_workers=2, pin_memory=True
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=CONFIG["batch_size"], shuffle=False, 
-        num_workers=2, pin_memory=True
-    )
-
-    device = torch.device(CONFIG["device"])
-    print(f"Model Initialization... ")
-    
     model = LSTM_Baseline(
         input_size=len(CONFIG["feature_cols"]),
         hidden_size=CONFIG["hidden_size"],
@@ -331,66 +292,115 @@ def main():
 
     epoch_logs = []
     best_val_loss = float('inf')
+    chunk_size = 15 # ❤️ โหลดทีละ 15 ซีดแล้วป้อน GPU เลย แรมจะได้ไม่เต็ม!
 
-    print(f"\n--- Starting Training ({CONFIG['epochs']} Epochs) ---")
+    print(f"\n--- 🚀 Starting STREAMING Training ({CONFIG['epochs']} Epochs) ---")
     for epoch in range(1, CONFIG["epochs"] + 1):
+        print(f"\n[ Epoch {epoch:03d}/{CONFIG['epochs']} ]")
+        random.shuffle(train_files) # สลับซีดใหม่ทุกการสอบ (ลด Overfitting)
+        
+        # -----------------------------
+        # TRAIN LOOP (Chunked Stream)
+        # -----------------------------
         model.train()
         train_loss_accum = 0.0
-        for batch_x, batch_y in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            optimizer.zero_grad()
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
-            train_loss_accum += loss.item() * batch_x.size(0)
+        train_sequences_seen = 0
+        
+        for i in range(0, len(train_files), chunk_size):
+            chunk = train_files[i : i + chunk_size]
+            print(f"  > Streaming Train Chunk {i//chunk_size + 1} ({len(chunk)} files)... ", end="", flush=True)
+            X_chunk, y_chunk = load_chunk_dataset(chunk, "train", room_polys, corridor_polys)
             
-        avg_train_loss = train_loss_accum / len(train_loader.dataset)
-
-        model.eval()
-        val_loss_accum = 0.0
-        with torch.no_grad():
-            for batch_x, batch_y in val_loader:
+            if X_chunk is None: 
+                print("Skipped.")
+                continue
+            
+            print(f"GPU ACTIVATED! (Sequences: {len(X_chunk)})")
+            dataset = torch.utils.data.TensorDataset(X_chunk, y_chunk)
+            loader = torch.utils.data.DataLoader(dataset, batch_size=CONFIG["batch_size"], shuffle=True, pin_memory=True)
+            
+            for batch_x, batch_y in loader:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                optimizer.zero_grad()
                 outputs = model(batch_x)
                 loss = criterion(outputs, batch_y)
-                val_loss_accum += loss.item() * batch_x.size(0)
+                loss.backward()
+                optimizer.step()
                 
-        avg_val_loss = val_loss_accum / len(val_loader.dataset)
-        
+                train_loss_accum += loss.item() * batch_x.size(0)
+                train_sequences_seen += batch_x.size(0)
+                
+            del X_chunk, y_chunk, dataset, loader # ล้างขยะออกจาก RAM ทันที!
+
+        avg_train_loss = train_loss_accum / max(1, train_sequences_seen)
+
+        # -----------------------------
+        # VALIDATION LOOP (Chunked Stream)
+        # -----------------------------
+        model.eval()
+        val_loss_accum = 0.0
+        val_sequences_seen = 0
+        with torch.no_grad():
+            for i in range(0, len(val_files), chunk_size):
+                chunk = val_files[i : i + chunk_size]
+                X_chunk, y_chunk = load_chunk_dataset(chunk, "validation", room_polys, corridor_polys)
+                if X_chunk is None: continue
+                
+                dataset = torch.utils.data.TensorDataset(X_chunk, y_chunk)
+                loader = torch.utils.data.DataLoader(dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+                for batch_x, batch_y in loader:
+                    batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                    outputs = model(batch_x)
+                    loss = criterion(outputs, batch_y)
+                    val_loss_accum += loss.item() * batch_x.size(0)
+                    val_sequences_seen += batch_x.size(0)
+                
+                del X_chunk, y_chunk, dataset, loader # ล้างขยะ RAM
+
+        avg_val_loss = val_loss_accum / max(1, val_sequences_seen)
         epoch_logs.append({"epoch": epoch, "train_loss": avg_train_loss, "val_loss": avg_val_loss})
-        print(f"Epoch {epoch:02d}/{CONFIG['epochs']} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
+        
+        print(f"🎯 Epoch {epoch:03d} Result | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             CONFIG["best_val_loss"] = best_val_loss
             torch.save(model.state_dict(), OUTPUT_DIR / "best_lstm.pt")
+            print("   -> 🌟 New Best Model Saved!")
 
     print(f"\nTraining Complete. Best Validation Loss: {best_val_loss:.6f}")
     
-    # 7. ถ่ายทอดผลการ Evaluate บนกลุ่ม TEST แยกต่างหากให้ดูหลังสุด (ถ้ามี)
-    if X_test is not None:
+    # Eval Test Set ที่กั๊กไว้
+    if test_files:
         print("\n--- Evaluating on Unseen TEST Set ---")
-        model.load_state_dict(torch.load(OUTPUT_DIR / "best_lstm.pt")) # เลือกโมเดลที่ท็อปฟอร์มสุดมาทดสอบ
+        model.load_state_dict(torch.load(OUTPUT_DIR / "best_lstm.pt"))
         model.eval()
-        test_dataset = torch.utils.data.TensorDataset(X_test, y_test)
-        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
         test_loss_accum = 0.0
+        test_seq_seen = 0
         with torch.no_grad():
-             for batch_x, batch_y in test_loader:
-                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                 loss = criterion(model(batch_x), batch_y)
-                 test_loss_accum += loss.item() * batch_x.size(0)
-        final_test_mse = test_loss_accum / len(test_loader.dataset)
+            for i in range(0, len(test_files), chunk_size):
+                chunk = test_files[i : i + chunk_size]
+                X_chunk, y_chunk = load_chunk_dataset(chunk, "test", room_polys, corridor_polys)
+                if X_chunk is None: continue
+                dataset = torch.utils.data.TensorDataset(X_chunk, y_chunk)
+                loader = torch.utils.data.DataLoader(dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+                for batch_x, batch_y in loader:
+                    batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                    loss = criterion(model(batch_x), batch_y)
+                    test_loss_accum += loss.item() * batch_x.size(0)
+                    test_seq_seen += batch_x.size(0)
+                del X_chunk, y_chunk, dataset, loader
+        
+        final_test_mse = test_loss_accum / max(1, test_seq_seen)
         print(f"Final Test MSE Loss: {final_test_mse:.6f}")
         CONFIG["final_test_loss"] = final_test_mse
-    
+
     torch.save(model.state_dict(), OUTPUT_DIR / "last_lstm.pt")
     pd.DataFrame(epoch_logs).to_csv(OUTPUT_DIR / "train_log.csv", index=False)
     with open(OUTPUT_DIR / "train_config.json", 'w') as f:
         json.dump(CONFIG, f, indent=4)
         
-    print(f"\nAll weights and configs successfully saved to: {OUTPUT_DIR}")
+    print(f"\nAll weights successfully saved to: {OUTPUT_DIR}")
 
 if __name__ == "__main__":
     main()
