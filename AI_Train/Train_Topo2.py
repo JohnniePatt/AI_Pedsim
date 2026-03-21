@@ -233,9 +233,9 @@ def load_split_dataset(split_name: str, room_polys, corridor_polys):
         except IndexError:
             continue
 
-    # 🚀 ปลดล็อกคอขวด CPU: ใช้ Multi-core Processing ดึงพลัง CPU ทุก Core ที่มีมาช่วยหั่นข้อมูลพร้อมๆ กัน
-    num_cores = max(1, multiprocessing.cpu_count() - 2) # เหลือหัวไว้ 2 คอร์ให้ OS หายใจ
-    print(f"[{split_name.upper()}] Igniting Parallel Processing using {num_cores} CPU Cores...")
+    # 🚀 ควบคุมการใช้ CPU ไม่ให้เกิน 50% ของเครื่อง เพื่อป้องกันเครื่องค้าง (Crash) หรือ RAM ล้น
+    num_cores = max(1, multiprocessing.cpu_count() // 2) 
+    print(f"[{split_name.upper()}] Igniting Parallel Processing using {num_cores} CPU Cores (50% Limit)...")
     
     with ProcessPoolExecutor(max_workers=num_cores) as executor:
         futures = {executor.submit(process_and_sequence_seed, *args): args for args in args_list}
@@ -306,14 +306,14 @@ def main():
     train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
     val_dataset = torch.utils.data.TensorDataset(X_val, y_val)
 
-    # 🚀 ปลดล็อกคอขวดคิวลำเลียงข้อมูลเข้า GPU (Data Loader Workers)
+    # 🚀 ลดคิวลำเลียง (Data Loader Workers) ให้เหลือ 2 เพื่อป้องกัน Pytorch ค้างบน Windows/WSL
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=CONFIG["batch_size"], shuffle=True, 
-        num_workers=4, pin_memory=True
+        num_workers=2, pin_memory=True
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=CONFIG["batch_size"], shuffle=False, 
-        num_workers=4, pin_memory=True
+        num_workers=2, pin_memory=True
     )
 
     device = torch.device(CONFIG["device"])
