@@ -6,3 +6,4 @@ tqdm
 jupedsim
 pedpy>=1.0.0
 psutil
+torch
