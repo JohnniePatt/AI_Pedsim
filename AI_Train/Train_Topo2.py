@@ -244,6 +244,29 @@ def load_split_dataset(split_name: str, room_polys, corridor_polys):
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # -------------------------------------------------------------
+    # พิมพ์แจ้งเตือนสถานะฮาร์ดแวร์ทันทีก่อนเริ่มโหลดข้อมูล
+    # -------------------------------------------------------------
+    device = torch.device(CONFIG["device"])
+    print("\n" + "="*50)
+    print("🖥️  HARDWARE SYSTEM CHECK")
+    print("="*50)
+    print(f"Device Assigned: {device.type.upper()}")
+    
+    if device.type == 'cuda':
+        gpu_name = torch.cuda.get_device_name(device)
+        total_vram = torch.cuda.get_device_properties(device).total_memory / (1024**3)
+        print(f"GPU Model:       {gpu_name}")
+        print(f"Total VRAM:      {total_vram:.2f} GB")
+        print(f"CUDA Version:    {torch.version.cuda}")
+    else:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+        print("WARNING:         🚨 No GPU detected! Running on CPU.")
+        print(f"System RAM:      {ram_gb:.2f} GB")
+    print("="*50 + "\n")
+
     room_polys = load_json_polygons(GEO_DIR / "geo_room.json")
     corridor_polys = load_json_polygons(GEO_DIR / "geo_corridor.json")
 
@@ -267,7 +290,7 @@ def main():
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
 
     device = torch.device(CONFIG["device"])
-    print(f"\nModel Initialization (Device: {device})")
+    print(f"Model Initialization... ")
     
     model = LSTM_Baseline(
         input_size=len(CONFIG["feature_cols"]),
