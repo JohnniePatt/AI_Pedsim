@@ -47,6 +47,7 @@ CONFIG = {
     "num_layers": 3,      # เพิ่มจาก 2 -> ซ้อนเลเยอร์ 3 ชั้น (Deep) เพื่อช่วยสกัดฟีเจอร์ที่ซับซ้อนของการชะลอตัวเวลาคนหนาแน่น
     "lr": 1e-3,           # ความเร็วการเรียนรู้มาตรฐานของ Adam
     "epochs": 100,        # รัน 100 รอบ เพื่อให้โมเดลมีเวลาเรียนรู้จนกว่าจะลู่เข้าหา Loss ที่ต่ำที่สุด (ปกติงานวิจัยรันข้ามคืน 100-300 รอบ)
+    "train_files_per_epoch": 60, # 🌟 จำนวนไฟล์ต่อ 1 รอบ (ชิฟต์สลับไปเรื่อยๆ) เพื่อให้ไม่ต้องรอนานกว่าจะขึ้น Validation
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "feature_cols": [
         "x_norm", "y_norm", "vx_norm", "vy_norm", 
@@ -163,13 +164,18 @@ def process_seed_data(sqlite_path: Path, csv_path: Path, room_polys: list, corri
     # Final Normalization
     df['x_norm'] = (df['pos_x'] - meta['xmin']) / domain_width
     df['y_norm'] = (df['pos_y'] - meta['ymin']) / domain_height
-    df['vx_norm'] = df['vx'] / domain_width
-    df['vy_norm'] = df['vy'] / domain_height
     df['goal_dx_norm'] = df['goal_dx'] / domain_width
     df['goal_dy_norm'] = df['goal_dy'] / domain_height
     df['dist_to_exit_norm'] = df['dist_to_exit'] / domain_diag
-    df['target_dx_norm'] = df['target_dx'] / domain_width
-    df['target_dy_norm'] = df['target_dy'] / domain_height
+    
+    # 🐛 FIX BUG: ความเร็ว และ ระยะเดินก้าวถัดไป ไม่ควรเอาไปหารกระดาน 110 เมตร
+    # ไม่งั้นความเร็วคนเดินแค่ 0.05 เมตร พอโดนหาร 110 มันจะเล็กเป็น 0.0004 จน Loss เป็น 0 หมด!
+    # เราทิ้งไว้ให้เป็นตัวเลข raw "เมตร/เฟรม" ตรงๆ เลย (AI เทรนง่ายกว่ามาก)
+    df['vx_norm'] = df['vx']
+    df['vy_norm'] = df['vy']
+    df['target_dx_norm'] = df['target_dx']
+    df['target_dy_norm'] = df['target_dy']
+    
     df['seed'] = seed
     
     return df
@@ -259,8 +265,12 @@ def main():
     print("="*50)
     print(f"Device Assigned: {device.type.upper()}")
     if device.type == 'cuda':
-        print(f"GPU Model:       {torch.cuda.get_device_name(device)}")
-        print(f"Total VRAM:      {torch.cuda.get_device_properties(device).total_memory / (1024**3):.2f} GB")
+        gpu_count = torch.cuda.device_count()
+        print(f"GPUs Detected:   {gpu_count} unit(s)")
+        for i in range(gpu_count):
+            gpu_name = torch.cuda.get_device_name(i)
+            vram_gb = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+            print(f"  [{i}] GPU Model:  {gpu_name} ({vram_gb:.2f} GB VRAM)")
     else:
         print("WARNING:         🚨 No GPU detected! Running on CPU.")
     print("="*50 + "\n")
@@ -279,13 +289,25 @@ def main():
 
     # ล้างไฟล์ขยะ Config เก่าๆ
     CONFIG["seeds_used"] = {"train": len(train_files), "validation": len(val_files), "test": len(test_files)}
+    
+    # 📏 ค่าคงที่สำหรับแปลงสเกลกลับเป็น 'เมตร' 
+    # (ใช้ประมาณพื้นที่ Topo_2 ที่กว้าง 110m ยาว 130m)
+    SCALE_X_M = 110.0  
+    SCALE_Y_M = 130.0
 
     model = LSTM_Baseline(
         input_size=len(CONFIG["feature_cols"]),
         hidden_size=CONFIG["hidden_size"],
         num_layers=CONFIG["num_layers"],
         output_size=len(CONFIG["target_cols"])
-    ).to(device)
+    )
+    
+    # 🔥 ฟีเจอร์ลับสำหรับเซิร์ฟเวอร์รวยๆ: ตรวจจับหลายการ์ดจอ และกระจายงานแบ่งกันคำนวณ!
+    if torch.cuda.device_count() > 1:
+        print(f"🔥 Multi-GPU DETECTED: Distributing batch across {torch.cuda.device_count()} GPUs! 🔥")
+        model = nn.DataParallel(model)
+        
+    model = model.to(device)
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=CONFIG["lr"])
@@ -295,31 +317,49 @@ def main():
     chunk_size = 15 # ❤️ โหลดทีละ 15 ซีดแล้วป้อน GPU เลย แรมจะได้ไม่เต็ม!
 
     print(f"\n--- 🚀 Starting STREAMING Training ({CONFIG['epochs']} Epochs) ---")
+    
+    # 🌟 ตัวแปรพิเศษสำหรับไถ (Shift) ข้อมูลทีละส่วน
+    train_file_idx = 0
+    random.shuffle(train_files)
+    files_per_epoch = min(CONFIG.get("train_files_per_epoch", len(train_files)), len(train_files))
+    
     for epoch in range(1, CONFIG["epochs"] + 1):
         print(f"\n[ Epoch {epoch:03d}/{CONFIG['epochs']} ]")
-        random.shuffle(train_files) # สลับซีดใหม่ทุกการสอบ (ลด Overfitting)
         
+        # 🚗 ทยอยหยิบไฟล์ย่อยสำหรับเทรนรอบนี้ (Shift ข้อมูลหน้ากระดาน)
+        epoch_train_files = []
+        for _ in range(files_per_epoch):
+            if train_file_idx >= len(train_files):
+                random.shuffle(train_files) # พอไถจนหมดลิสต์ ก็สับไพ่และไถกลับไปหน้าสุดใหม่
+                train_file_idx = 0
+            epoch_train_files.append(train_files[train_file_idx])
+            train_file_idx += 1
+            
         # -----------------------------
         # TRAIN LOOP (Chunked Stream)
         # -----------------------------
         model.train()
         train_loss_accum = 0.0
         train_sequences_seen = 0
+        num_train_chunks = int(np.ceil(len(epoch_train_files) / chunk_size))
         
-        for i in range(0, len(train_files), chunk_size):
-            chunk = train_files[i : i + chunk_size]
-            print(f"  > Streaming Train Chunk {i//chunk_size + 1} ({len(chunk)} files)... ", end="", flush=True)
+        for i in range(0, len(epoch_train_files), chunk_size):
+            chunk_idx = i // chunk_size + 1
+            chunk = epoch_train_files[i : i + chunk_size]
+            print(f"  > [Train Chunk {chunk_idx:02d}/{num_train_chunks:02d}] ⏳ Parsing {len(chunk)} files... ", end="", flush=True)
             X_chunk, y_chunk = load_chunk_dataset(chunk, "train", room_polys, corridor_polys)
             
             if X_chunk is None: 
                 print("Skipped.")
                 continue
             
-            print(f"GPU ACTIVATED! (Sequences: {len(X_chunk)})")
+            print(f"✅ Found {len(X_chunk)} seqs.")
             dataset = torch.utils.data.TensorDataset(X_chunk, y_chunk)
             loader = torch.utils.data.DataLoader(dataset, batch_size=CONFIG["batch_size"], shuffle=True, pin_memory=True)
             
-            for batch_x, batch_y in loader:
+            # 🚀 แถบหลอดแบบใหม่: โชว์เปอร์เซ็นต์การเขมือบข้อมูลของ GPU "เฉพาะ ภายในชุด 15 ไฟล์นี้"
+            batch_pbar = tqdm(loader, desc=f"    ⚡ GPU Training  ", leave=False, colour="green")
+            for batch_x, batch_y in batch_pbar:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 optimizer.zero_grad()
                 outputs = model(batch_x)
@@ -329,7 +369,8 @@ def main():
                 
                 train_loss_accum += loss.item() * batch_x.size(0)
                 train_sequences_seen += batch_x.size(0)
-                
+            
+            batch_pbar.close()
             del X_chunk, y_chunk, dataset, loader # ล้างขยะออกจาก RAM ทันที!
 
         avg_train_loss = train_loss_accum / max(1, train_sequences_seen)
@@ -339,28 +380,48 @@ def main():
         # -----------------------------
         model.eval()
         val_loss_accum = 0.0
+        val_ade_accum = 0.0 # Average Displacement Error (m)
         val_sequences_seen = 0
+        num_val_chunks = int(np.ceil(len(val_files) / chunk_size))
+        
         with torch.no_grad():
             for i in range(0, len(val_files), chunk_size):
+                chunk_idx = i // chunk_size + 1
                 chunk = val_files[i : i + chunk_size]
+                print(f"  > [Val Chunk   {chunk_idx:02d}/{num_val_chunks:02d}] ⏳ Parsing... ", end="", flush=True)
                 X_chunk, y_chunk = load_chunk_dataset(chunk, "validation", room_polys, corridor_polys)
-                if X_chunk is None: continue
                 
+                if X_chunk is None:
+                    print("Skipped.")
+                    continue
+                
+                print(f"✅")
                 dataset = torch.utils.data.TensorDataset(X_chunk, y_chunk)
                 loader = torch.utils.data.DataLoader(dataset, batch_size=CONFIG["batch_size"], shuffle=False)
-                for batch_x, batch_y in loader:
+                
+                val_pbar = tqdm(loader, desc=f"    🔍 GPU Validating", leave=False, colour="blue")
+                for batch_x, batch_y in val_pbar:
                     batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                     outputs = model(batch_x)
                     loss = criterion(outputs, batch_y)
                     val_loss_accum += loss.item() * batch_x.size(0)
+                    
+                    err_dx_m = outputs[:, 0] - batch_y[:, 0]
+                    err_dy_m = outputs[:, 1] - batch_y[:, 1]
+                    dist_err_m = torch.sqrt(err_dx_m**2 + err_dy_m**2)
+                    val_ade_accum += dist_err_m.sum().item()
+                    
                     val_sequences_seen += batch_x.size(0)
                 
-                del X_chunk, y_chunk, dataset, loader # ล้างขยะ RAM
+                val_pbar.close()
+                del X_chunk, y_chunk, dataset, loader 
 
         avg_val_loss = val_loss_accum / max(1, val_sequences_seen)
-        epoch_logs.append({"epoch": epoch, "train_loss": avg_train_loss, "val_loss": avg_val_loss})
+        avg_val_ade = val_ade_accum / max(1, val_sequences_seen)
         
-        print(f"🎯 Epoch {epoch:03d} Result | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
+        epoch_logs.append({"epoch": epoch, "train_loss": avg_train_loss, "val_loss": avg_val_loss, "val_ade": avg_val_ade})
+        
+        print(f"🎯 Epoch {epoch:03d} Result | Train Loss (MSE): {avg_train_loss:.6f} | Val Loss (MSE): {avg_val_loss:.6f} | 📏 Val Error (ADE): {avg_val_ade:.3f} meters")
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -377,18 +438,31 @@ def main():
         model.eval()
         test_loss_accum = 0.0
         test_seq_seen = 0
+        num_test_chunks = int(np.ceil(len(test_files) / chunk_size))
+        
         with torch.no_grad():
             for i in range(0, len(test_files), chunk_size):
+                chunk_idx = i // chunk_size + 1
                 chunk = test_files[i : i + chunk_size]
+                print(f"  > [Test Chunk  {chunk_idx:02d}/{num_test_chunks:02d}] ⏳ Parsing... ", end="", flush=True)
                 X_chunk, y_chunk = load_chunk_dataset(chunk, "test", room_polys, corridor_polys)
-                if X_chunk is None: continue
+                
+                if X_chunk is None:
+                    print("Skipped.")
+                    continue
+                    
+                print("✅")
                 dataset = torch.utils.data.TensorDataset(X_chunk, y_chunk)
                 loader = torch.utils.data.DataLoader(dataset, batch_size=CONFIG["batch_size"], shuffle=False)
-                for batch_x, batch_y in loader:
+                
+                test_pbar = tqdm(loader, desc=f"    🏆 GPU Testing   ", leave=False, colour="magenta")
+                for batch_x, batch_y in test_pbar:
                     batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                     loss = criterion(model(batch_x), batch_y)
                     test_loss_accum += loss.item() * batch_x.size(0)
                     test_seq_seen += batch_x.size(0)
+                
+                test_pbar.close()
                 del X_chunk, y_chunk, dataset, loader
         
         final_test_mse = test_loss_accum / max(1, test_seq_seen)
