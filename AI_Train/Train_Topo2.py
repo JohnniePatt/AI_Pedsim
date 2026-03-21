@@ -21,6 +21,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from shapely.wkt import loads as load_wkt
 from shapely.geometry import Point, Polygon
@@ -175,6 +177,13 @@ def build_sequences_per_agent(df: pd.DataFrame, seq_len: int, feat_cols: list, t
             y_list.append(targets_np[i + seq_len - 1])
     return X_list, y_list
 
+def process_and_sequence_seed(sqlite_path: Path, csv_path: Path, room_polys: list, corridor_polys: list, seq_len: int, feature_cols: list, target_cols: list):
+    """Wrapper function to process dataframe and generate sequences concurrently per seed."""
+    df = process_seed_data(sqlite_path, csv_path, room_polys, corridor_polys)
+    if df is None:
+        return [], []
+    return build_sequences_per_agent(df, seq_len, feature_cols, target_cols)
+
 # ===================================================================== #
 # 4. NEURAL NETWORK ARCHITECTURE
 # ===================================================================== #
@@ -209,25 +218,36 @@ def load_split_dataset(split_name: str, room_polys, corridor_polys):
         print(f"Skipping {split_name}: No sqlite files found.")
         return None, None, 0
 
-    df_list = []
-    for sqlite_file in tqdm(sqlite_files, desc=f"Parsing {split_name} features"):
-        seed = sqlite_file.stem.split('_')[1]
-        csv_file = csv_dir / f"spawn_exit_{seed}.csv"
-        
-        df_seed = process_seed_data(sqlite_file, csv_file, room_polys, corridor_polys)
-        if df_seed is not None:
-            df_list.append(df_seed)
-
-    if not df_list:
-        return None, None, 0
-
-    master_df = pd.concat(df_list, ignore_index=True)
     X_all, y_all = [], []
+    args_list = []
     
-    for seed, seed_df in master_df.groupby('seed'):
-        x_s, y_s = build_sequences_per_agent(seed_df, CONFIG["seq_len"], CONFIG["feature_cols"], CONFIG["target_cols"])
-        X_all.extend(x_s)
-        y_all.extend(y_s)
+    # 🌟 ปรับปรุงใหม่: สร้างรายการภารกิจสำหรับแต่ละ Seed 
+    for sqlite_file in sqlite_files:
+        try:
+            seed = sqlite_file.stem.split('_')[1]
+            csv_file = csv_dir / f"spawn_exit_{seed}.csv"
+            args_list.append((
+                sqlite_file, csv_file, room_polys, corridor_polys,
+                CONFIG["seq_len"], CONFIG["feature_cols"], CONFIG["target_cols"]
+            ))
+        except IndexError:
+            continue
+
+    # 🚀 ปลดล็อกคอขวด CPU: ใช้ Multi-core Processing ดึงพลัง CPU ทุก Core ที่มีมาช่วยหั่นข้อมูลพร้อมๆ กัน
+    num_cores = max(1, multiprocessing.cpu_count() - 2) # เหลือหัวไว้ 2 คอร์ให้ OS หายใจ
+    print(f"[{split_name.upper()}] Igniting Parallel Processing using {num_cores} CPU Cores...")
+    
+    with ProcessPoolExecutor(max_workers=num_cores) as executor:
+        futures = {executor.submit(process_and_sequence_seed, *args): args for args in args_list}
+        
+        for future in tqdm(as_completed(futures), total=len(futures), desc=f"Multi-core Parsing {split_name}"):
+            try:
+                x_s, y_s = future.result()
+                if x_s and y_s:
+                    X_all.extend(x_s)
+                    y_all.extend(y_s)
+            except Exception as e:
+                print(f"Worker iteration error: {e}")
 
     if not X_all:
         return None, None, 0
@@ -286,8 +306,15 @@ def main():
     train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
     val_dataset = torch.utils.data.TensorDataset(X_val, y_val)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=CONFIG["batch_size"], shuffle=True)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+    # 🚀 ปลดล็อกคอขวดคิวลำเลียงข้อมูลเข้า GPU (Data Loader Workers)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=CONFIG["batch_size"], shuffle=True, 
+        num_workers=4, pin_memory=True
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=CONFIG["batch_size"], shuffle=False, 
+        num_workers=4, pin_memory=True
+    )
 
     device = torch.device(CONFIG["device"])
     print(f"Model Initialization... ")
