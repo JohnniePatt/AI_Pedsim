@@ -23,7 +23,7 @@ print("Initializing Training Script (Clean Pipeline)...")
 # ===================================================================== #
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOPO_DIR = PROJECT_ROOT / "Topo_2"
-PROCESSED_DIR = PROJECT_ROOT / "AI_Train" / "dataswarm_processed"
+PROCESSED_DIR = PROJECT_ROOT / "AI_Train" / "dataswarm_processed_topo2"
 OUTPUT_DIR = PROJECT_ROOT / "AI_Train" / "outputs" / "Topo2"
 
 CONFIG = {
@@ -31,7 +31,7 @@ CONFIG = {
     "batch_size": 1024,   
     "hidden_size": 256,   
     "num_layers": 3,      
-    "learning_rate": 1e-3,           
+    "lr": 1e-3,           
     "epochs": 100,        
     "train_chunks_per_epoch": 4, # 🌟 จำนวนโฟลเดอร์ Chunk (ปกติ 1 chunk = 15 ไฟล์) ที่จะหยิบมาต่อบอก
     "pretrained_checkpoint": "-", 
@@ -126,7 +126,7 @@ def main():
     model = model.to(device)
 
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=CONFIG["learning_rate"])
+    optimizer = optim.Adam(model.parameters(), lr=CONFIG["lr"])
 
     epoch_logs = []
     best_val_loss = float('inf')
