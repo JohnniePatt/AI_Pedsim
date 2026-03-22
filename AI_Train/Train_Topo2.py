@@ -23,7 +23,7 @@ print("Initializing Training Script (Clean Pipeline)...")
 # ===================================================================== #
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOPO_DIR = PROJECT_ROOT / "Topo_2"
-PROCESSED_DIR = PROJECT_ROOT / "AI_Train" / "dataswarm_processed"
+PROCESSED_DIR = PROJECT_ROOT / "AI_Train" / "dataswarm_processed_topo2"
 OUTPUT_DIR = PROJECT_ROOT / "AI_Train" / "outputs" / "Topo2"
 
 CONFIG = {
@@ -33,7 +33,7 @@ CONFIG = {
     "num_layers": 3,      
     "learning_rate": 1e-3,           
     "epochs": 100,        
-    "train_chunks_per_epoch": 4, # 🌟 จำนวนโฟลเดอร์ Chunk (ปกติ 1 chunk = 15 ไฟล์) ที่จะหยิบมาต่อบอก
+    "train_chunks_per_epoch": 12, # ปรับจาก 4 เป็น 12 เพื่อให้ 12 chunks * 5 files = 60 ไฟล์ (เท่าเดิม)
     "pretrained_checkpoint": "-", 
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "feature_cols": [
