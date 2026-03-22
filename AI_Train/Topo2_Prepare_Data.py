@@ -17,7 +17,7 @@ TOPO_DIR = PROJECT_ROOT / "Topo_2"
 GEO_DIR = TOPO_DIR / "geo"
 DATASWARM_DIR = TOPO_DIR / "dataswarm"
 SPAWN_EXIT_DIR = TOPO_DIR / "spawn_exit_area"
-PROCESSED_DIR = PROJECT_ROOT / "AI_Train" / "dataswarm_processed_topo2"
+PROCESSED_DIR = PROJECT_ROOT / "AI_Train" / "dataswarm_processed" / "topo2"
 
 CHUNK_SIZE = 5 # ลดจาก 15 เหลือ 5 เพื่อเลี่ยง Error ไฟล์ใหญ่เกินไปบนระบบ Lustre (HPC)
 SEQ_LEN = 20
