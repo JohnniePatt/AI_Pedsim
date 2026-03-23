@@ -93,10 +93,13 @@ class Discriminator(nn.Module):
 
 # --- Dataset Handler ---
 class Pix2PixDataset(Dataset):
-    def __init__(self, root_dir):
-        self.dir_A = pathlib.Path(root_dir) / "A"
-        self.dir_B = pathlib.Path(root_dir) / "B"
-        self.files = sorted([f.relative_to(self.dir_A) for f in self.dir_A.rglob("*.png")])
+    def __init__(self, root_dir, subset="train"):
+        self.dir_A = pathlib.Path(root_dir) / "A" / subset
+        self.dir_B = pathlib.Path(root_dir) / "B" / subset
+        
+        # Get all png files in the subset directory
+        self.files = sorted([f.name for f in self.dir_A.glob("*.png")])
+        
         self.transform = transforms.Compose([
             transforms.Resize((512, 512), transforms.InterpolationMode.BICUBIC),
             transforms.ToTensor(),
@@ -106,9 +109,9 @@ class Pix2PixDataset(Dataset):
     def __len__(self): return len(self.files)
 
     def __getitem__(self, idx):
-        path_rel = self.files[idx]
-        img_a = Image.open(self.dir_A / path_rel).convert("RGB")
-        img_b = Image.open(self.dir_B / path_rel).convert("L") # Heatmap is Gray
+        file_name = self.files[idx]
+        img_a = Image.open(self.dir_A / file_name).convert("RGB")
+        img_b = Image.open(self.dir_B / file_name).convert("L") # Heatmap is Gray
         return self.transform(img_a), self.transform(img_b)
 
 # --- Training Script ---
@@ -121,8 +124,16 @@ def train():
     DATA_DIR = BASE_DIR.parent.parent / "Topo_2" / "heatmap_density" / "Cleandata_1"
     CHECKPOINT_DIR = BASE_DIR / "checkpoints"
     OUTPUT_DIR = BASE_DIR / "outputs"
+    LOG_DIR = BASE_DIR / "log_loss"
+    
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    # Log file init
+    log_file = LOG_DIR / "training_history.csv"
+    with open(log_file, "w") as f:
+        f.write("epoch,d_loss,g_gan_loss,l1_mae_loss,mse_loss,val_l1_loss\n")
 
     # Models
     net_g = Generator(in_ch=3, out_ch=1).to(device)
@@ -134,27 +145,38 @@ def train():
 
     # Loss Functions
     criterion_gan = nn.BCEWithLogitsLoss()
-    criterion_l1 = nn.L1Loss()
+    criterion_l1 = nn.L1Loss()  # Also known as MAE
+    criterion_mse = nn.MSELoss()
 
     # Data
-    if not DATA_DIR.exists():
-        print(f"ERROR: Data directory not found at {DATA_DIR}")
-        print("Please run Prepare_image_input.py first.")
+    if not (DATA_DIR / "A" / "train").exists():
+        print(f"ERROR: Data subdirectories not found at {DATA_DIR}")
+        print("Please check your folder structure (A/train, B/train, etc.)")
         return
 
-    dataset = Pix2PixDataset(DATA_DIR)
-    if len(dataset) == 0:
-        print(f"ERROR: No images found in {DATA_DIR}")
-        return
+    train_dataset = Pix2PixDataset(DATA_DIR, subset="train")
+    val_dataset = Pix2PixDataset(DATA_DIR, subset="validation")
+    test_dataset = Pix2PixDataset(DATA_DIR, subset="test")
 
-    loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4)
+    print(f"Dataset loaded: {len(train_dataset)} train, {len(val_dataset)} val, {len(test_dataset)} test")
+
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=4)
 
     epochs = 100
     L1_LAMBDA = 100
+    best_val_loss = float('inf')
 
     for epoch in range(epochs):
-        loop = tqdm(loader, leave=True)
-        for i, (real_a, real_b) in enumerate(loop):
+        # --- Training Loop ---
+        net_g.train()
+        net_d.train()
+        
+        train_metrics = {"d": 0, "g_gan": 0, "g_l1": 0, "g_mse": 0}
+        
+        train_loop = tqdm(train_loader, leave=False)
+        for i, (real_a, real_b) in enumerate(train_loop):
             real_a, real_b = real_a.to(device), real_b.to(device)
 
             # --- Train Discriminator ---
@@ -176,27 +198,84 @@ def train():
             # --- Train Generator ---
             pred_fake = net_d(real_a, fake_b)
             loss_g_gan = criterion_gan(pred_fake, torch.ones_like(pred_fake))
-            loss_g_l1 = criterion_l1(fake_b, real_b) * L1_LAMBDA
+            loss_g_l1 = criterion_l1(fake_b, real_b)
+            loss_g_mse = criterion_mse(fake_b, real_b)
             
-            loss_g = loss_g_gan + loss_g_l1
+            total_loss_g = loss_g_gan + (loss_g_l1 * L1_LAMBDA)
+            
             opt_g.zero_grad()
-            loss_g.backward()
+            total_loss_g.backward()
             opt_g.step()
 
-            loop.set_description(f"Epoch [{epoch}/{epochs}]")
-            loop.set_postfix(D_loss=loss_d.item(), G_loss=loss_g.item())
+            # Accumulate metrics
+            train_metrics["d"] += loss_d.item()
+            train_metrics["g_gan"] += loss_g_gan.item()
+            train_metrics["g_l1"] += loss_g_l1.item()
+            train_metrics["g_mse"] += loss_g_mse.item()
 
-        # Save Checkpoint & Samples
+            train_loop.set_description(f"Epoch [{epoch}/{epochs}] Train")
+            train_loop.set_postfix(D_loss=loss_d.item(), G_loss=total_loss_g.item())
+
+        # Average training metrics for the epoch
+        for key in train_metrics:
+            train_metrics[key] /= len(train_loader)
+
+        # --- Validation Loop ---
+        net_g.eval()
+        val_l1_total = 0
+        with torch.no_grad():
+            for val_a, val_b in val_loader:
+                val_a, val_b = val_a.to(device), val_b.to(device)
+                v_fake_b = net_g(val_a)
+                val_l1_total += criterion_l1(v_fake_b, val_b).item()
+        
+        avg_val_l1 = (val_l1_total / len(val_loader)) * L1_LAMBDA
+        print(f"Epoch [{epoch}/{epochs}] - Train G_GAN: {train_metrics['g_gan']:.4f} | Val L1 Loss: {avg_val_l1:.4f}")
+
+        # Write Log to CSV
+        with open(log_file, "a") as f:
+            f.write(f"{epoch},{train_metrics['d']:.6f},{train_metrics['g_gan']:.6f},{train_metrics['g_l1']:.6f},{train_metrics['g_mse']:.6f},{avg_val_l1:.6f}\n")
+
+        # Save Best Model
+        if avg_val_l1 < best_val_loss:
+            best_val_loss = avg_val_l1
+            torch.save(net_g.state_dict(), CHECKPOINT_DIR / "gen_best.pth")
+            print(f"  --> Saved Best Model (L1: {best_val_loss:.4f})")
+
+        # Save Regular Checkpoint & Samples
         if (epoch + 1) % 10 == 0:
             torch.save(net_g.state_dict(), CHECKPOINT_DIR / f"gen_epoch_{epoch+1}.pth")
             
-            # Save visual result
+            # Save visual result from Validation Set for monitoring
             with torch.no_grad():
+                val_a_sample, val_b_sample = next(iter(val_loader))
+                val_a_sample = val_a_sample.to(device)
+                sample_out = net_g(val_a_sample)
                 # Denormalize
-                res = (fake_b[0].cpu().numpy() * 0.5 + 0.5) * 255
+                res = (sample_out[0].cpu().numpy() * 0.5 + 0.5) * 255
                 Image.fromarray(res[0].astype(np.uint8)).save(OUTPUT_DIR / f"sample_epoch_{epoch+1}.png")
 
-    print("Training finished!")
+    # --- Final Test Evaluation ---
+    print("\n--- Running Final Test Evaluation ---")
+    if (CHECKPOINT_DIR / "gen_best.pth").exists():
+        net_g.load_state_dict(torch.load(CHECKPOINT_DIR / "gen_best.pth"))
+    
+    net_g.eval()
+    test_l1_total = 0
+    with torch.no_grad():
+        for i, (test_a, test_b) in enumerate(test_loader):
+            test_a, test_b = test_a.to(device), test_b.to(device)
+            t_fake_b = net_g(test_a)
+            test_l1_total += criterion_l1(t_fake_b, test_b).item()
+            
+            # Save a few test results
+            if i < 5:
+                res = (t_fake_b[0].cpu().numpy() * 0.5 + 0.5) * 255
+                Image.fromarray(res[0].astype(np.uint8)).save(OUTPUT_DIR / f"test_result_{i}.png")
+                
+    avg_test_l1 = (test_l1_total / len(test_loader)) * L1_LAMBDA
+    print(f"Final Test L1 Loss: {avg_test_l1:.4f}")
+    print(f"Training and Testing finished! Best Val L1: {best_val_loss:.4f}")
 
 if __name__ == "__main__":
     train()
