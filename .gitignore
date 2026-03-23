@@ -1,0 +1,22 @@
+# Data files
+*.sqlite
+*.csv
+*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Pix2Pix Training Output & Checkpoints
+checkpoints/
+outputs/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store

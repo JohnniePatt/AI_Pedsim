@@ -16,6 +16,7 @@ from pathlib import Path
 from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
+import gc
 
 # ===================================================================== #
 # CONFIGURATION
@@ -72,6 +73,16 @@ def main():
     ).to(device)
 
     checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=True)
+    
+    # 🩹 FIX: แก้ปัญหา DataParallel (module. prefix)
+    if any(k.startswith('module.') for k in checkpoint.keys()):
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for k, v in checkpoint.items():
+            name = k[7:] # ตัด 'module.' ออก
+            new_state_dict[name] = v
+        checkpoint = new_state_dict
+
     model.load_state_dict(checkpoint)
     model.eval()
     print(f"✅ Successfully Loaded [best_lstm.pt]")
@@ -105,6 +116,13 @@ def main():
             # เก็บผลไว้คำนวณสถิติละเอียด
             all_preds.append(outputs.cpu().numpy())
             all_trues.append(y_test_chunk.cpu().numpy())
+            
+            # 🧹 เคลียร์แรมก้อนนี้ทิ้งทันที
+            del X_test_chunk, y_test_chunk
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             print("✅")
 
     # 4. คำนวณ Error Metrics
