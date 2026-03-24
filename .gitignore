@@ -18,3 +18,7 @@ outputs/
 .vscode/
 .idea/
 .DS_Store
+
+.pth
+
+outputs*/
