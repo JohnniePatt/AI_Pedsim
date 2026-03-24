@@ -170,17 +170,26 @@ def execute_training():
     # Loss Settings
     adversarial_loss_criterion = nn.BCEWithLogitsLoss()
     pixel_loss_criterion = nn.L1Loss()
+    
+    # Logs
+    log_path = config.LOG_DIR / "training_history.csv"
+    with open(log_path, "w") as f:
+        f.write("epoch,discriminator_loss,generator_adversarial_loss,generator_l1_loss,validation_l1_loss\n")
 
     # Data
     train_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "train", config.image_size)
     val_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "validation", config.image_size)
+    test_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "test", config.image_size) # Add Test Dataset
+
     train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=4)
-    print(f"📊 [DATA] Train: {len(train_ds)} | Val: {len(val_ds)}")
+    test_loader = DataLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=4) # Add Test Loader
 
-    # Logs
-    log_path = config.LOG_DIR / "training_history.csv"
-    with open(log_path, "w") as f: f.write("epoch,d_loss,g_adv,g_l1,val_l1\n")
+    print(f"📊 [DATA] Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+
+    # Prepare Test Result Dir
+    test_result_dir = config.CURRENT_RUN_DIR / "test_results"
+    test_result_dir.mkdir(parents=True, exist_ok=True)
 
     best_val = float('inf')
     for epoch in range(config.epochs):
@@ -223,8 +232,10 @@ def execute_training():
                 val_l1 += pixel_loss_criterion(generator(va), vb).item()
         
         avg_val = (val_l1 / len(val_loader)) * config.l1_loss_weight
+        # Log results with full names
         metrics = [epoch, epoch_metrics['d']/len(train_loader), epoch_metrics['g_adv']/len(train_loader), epoch_metrics['g_l1']/len(train_loader), avg_val]
-        with open(log_path, "a") as f: f.write(",".join([f"{m:.6f}" if isinstance(m, float) else str(m) for m in metrics]) + "\n")
+        with open(log_path, "a") as f:
+            f.write(",".join([f"{m:.6f}" if isinstance(m, float) else str(m) for m in metrics]) + "\n")
         
         print(f"✨ [EPOCH {epoch}] D_Loss: {metrics[1]:.4f} | Val L1: {avg_val:.4f}")
 
@@ -240,6 +251,29 @@ def execute_training():
                 res = generator(sample_a.to(device))[0].cpu().numpy().transpose(1, 2, 0)
                 img = ((res * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
                 Image.fromarray(img).save(config.SAMPLE_DIR / f"sample_epoch_{epoch+1}.png")
+
+    # --- Final Test Evaluation ---
+    print("\n--- Running Final Test Evaluation ---")
+    if (config.CHECKPOINT_DIR / "generator_best.pth").exists():
+        generator.load_state_dict(torch.load(config.CHECKPOINT_DIR / "generator_best.pth", map_location=device))
+    
+    generator.eval()
+    test_l1_total = 0
+    with torch.no_grad():
+        for i, (test_a, test_b) in enumerate(test_loader):
+            test_a, test_b = test_a.to(device), test_b.to(device)
+            t_fake_b = generator(test_a)
+            test_l1_total += pixel_loss_criterion(t_fake_b, test_b).item()
+            
+            # Save a few test results
+            if i < 10:
+                res = (t_fake_b[0].cpu().numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255
+                img = res.clip(0, 255).astype(np.uint8)
+                Image.fromarray(img).save(test_result_dir / f"test_result_{i}.png")
+                
+    avg_test_l1 = (test_l1_total / len(test_loader)) * config.l1_loss_weight
+    print(f"✅ Final Test L1 Loss: {avg_test_l1:.4f}")
+    print(f"🏁 Trajectory Line Training Finished! Best Val L1: {best_val:.4f}")
 
 if __name__ == "__main__":
     execute_training()
