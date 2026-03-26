@@ -1,6 +1,6 @@
 {
-    "seq_len": 20,
-    "batch_size": 1024,
+    "seq_len": 1000,
+    "batch_size": 128,
     "hidden_size": 256,
     "num_layers": 3,
     "learning_rate": 0.001,

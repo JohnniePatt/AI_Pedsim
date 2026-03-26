@@ -74,6 +74,12 @@ def load_exit_polygon(csv_path: Path) -> Polygon:
     df = pd.read_csv(csv_path); exit_row = df[df['type'] == 'exit_area']
     return load_wkt(exit_row.iloc[0]['area'])
 
+def get_sqlite_data(sqlite_path: Path):
+    conn = sqlite3.connect(sqlite_path)
+    df = pd.read_sql_query("SELECT frame, id, pos_x, pos_y FROM trajectory_data ORDER BY id, frame", conn)
+    meta = {k: float(conn.execute("SELECT value FROM metadata WHERE key = ?", (k,)).fetchone()[0]) for k in ['xmin', 'xmax', 'ymin', 'ymax']}
+    conn.close(); return df, meta
+
 # --- Optimized Data Structures ---
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(self, agent_data_list, seq_len):
