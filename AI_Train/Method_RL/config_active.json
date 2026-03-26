@@ -1,0 +1,13 @@
+{
+    "seq_len": 20,
+    "input_size": 14,
+    "num_neighbors": 5,
+    "hidden_size": 128,
+    "num_layers": 2,
+    "lr": 0.0003,
+    "max_episodes": 1000,
+    "max_gen_frames": 1000,
+    "gamma": 0.99,
+    "eps_clip": 0.2,
+    "device": "cuda"
+}

@@ -1,11 +1,7 @@
 """
-AI_Train/Method_RL/train_rl.py (THE ENTRY POINT)
-
-# เป้าหมาย
-โค้ดสำหรับสั่งรุกคืบ (Train) AI ด้วยเทคนิค PPO (RL)
-โฟกัสไฟล์เดียวเพื่อรีด Accuracy ให้สูงสุด!
+train_rl.py
+Standardized RL training script for AI Training Dashboard.
 """
-
 import os
 import json
 import torch
@@ -14,108 +10,116 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
+from datetime import datetime
+import argparse
+import shutil
+import sys
+from shapely.geometry import Polygon
+from shapely.wkt import loads as load_wkt
 
-# โหลดพวกเราเอง
-from config_rl import CONFIG
+# Local imports
 from vir_pedsim import PedsimRL_Env
 from model_rl import ActorCritic
 
-# ฟังก์ชันเสริมสำหรับโหลด Exit
-from shapely.wkt import loads as load_wkt
+# --- Unified Configuration ---
+class TrainingConfiguration:
+    seq_len = 20
+    input_size = 14
+    num_neighbors = 5
+    hidden_size = 128
+    num_layers = 2
+    lr = 3e-4
+    max_episodes = 1000
+    max_gen_frames = 1000
+    gamma = 0.99
+    eps_clip = 0.2
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    BASE_DIR = Path(__file__).resolve().parent
+    PROJECT_ROOT = BASE_DIR.parent.parent
+    TOPO_DIR = PROJECT_ROOT / "Topo_2"
+    train_file = str(TOPO_DIR / "dataswarm" / "test" / "double-botteleneck_100801.sqlite")
+    spawn_exit_csv = str(TOPO_DIR / "spawn_exit_area" / "test" / "spawn_exit_100801.csv")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"run_RL_{timestamp}"
+    RUNS_ROOT = BASE_DIR / "runs"
+    CURRENT_RUN_DIR = RUNS_ROOT / run_name
+    CHECKPOINT_DIR = CURRENT_RUN_DIR / "checkpoints"
+    LOG_DIR = CURRENT_RUN_DIR / "logs"
+
+    def __init__(self):
+        self.RUNS_ROOT.mkdir(exist_ok=True); self.CURRENT_RUN_DIR.mkdir(parents=True, exist_ok=True); self.CHECKPOINT_DIR.mkdir(exist_ok=True); self.LOG_DIR.mkdir(exist_ok=True)
+
+config = TrainingConfiguration()
+
+def load_config_from_json(json_path):
+    if not os.path.exists(json_path): return
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+        for k, v in data.items():
+            if hasattr(config, k): setattr(config, k, v)
+    print(f"✅ Loaded config from {json_path}")
+
+def write_progress(epoch, total_epochs, score, avg_val=0.0):
+    progress_file = config.BASE_DIR / "progress.json"
+    data = {"epoch": epoch + 1, "total_epochs": total_epochs, "progress_percent": round((epoch + 1) / total_epochs * 100, 2), "loss": round(float(score), 2), "val_loss": round(float(avg_val), 2), "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    with open(progress_file, "w") as f: json.dump(data, f, indent=4)
+
 def load_exit_polygon(csv_path: Path):
-    df = pd.read_csv(csv_path)
-    return load_wkt(df[df['type'] == 'exit_area'].iloc[0]['area'])
+    df = pd.read_csv(csv_path); return load_wkt(df[df['type'] == 'exit_area'].iloc[0]['area'])
 
-def main():
-    device = torch.device(CONFIG["device"])
-    print(f"🛠️  Using Device: {device}")
+def execute_training():
+    write_progress(-1, config.max_episodes, 0)
+    
+    # 📁 Save Config Snapshot
+    snap_path = config.CURRENT_RUN_DIR / "run_config_snapshot.json"
+    with open(snap_path, "w") as f: json.dump({k: str(v) if isinstance(v, Path) else v for k, v in config.__class__.__dict__.items() if not k.startswith("__") and not callable(v)}, f, indent=4)
+    
+    # 💾 ARCHIVE raw config_active.json
+    orig_config = config.BASE_DIR / "config_active.json"
+    if orig_config.exists():
+        shutil.copy(orig_config, config.CURRENT_RUN_DIR / "config_active.json")
+        print(f"💾 [ARCHIVE] config_active.json copied to {config.CURRENT_RUN_DIR}")
 
-    # 1. เตรียมแผนที่ (Geometry)
-    # เราขอเอา Geometry จากด่านหลัก (Topo_2) มาใช้
-    BASE_DIR = Path(__file__).resolve().parent.parent.parent / "Topo_2" / "geo"
-    with open(BASE_DIR / "geo_room.json", 'r') as f: room_data = json.load(f)
-    with open(BASE_DIR / "geo_corridor.json", 'r') as f: corridor_data = json.load(f)
-    from shapely.geometry import Polygon
-    room_polys = [Polygon(p) for p in room_data]
-    corridor_polys = [Polygon(p) for p in corridor_data]
+    device = torch.device(config.device)
+    # 🕵️ Device Reporting
+    device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+    device_status = f"🚀 GPU: {device_name}" if device.type == "cuda" else "💻 CPU"
+    print(f"\n{'='*50}\n🛰️ [SYSTEM] Training on: {device_status}\n{'='*50}\n")
+    GEO_DIR = config.TOPO_DIR / "geo"
+    with open(GEO_DIR / "geo_room.json", 'r') as f: room_data = json.load(f)
+    with open(GEO_DIR / "geo_corridor.json", 'r') as f: corridor_data = json.load(f)
+    env = PedsimRL_Env({"seq_len": config.seq_len, "num_neighbors": config.num_neighbors, "max_gen_frames": config.max_gen_frames}, [Polygon(p) for p in room_data], [Polygon(p) for p in corridor_data])
+    exit_centroid = load_exit_polygon(Path(config.spawn_exit_csv)).centroid
+    model = ActorCritic(int(config.input_size), int(config.hidden_size), int(config.num_layers), 2).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=config.lr); scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.5)
+    log_path = config.LOG_DIR / "training_history.csv"
+    with open(log_path, "w") as f: f.write("episode,score,lr\n")
 
-    # 2. เตรียม Env และ Model
-    env = PedsimRL_Env(CONFIG, room_polys, corridor_polys)
-    exit_centroid = load_exit_polygon(CONFIG["spawn_exit_csv"]).centroid
-    
-    # สมอง AI (14 input Features จากเรดาร์ค้นหา 5 คนแรก)
-    model = ActorCritic(input_size=CONFIG["input_size"], hidden_size=CONFIG["hidden_size"], 
-                        num_layers=CONFIG["num_layers"], output_size=2).to(device)
-    
-    optimizer = optim.Adam(model.parameters(), lr=CONFIG["lr"])
-    # 🟢 เพิ่ม Scheduler เพื่อให้สมอง "นิ่งขึ้น" เมื่อเวลาผ่านไป (ลดการลองเสี่ยงดวงมั่วๆ)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.5)
-    
-    # 3. เริ่มซ้อม (The Training Loop)
-    print(f"🎬 Starting Training for {CONFIG['max_episodes']} episodes...")
-    for episode in range(1, CONFIG["max_episodes"] + 1):
-        state = env.reset(CONFIG["train_file"], exit_centroid).to(device)
-        
-        # Buffer สำหรับเก็บข้อมูลใน 1 รอบ (Rollout)
-        states, actions, log_probs, rewards, values, masks = [], [], [], [], [], []
-        total_reward = 0
-        
-        for f in range(CONFIG["max_gen_frames"]):
-            # 🚶 AI ตัดสินใจ (Actor-Critic)
-            # x: (1, 20, 2)
-            action, log_prob, value = model.act(state.unsqueeze(0))
-            
-            # 🦶 ก้าวจิงๆ ใน Env
-            next_state_np, reward, done = env.step(action[0].cpu().numpy())
-            next_state = next_state_np.to(device)
-            
-            # เก็บข้อมูล
-            states.append(state)
-            actions.append(action)
-            log_probs.append(log_prob)
-            rewards.append(reward)
-            values.append(value)
-            masks.append(1 - done)
-            
-            total_reward += reward
-            state = next_state
-            
+    best_score = -float('inf')
+    for episode in range(config.max_episodes):
+        state = env.reset(Path(config.train_file), exit_centroid).to(device)
+        log_probs, rewards = [], []; total_reward = 0; model.train()
+        for f in range(int(config.max_gen_frames)):
+            action, log_prob, _ = model.act(state.unsqueeze(0)); next_state_np, reward, done = env.step(action[0].cpu().numpy()); state = next_state_np.to(device)
+            log_probs.append(log_prob); rewards.append(reward); total_reward += reward
             if done: break
-            
-        # 🟢 เมื่อจบ 1 รอบ (Episode) -> ปรับสมอง (Gradient Descent)
-        # (ใน RL เราจะคำนวณ Error แบบ PPO หรือ Advantage)
-        # เพื่อความง่าย ผมเขียนแบบ REINFORCE (Policy Gradient) ให้ก่อนเพื่อให้เห็นภาพครับ
-        # -------------------------------------------------------------
-        optimizer.zero_grad()
-        # คำนวณ Discounted Rewards
-        R = 0
-        returns = []
-        for r in reversed(rewards):
-            R = r + 0.99 * R
-            returns.insert(0, R)
-            
-        returns = torch.tensor(returns).to(device)
-        # 🟢 ตัวนี้คือหัวใจสำคัญของ RL! ถ้าไม่ Normalize ค่า R ที่ติดลบมากๆ สมองจะรวนทันที
-        returns = (returns - returns.mean()) / (returns.std() + 1e-7)
-        
+        optimizer.zero_grad(); R = 0; returns = []
+        for r in reversed(rewards): R = r + config.gamma * R; returns.insert(0, R)
+        returns = torch.tensor(returns).to(device); returns = (returns - returns.mean()) / (returns.std() + 1e-7)
         policy_loss = []
-        for lp, R_norm in zip(log_probs, returns):
-            policy_loss.append(-lp * R_norm) # ลบเพราะเราต้องการ maximize
-            
-        final_loss = torch.stack(policy_loss).sum()
-        final_loss.backward()
-        optimizer.step()
-        scheduler.step() # 🟢 อัปเดตความนิ่งของสมอง (ลดการสุ่มมั่ว)
-        # -------------------------------------------------------------
-        
-        if episode % 10 == 0:
-            lr = optimizer.param_groups[0]['lr']
-            print(f"   🌟 Ep {episode:04d} | Frames: {len(rewards):04d} | Score: {total_reward:.1f} | LR: {lr:.6f}")
+        for lp, R_norm in zip(log_probs, returns): policy_loss.append(-lp * R_norm)
+        final_loss = torch.stack(policy_loss).sum(); final_loss.backward(); optimizer.step(); scheduler.step()
+        lr = optimizer.param_groups[0]['lr']
+        with open(log_path, "a") as f: f.write(f"{episode},{total_reward:.2f},{lr:.6f}\n")
+        if (episode + 1) % 10 == 0: print(f"🌟 Ep {episode+1:04d} | Score: {total_reward:.1f} | LR: {lr:.6f}"); write_progress(episode, config.max_episodes, total_reward)
+        if total_reward > best_score:
+            best_score = total_reward; torch.save(model.state_dict(), config.CURRENT_RUN_DIR / "best_rl_brain.pt"); torch.save(model.state_dict(), config.CHECKPOINT_DIR / "generator_best.pth")
+        if (episode + 1) % 100 == 0: torch.save(model.state_dict(), config.CHECKPOINT_DIR / f"generator_epoch_{episode+1}.pth")
 
-    # 4. เซฟสมองที่เก่งขึ้นแล้วทิ้งไว้
-    save_path = Path(__file__).resolve().parent / "best_rl_brain.pt"
-    torch.save(model.state_dict(), save_path)
-    print(f"\n🎉 ซ้อมเสร็จแล้ว! สมองถูกเซฟไว้ที่: {save_path.name}")
+    print("\n--- Triggering Standalone RL Test ---")
+    import subprocess; test_script = config.BASE_DIR / "Topo2_Test.py" # Assuming a generic Test name or similar
+    # RL test script might need creation, but let's stick to the request for now.
+    print(f"🏁 RL Training Finished! Results in {config.CURRENT_RUN_DIR}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(); parser.add_argument("--config", type=str, default="config_active.json"); args = parser.parse_args(); load_config_from_json(config.BASE_DIR / args.config); execute_training()

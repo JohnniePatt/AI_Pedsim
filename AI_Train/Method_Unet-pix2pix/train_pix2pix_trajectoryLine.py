@@ -7,9 +7,12 @@ from torchvision import transforms
 from PIL import Image
 import numpy as np
 import pathlib
+import sys
 from tqdm import tqdm
 import torch.nn.functional as F
 from datetime import datetime
+import argparse
+import json
 
 # ==========================================
 # TRAINING CONFIGURATION
@@ -25,7 +28,8 @@ class TrainingConfiguration:
     l1_loss_weight = 100.0
     
     # 2. GAN Balancing
-    use_label_smoothing = True # Use 0.9 instead of 1.0 for real labels
+    use_label_smoothing = True 
+    d_train_freq = 1 # Train D every N batches (default 1)
     
     # 3. Resume Training
     # Set to a path (e.g. "runs_trajectory/run_xxx/checkpoints/generator_best.pth") or "-" to start new
@@ -54,6 +58,29 @@ class TrainingConfiguration:
 
 # Initialize Config
 config = TrainingConfiguration()
+
+def load_config_from_json(json_path):
+    if not os.path.exists(json_path):
+        return
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    for key, value in data.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+    print(f"📂 [CONFIG] Loaded parameters from {json_path}")
+
+def write_progress(epoch, total_epochs, loss, val_l1):
+    progress_file = config.CURRENT_RUN_DIR / "progress.json"
+    data = {
+        "epoch": epoch + 1,
+        "total_epochs": total_epochs,
+        "percentage": round(((epoch + 1) / total_epochs) * 100, 2),
+        "loss": round(loss, 6),
+        "val_l1": round(val_l1, 6),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(progress_file, "w") as f:
+        json.dump(data, f, indent=4)
 
 # --- GAN Architecture: U-Net Generator ---
 class UNetBlock(nn.Module):
@@ -130,8 +157,19 @@ class Pix2PixTrajectoryDataset(Dataset):
         self.directory_A = pathlib.Path(root_directory) / "A" / subset
         self.directory_B = pathlib.Path(root_directory) / "B" / subset
         self.file_list = sorted([f.name for f in self.directory_A.glob("*.png")])
+        
+        # 🔍 Auto-Detect Dimension
+        if self.file_list:
+            with Image.open(self.directory_A / self.file_list[0]) as img:
+                self.orig_w, self.orig_h = img.size
+            self.target_w = ((self.orig_w + 31) // 32) * 32
+            self.target_h = ((self.orig_h + 31) // 32) * 32
+            print(f"📏 [DATASET] Auto-Detected: {self.orig_w}x{self.orig_h} | Scaling to: {self.target_w}x{self.target_h}")
+        else:
+            self.target_w, self.target_h = 512, 512
+
         self.transforms = transforms.Compose([
-            transforms.Resize((image_size, image_size), transforms.InterpolationMode.BICUBIC),
+            transforms.Resize((self.target_h, self.target_w), transforms.InterpolationMode.BICUBIC),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
@@ -145,12 +183,33 @@ class Pix2PixTrajectoryDataset(Dataset):
 # --- Main Training Loop ---
 def execute_training():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # 🕵️ Device Reporting
+    device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+    device_status = f"🚀 GPU: {device_name}" if device.type == "cuda" else "💻 CPU"
+    print(f"\n{'='*50}\n🛰️ [SYSTEM] Training on: {device_status}\n{'='*50}\n")
     print(f"🚀 [INIT] Device: {device} | Run: {config.run_name}")
 
     # Prepare Directories
     for d in [config.CHECKPOINT_DIR, config.LOG_DIR, config.SAMPLE_DIR]: d.mkdir(parents=True, exist_ok=True)
 
-    # Initialize Networks
+    # 📁 Save a copy of the finalized configuration for this specific run
+    run_config_path = config.CURRENT_RUN_DIR / "run_config_snapshot.json"
+    config_dict = {k: str(v) if isinstance(v, pathlib.Path) else v 
+                   for k, v in config.__class__.__dict__.items() if not k.startswith("__")}
+    with open(run_config_path, "w") as f:
+        json.dump(config_dict, f, indent=4)
+    print(f"📄 [CONFIG] Run snapshot saved to {run_config_path}")
+
+    # 💾 Also ARCHIVE the raw config_active.json in the run directory
+    raw_config_path = config.BASE_DIR / "config_active.json"
+    if raw_config_path.exists():
+        import shutil
+        shutil.copy(raw_config_path, config.CURRENT_RUN_DIR / "config_active.json")
+        print(f"💾 [ARCHIVE] config_active.json copied to {config.CURRENT_RUN_DIR}")
+    
+    # 🚀 Initial Progress (0%)
+    write_progress(-1, config.epochs, 0.0, 0.0)
+
     generator = GeneratorNetwork(config.input_channels, config.output_channels).to(device)
     discriminator = DiscriminatorNetwork(config.input_channels + config.output_channels).to(device)
 
@@ -159,121 +218,109 @@ def execute_training():
         print(f"🔄 [RESUME] Loading weights from {config.resume_checkpoint_path}")
         try:
             generator.load_state_dict(torch.load(config.resume_checkpoint_path, map_location=device))
-            # Note: Optional to load discriminator too if available
-            # discriminator.load_state_dict(...)
         except Exception as e: print(f"⚠️ [WARN] Could not load checkpoint: {e}")
 
-    # Optimizers (Separate Learning Rates)
+    # Optimizers
     generator_optimizer = optim.Adam(generator.parameters(), lr=config.generator_learning_rate, betas=(config.beta1, config.beta2))
     discriminator_optimizer = optim.Adam(discriminator.parameters(), lr=config.discriminator_learning_rate, betas=(config.beta1, config.beta2))
 
     # Loss Settings
-    adversarial_loss_criterion = nn.BCEWithLogitsLoss()
-    pixel_loss_criterion = nn.L1Loss()
+    gan_criterion = nn.BCEWithLogitsLoss()
+    mae_criterion = nn.L1Loss()
+    mse_criterion = nn.MSELoss()
     
     # Logs
     log_path = config.LOG_DIR / "training_history.csv"
     with open(log_path, "w") as f:
-        f.write("epoch,discriminator_loss,generator_adversarial_loss,generator_l1_loss,validation_l1_loss\n")
+        f.write("epoch,d_loss,g_adv,l1,val_l1\n")
 
     # Data
     train_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "train", config.image_size)
     val_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "validation", config.image_size)
-    test_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "test", config.image_size) # Add Test Dataset
+    test_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "test", config.image_size)
 
     train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=4)
-    test_loader = DataLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=4) # Add Test Loader
+    test_loader = DataLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=4)
 
-    print(f"📊 [DATA] Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
-
-    # Prepare Test Result Dir
     test_result_dir = config.CURRENT_RUN_DIR / "test_results"
     test_result_dir.mkdir(parents=True, exist_ok=True)
 
     best_val = float('inf')
+    global_step = 0
     for epoch in range(config.epochs):
         generator.train(); discriminator.train()
         epoch_metrics = {"d": 0.0, "g_adv": 0.0, "g_l1": 0.0}
         
-        pbar = tqdm(train_loader, leave=False)
+        pbar = tqdm(train_loader, leave=False, disable=not sys.stdout.isatty())
         for real_a, real_b in pbar:
+            global_step += 1
             real_a, real_b = real_a.to(device), real_b.to(device)
-
-            # --- Train Discriminator ---
             fake_b = generator(real_a)
-            pred_real = discriminator(real_a, real_b)
-            # Label Smoothing: use 0.9 for real instead of 1.0
-            real_target = torch.full_like(pred_real, 0.9) if config.use_label_smoothing else torch.ones_like(pred_real)
-            loss_d_real = adversarial_loss_criterion(pred_real, real_target)
-            
-            pred_fake = discriminator(real_a, fake_b.detach())
-            loss_d_fake = adversarial_loss_criterion(pred_fake, torch.zeros_like(pred_fake))
-            
-            loss_d = (loss_d_real + loss_d_fake) * 0.5
-            discriminator_optimizer.zero_grad(); loss_d.backward(); discriminator_optimizer.step()
+
+            # --- Train Discriminator (Conditional) ---
+            loss_d_val = 0
+            if global_step % config.d_train_freq == 0:
+                pred_real = discriminator(real_a, real_b)
+                label_real = torch.full_like(pred_real, 0.9) if config.use_label_smoothing else torch.ones_like(pred_real)
+                loss_d_real = gan_criterion(pred_real, label_real)
+                
+                pred_fake = discriminator(real_a, fake_b.detach())
+                loss_d_fake = gan_criterion(pred_fake, torch.zeros_like(pred_fake))
+                
+                loss_d = (loss_d_real + loss_d_fake) * 0.5
+                discriminator_optimizer.zero_grad(); loss_d.backward(); discriminator_optimizer.step()
+                loss_d_val = loss_d.item()
 
             # --- Train Generator ---
             pred_fake_g = discriminator(real_a, fake_b)
-            loss_g_adv = adversarial_loss_criterion(pred_fake_g, torch.ones_like(pred_fake_g))
-            loss_g_l1 = pixel_loss_criterion(fake_b, real_b)
+            loss_g_adv = gan_criterion(pred_fake_g, torch.ones_like(pred_fake_g))
+            loss_g_l1 = mae_criterion(fake_b, real_b)
             
             loss_g = loss_g_adv + (loss_g_l1 * config.l1_loss_weight)
             generator_optimizer.zero_grad(); loss_g.backward(); generator_optimizer.step()
 
-            epoch_metrics["d"] += loss_d.item(); epoch_metrics["g_adv"] += loss_g_adv.item(); epoch_metrics["g_l1"] += loss_g_l1.item()
-            pbar.set_description(f"Epoch {epoch}"); pbar.set_postfix(D=loss_d.item(), G=loss_g.item())
+            epoch_metrics["d"] += loss_d_val; epoch_metrics["g_adv"] += loss_g_adv.item(); epoch_metrics["g_l1"] += loss_g_l1.item()
+            pbar.set_description(f"E{epoch}"); pbar.set_postfix(D=loss_d_val, G=loss_g.item())
 
         # Validation
         generator.eval(); val_l1 = 0.0
         with torch.no_grad():
             for va, vb in val_loader:
                 va, vb = va.to(device), vb.to(device)
-                val_l1 += pixel_loss_criterion(generator(va), vb).item()
+                val_l1 += mae_criterion(generator(va), vb).item()
         
         avg_val = (val_l1 / len(val_loader)) * config.l1_loss_weight
-        # Log results with full names
         metrics = [epoch, epoch_metrics['d']/len(train_loader), epoch_metrics['g_adv']/len(train_loader), epoch_metrics['g_l1']/len(train_loader), avg_val]
-        with open(log_path, "a") as f:
-            f.write(",".join([f"{m:.6f}" if isinstance(m, float) else str(m) for m in metrics]) + "\n")
+        with open(log_path, "a") as f: f.write(",".join([f"{m:.6f}" if isinstance(m, float) else str(m) for m in metrics]) + "\n")
         
         print(f"✨ [EPOCH {epoch}] D_Loss: {metrics[1]:.4f} | Val L1: {avg_val:.4f}")
+        write_progress(epoch, config.epochs, metrics[1], avg_val)
 
         if avg_val < best_val:
             best_val = avg_val
             torch.save(generator.state_dict(), config.CHECKPOINT_DIR / "generator_best.pth")
             print(f"  🏆 New Best (Val L1: {best_val:.4f})")
 
-        if (epoch + 1) % 5 == 0:
+        if (epoch + 1) % 10 == 0:
             torch.save(generator.state_dict(), config.CHECKPOINT_DIR / f"generator_epoch_{epoch+1}.pth")
-            with torch.no_grad():
-                sample_a, sample_b = next(iter(val_loader))
-                res = generator(sample_a.to(device))[0].cpu().numpy().transpose(1, 2, 0)
-                img = ((res * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
-                Image.fromarray(img).save(config.SAMPLE_DIR / f"sample_epoch_{epoch+1}.png")
 
-    # --- Final Test Evaluation ---
-    print("\n--- Running Final Test Evaluation ---")
-    if (config.CHECKPOINT_DIR / "generator_best.pth").exists():
-        generator.load_state_dict(torch.load(config.CHECKPOINT_DIR / "generator_best.pth", map_location=device))
+    # --- Final Test Evaluation (Standalone Trigger) ---
+    print("\n--- Triggering Standalone Test Evaluation ---")
+    import subprocess
+    test_script = pathlib.Path(__file__).parent / "test_pix2pix_trajectoryLine.py"
+    subprocess.run([sys.executable, str(test_script), "--run_path", str(config.CURRENT_RUN_DIR)])
     
-    generator.eval()
-    test_l1_total = 0
-    with torch.no_grad():
-        for i, (test_a, test_b) in enumerate(test_loader):
-            test_a, test_b = test_a.to(device), test_b.to(device)
-            t_fake_b = generator(test_a)
-            test_l1_total += pixel_loss_criterion(t_fake_b, test_b).item()
-            
-            # Save a few test results
-            if i < 10:
-                res = (t_fake_b[0].cpu().numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255
-                img = res.clip(0, 255).astype(np.uint8)
-                Image.fromarray(img).save(test_result_dir / f"test_result_{i}.png")
-                
-    avg_test_l1 = (test_l1_total / len(test_loader)) * config.l1_loss_weight
-    print(f"✅ Final Test L1 Loss: {avg_test_l1:.4f}")
-    print(f"🏁 Trajectory Line Training Finished! Best Val L1: {best_val:.4f}")
+    print(f"🏁 Training Finished! Results in {config.CURRENT_RUN_DIR}")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default=None, help="Path to config_active.json")
+    args = parser.parse_args()
+    
+    if args.config:
+        # If relative path, join with script directory
+        cpath = args.config if os.path.isabs(args.config) else os.path.join(os.path.dirname(__file__), args.config)
+        load_config_from_json(cpath)
+        
     execute_training()

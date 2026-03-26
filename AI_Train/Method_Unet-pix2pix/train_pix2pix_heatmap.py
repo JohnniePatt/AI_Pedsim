@@ -117,7 +117,10 @@ class Pix2PixDataset(Dataset):
 # --- Training Script ---
 def train():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Training on: {device}")
+    # 🕵️ Device Reporting
+    device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+    device_status = f"🚀 GPU: {device_name}" if device.type == "cuda" else "💻 CPU"
+    print(f"\n{'='*50}\n🛰️ [SYSTEM] Training on: {device_status}\n{'='*50}\n")
 
     # Paths
     BASE_DIR = pathlib.Path(__file__).parent.resolve()
