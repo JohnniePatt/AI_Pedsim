@@ -29,6 +29,8 @@ class TrainingConfiguration:
     # 🌟 Streaming Settings
     files_per_chunk = 20      # Number of SQLite files to load into memory at once
     train_chunks_per_epoch = 10 # How many chunks to train on per epoch (keeps it fast)
+    frame_step = 1            # Skip frames to downsample (1 = all frames, 5 = 5fps)
+    predict_len = 1           # Number of frames to predict ahead (Multi-step)
     
     # Feature columns (calculated on-the-fly from SQLite)
     feature_cols = ["x_norm", "y_norm", "vx_norm", "vy_norm", "goal_dx_norm", "goal_dy_norm", "dist_to_exit_norm", "in_room", "in_corridor"]
@@ -67,7 +69,8 @@ load_config_from_json(config.BASE_DIR / "config_active.json")
 # --- Data Processing Helpers ---
 def load_json_polygons(filepath: Path) -> list:
     if not filepath.exists(): return []
-    with open(filepath, 'r') as f: data = json.load(f)
+    with open(filepath, 'r') as f:
+        data = json.load(f)
     return [Polygon(coords) for coords in data]
 
 def load_exit_polygon(csv_path: Path) -> Polygon:
@@ -82,19 +85,21 @@ def get_sqlite_data(sqlite_path: Path):
 
 # --- Optimized Data Structures ---
 class SequenceDataset(torch.utils.data.Dataset):
-    def __init__(self, agent_data_list, seq_len):
+    def __init__(self, agent_data_list, seq_len, predict_len):
         """
         agent_data_list: List of dicts, each containing 'features' (Nx9) and 'targets' (Nx2)
         """
         self.agent_data = agent_data_list
         self.seq_len = seq_len
+        self.predict_len = predict_len
         self.indices = []
         
         for a_idx, data in enumerate(self.agent_data):
             n_frames = len(data['features'])
-            if n_frames >= self.seq_len:
-                # Store (agent_index, start_frame_within_agent)
-                for start_f in range(n_frames - self.seq_len + 1):
+            # We need seq_len frames for input and predict_len more for targets
+            # Since target[i] depends on pos[i+1], we need total seq_len + predict_len frames.
+            if n_frames >= self.seq_len + self.predict_len:
+                for start_f in range(n_frames - self.seq_len - self.predict_len + 1):
                     self.indices.append((a_idx, start_f))
                     
     def __len__(self):
@@ -106,9 +111,13 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # Slice on the fly
         x = data['features'][start_f : start_f + self.seq_len]
-        y = data['targets'][start_f + self.seq_len - 1]
         
-        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+        # Targets: Slice predict_len steps starting from the end of the input sequence
+        # Target of first step is at start_f + seq_len - 1
+        y = data['targets'][start_f + self.seq_len - 1 : start_f + self.seq_len - 1 + self.predict_len]
+        y_flat = y.flatten() # Flatten list of [dx, dy] into [dx0, dy0, dx1, dy1, ...]
+        
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y_flat, dtype=torch.float32)
 
 def process_sqlite_to_raw_agents(sqlite_path: Path, csv_path: Path, room_polys, corridor_polys):
     """Processes SQLite into a list of dictionaries (one per agent) with full feature arrays."""
@@ -118,7 +127,13 @@ def process_sqlite_to_raw_agents(sqlite_path: Path, csv_path: Path, room_polys, 
         dw, dh = meta['xmax'] - meta['xmin'], meta['ymax'] - meta['ymin']
         diag = np.sqrt(dw**2 + dh**2)
         
-        # Velocity and Targets
+        # 🔻 Downsampling Per Agent (Efficient Vectorized Way)
+        if config.frame_step > 1:
+            # Filters every Nth frame within each agent group without dropping columns
+            mask = df.groupby('id').cumcount() % config.frame_step == 0
+            df = df[mask].copy()
+
+        # Velocity and Targets (Calculated on the downsampled timeline)
         df['vx'] = df.groupby('id')['pos_x'].diff().fillna(0)
         df['vy'] = df.groupby('id')['pos_y'].diff().fillna(0)
         df['target_dx'] = df.groupby('id')['pos_x'].shift(-1) - df['pos_x']
@@ -169,7 +184,7 @@ def load_sqlite_batch(file_list, room_polys, corridor_polys):
         all_agents.extend(agents)
     
     if not all_agents: return None
-    return SequenceDataset(all_agents, config.seq_len)
+    return SequenceDataset(all_agents, config.seq_len, config.predict_len)
 
 # --- Model ---
 class LSTM_Baseline(nn.Module):
@@ -195,11 +210,25 @@ def execute_training():
     train_files = sorted(list((config.DATASWARM_DIR / "train").glob("*.sqlite")))
     val_files = sorted(list((config.DATASWARM_DIR / "validation").glob("*.sqlite")))
     
-    model = LSTM_Baseline(len(config.feature_cols), int(config.hidden_size), int(config.num_layers), len(config.target_cols)).to(device)
+    # 🏗️ Model Setup
+    model = LSTM_Baseline(len(config.feature_cols), int(config.hidden_size), int(config.num_layers), len(config.target_cols) * int(config.predict_len))
+    
+    # 🔌 Loading Pretrained Checkpoint
+    if hasattr(config, "pretrained_checkpoint") and config.pretrained_checkpoint != "-" and os.path.exists(config.pretrained_checkpoint):
+        print(f"🔄 [RESUME] Loading weights from: {config.pretrained_checkpoint}")
+        model.load_state_dict(torch.load(config.pretrained_checkpoint, map_location="cpu"))
+
+    model = model.to(device)
+    
+    # 🔥 Multi-GPU Support
+    if torch.cuda.device_count() > 1:
+        print(f"🔥 Multi-GPU DETECTED: Distributing batch across {torch.cuda.device_count()} GPUs! 🔥")
+        model = nn.DataParallel(model)
+
     criterion = nn.MSELoss(); optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
     
     history_file = config.CURRENT_RUN_DIR / "training_history.csv"
-    history_data = []; best_loss = float('inf')
+    best_loss = float('inf')
 
     print(f"\n--- 🚀 Starting ON-THE-FLY SQLite Streaming ({config.epochs} Epochs) ---")
     
@@ -211,13 +240,11 @@ def execute_training():
         
         # 🚗 Batch Loop (Streaming from SQLite)
         for chunk_i in range(config.train_chunks_per_epoch):
-            # Select batch of files
             batch_files = []
             for _ in range(config.files_per_chunk):
                 if file_idx >= len(train_files):
                     random.shuffle(train_files); file_idx = 0
-                batch_files.append(train_files[file_idx])
-                file_idx += 1
+                batch_files.append(train_files[file_idx]); file_idx += 1
             
             print(f"  > [Epoch {epoch+1:02d} | Chunk {chunk_i+1:02d}] ⏳ Processing {len(batch_files)} SQLite files... ", end="", flush=True)
             train_dataset = load_sqlite_batch(batch_files, room_polys, corridor_polys)
@@ -242,9 +269,9 @@ def execute_training():
 
         avg_t_loss = epoch_t_loss / max(1, chunks_processed)
         
-        # 🔍 Validation (Use a consistent subset for validation to save time/memory)
+        # 🔍 Validation
         model.eval(); v_loss = 0.0
-        val_subset = val_files[:config.files_per_chunk] # Use first chunk of val files
+        val_subset = val_files[:config.files_per_chunk]
         val_dataset = load_sqlite_batch(val_subset, room_polys, corridor_polys)
         
         if val_dataset is not None:
@@ -254,13 +281,17 @@ def execute_training():
             v_loss /= len(val_loader)
             del val_dataset, val_loader; gc.collect()
         
+        # 💾 Immediate History Saving (Appending to CSV)
+        epoch_stats = {"epoch": epoch+1, "train_loss": avg_t_loss, "val_loss": v_loss}
         print(f"✨ Epoch {epoch+1:03d}: Train Loss {avg_t_loss:.6f} | Val Loss {v_loss:.6f}")
-        history_data.append({"epoch": epoch+1, "train_loss": avg_t_loss, "val_loss": v_loss})
-        pd.DataFrame(history_data).to_csv(history_file, index=False)
+        
+        pd.DataFrame([epoch_stats]).to_csv(history_file, mode='a', header=not os.path.exists(history_file), index=False)
 
         if v_loss < best_loss:
             best_loss = v_loss
-            torch.save(model.state_dict(), config.CHECKPOINT_DIR / "generator_best.pth")
+            # Save actual model (for DataParallel, we must save model.module or use standard saving)
+            save_obj = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+            torch.save(save_obj, config.CHECKPOINT_DIR / "generator_best.pth")
             print("   -> 🏆 New Best Model Saved!")
 
     print(f"✅ Training Complete. Best Val Loss: {best_loss:.6f}")
