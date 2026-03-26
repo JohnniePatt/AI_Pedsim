@@ -74,13 +74,38 @@ def load_exit_polygon(csv_path: Path) -> Polygon:
     df = pd.read_csv(csv_path); exit_row = df[df['type'] == 'exit_area']
     return load_wkt(exit_row.iloc[0]['area'])
 
-def get_sqlite_data(sqlite_path: Path):
-    conn = sqlite3.connect(sqlite_path)
-    df = pd.read_sql_query("SELECT frame, id, pos_x, pos_y FROM trajectory_data ORDER BY id, frame", conn)
-    meta = {k: float(conn.execute("SELECT value FROM metadata WHERE key = ?", (k,)).fetchone()[0]) for k in ['xmin', 'xmax', 'ymin', 'ymax']}
-    conn.close(); return df, meta
+# --- Optimized Data Structures ---
+class SequenceDataset(torch.utils.data.Dataset):
+    def __init__(self, agent_data_list, seq_len):
+        """
+        agent_data_list: List of dicts, each containing 'features' (Nx9) and 'targets' (Nx2)
+        """
+        self.agent_data = agent_data_list
+        self.seq_len = seq_len
+        self.indices = []
+        
+        for a_idx, data in enumerate(self.agent_data):
+            n_frames = len(data['features'])
+            if n_frames >= self.seq_len:
+                # Store (agent_index, start_frame_within_agent)
+                for start_f in range(n_frames - self.seq_len + 1):
+                    self.indices.append((a_idx, start_f))
+                    
+    def __len__(self):
+        return len(self.indices)
+        
+    def __getitem__(self, idx):
+        a_idx, start_f = self.indices[idx]
+        data = self.agent_data[a_idx]
+        
+        # Slice on the fly
+        x = data['features'][start_f : start_f + self.seq_len]
+        y = data['targets'][start_f + self.seq_len - 1]
+        
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
-def process_sqlite_to_sequences(sqlite_path: Path, csv_path: Path, room_polys, corridor_polys):
+def process_sqlite_to_raw_agents(sqlite_path: Path, csv_path: Path, room_polys, corridor_polys):
+    """Processes SQLite into a list of dictionaries (one per agent) with full feature arrays."""
     try:
         df, meta = get_sqlite_data(sqlite_path); exit_poly = load_exit_polygon(csv_path)
         exit_centroid = exit_poly.centroid
@@ -99,7 +124,7 @@ def process_sqlite_to_sequences(sqlite_path: Path, csv_path: Path, room_polys, c
         df['goal_dy'] = exit_centroid.y - df['pos_y']
         df['dist_to_exit'] = np.sqrt(df['goal_dx']**2 + df['goal_dy']**2)
         
-        # Room/Corridor check (Fast version)
+        # Room/Corridor check
         import matplotlib.path as mpltPath
         pts = df[['pos_x', 'pos_y']].values
         df['in_room'] = 0.0; df['in_corridor'] = 0.0
@@ -114,36 +139,31 @@ def process_sqlite_to_sequences(sqlite_path: Path, csv_path: Path, room_polys, c
         df['dist_to_exit_norm'] = df['dist_to_exit'] / diag
         df['target_dx_norm'] = df['target_dx']; df['target_dy_norm'] = df['target_dy']
         
-        # Sequence Generation
-        X_all, Y_all = [], []
+        # Result Construction
+        agent_list = []
         for agent_id, agent_data in df.groupby('id'):
-            if len(agent_data) < config.seq_len: continue
-            feat_np = agent_data[config.feature_cols].values
-            target_np = agent_data[config.target_cols].values
-            for i in range(len(agent_data) - config.seq_len + 1):
-                X_all.append(feat_np[i : i + config.seq_len])
-                Y_all.append(target_np[i + config.seq_len - 1])
-        return X_all, Y_all
+            agent_list.append({
+                'features': agent_data[config.feature_cols].values.astype(np.float32),
+                'targets': agent_data[config.target_cols].values.astype(np.float32)
+            })
+        return agent_list
     except Exception as e:
-        print(f"⚠️ Skip {sqlite_path.name}: {e}"); return [], []
+        print(f"⚠️ Skip {sqlite_path.name}: {e}"); return []
 
 def load_sqlite_batch(file_list, room_polys, corridor_polys):
-    csv_dir = config.SPAWN_EXIT_DIR / "train" # Assuming train for now, adjust as needed
-    X_final, Y_final = [], []
+    all_agents = []
     for f in file_list:
-        # Match seed logic
         try: seed = f.stem.split('_')[1]
         except: seed = "0"
         
-        # Determine subset (train/val/any) based on path
         subset = f.parent.name
         c_dir = config.SPAWN_EXIT_DIR / subset
         
-        x_s, y_s = process_sqlite_to_sequences(f, c_dir / f"spawn_exit_{seed}.csv", room_polys, corridor_polys)
-        X_final.extend(x_s); Y_final.extend(y_s)
+        agents = process_sqlite_to_raw_agents(f, c_dir / f"spawn_exit_{seed}.csv", room_polys, corridor_polys)
+        all_agents.extend(agents)
     
-    if not X_final: return None, None
-    return torch.tensor(np.array(X_final), dtype=torch.float32), torch.tensor(np.array(Y_final), dtype=torch.float32)
+    if not all_agents: return None
+    return SequenceDataset(all_agents, config.seq_len)
 
 # --- Model ---
 class LSTM_Baseline(nn.Module):
@@ -194,13 +214,12 @@ def execute_training():
                 file_idx += 1
             
             print(f"  > [Epoch {epoch+1:02d} | Chunk {chunk_i+1:02d}] ⏳ Processing {len(batch_files)} SQLite files... ", end="", flush=True)
-            X_train, Y_train = load_sqlite_batch(batch_files, room_polys, corridor_polys)
+            train_dataset = load_sqlite_batch(batch_files, room_polys, corridor_polys)
             
-            if X_train is None: print("⚠️ Empty chunk, skipping."); continue
-            print(f"✅ {len(X_train)} sequences.")
+            if train_dataset is None: print("⚠️ Empty chunk, skipping."); continue
+            print(f"✅ {len(train_dataset)} sequences.")
             
-            dataset = torch.utils.data.TensorDataset(X_train, Y_train)
-            loader = torch.utils.data.DataLoader(dataset, batch_size=int(config.batch_size), shuffle=True)
+            loader = torch.utils.data.DataLoader(train_dataset, batch_size=int(config.batch_size), shuffle=True)
             
             chunk_loss = 0.0
             pbar = tqdm(loader, desc=f"    ⚡ GPU Training  ", leave=False, colour="green")
@@ -213,21 +232,21 @@ def execute_training():
             chunks_processed += 1
             
             # 🧹 Explicitly Free Memory
-            del X_train, Y_train, dataset, loader; gc.collect(); torch.cuda.empty_cache()
+            del train_dataset, loader; gc.collect(); torch.cuda.empty_cache()
 
         avg_t_loss = epoch_t_loss / max(1, chunks_processed)
         
         # 🔍 Validation (Use a consistent subset for validation to save time/memory)
         model.eval(); v_loss = 0.0
         val_subset = val_files[:config.files_per_chunk] # Use first chunk of val files
-        X_val, Y_val = load_sqlite_batch(val_subset, room_polys, corridor_polys)
+        val_dataset = load_sqlite_batch(val_subset, room_polys, corridor_polys)
         
-        if X_val is not None:
-            val_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(X_val, Y_val), batch_size=int(config.batch_size), shuffle=False)
+        if val_dataset is not None:
+            val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=int(config.batch_size), shuffle=False)
             with torch.no_grad():
                 for bx, by in val_loader: v_loss += criterion(model(bx.to(device)), by.to(device)).item()
             v_loss /= len(val_loader)
-            del X_val, Y_val, val_loader; gc.collect()
+            del val_dataset, val_loader; gc.collect()
         
         print(f"✨ Epoch {epoch+1:03d}: Train Loss {avg_t_loss:.6f} | Val Loss {v_loss:.6f}")
         history_data.append({"epoch": epoch+1, "train_loss": avg_t_loss, "val_loss": v_loss})
