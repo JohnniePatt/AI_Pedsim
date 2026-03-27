@@ -17,24 +17,55 @@ class TestConfig:
     output_channels = 3
     l1_loss_weight = 10.0
     num_discriminators = 2
+    DATASET_ROOT = pathlib.Path(".")
     
-    def __init__(self, run_path=None):
+    def __init__(self, run_path=None, config_file=None):
+        # 1. Load from external config file (e.g. config_test.json)
+        if config_file:
+            cf_path = pathlib.Path(config_file)
+            if not cf_path.is_absolute():
+                cf_path = pathlib.Path(__file__).parent / config_file
+            if cf_path.exists():
+                with open(cf_path, "r") as f:
+                    data = json.load(f)
+                    for k, v in data.items(): 
+                        if k == "DATASET_ROOT": v = pathlib.Path(v)
+                        setattr(self, k, v)
+                print(f"📖 [CONFIG] Loaded test parameters from {cf_path}")
+
+        # 2. Overwrite with specific RUN snapshot (Architectural parameters)
         if run_path:
             self.CURRENT_RUN_DIR = pathlib.Path(run_path).resolve()
-            # Load from snapshot if exists
             snap = self.CURRENT_RUN_DIR / "run_config_snapshot.json"
             if snap.exists():
                 with open(snap, "r") as f:
                     data = json.load(f)
                     for k, v in data.items():
+                        if k == "DATASET_ROOT": v = pathlib.Path(v)
                         setattr(self, k, v)
-                # Re-fix paths as strings -> Path objects
+                # Re-fix paths
                 self.CURRENT_RUN_DIR = pathlib.Path(run_path).resolve()
-                self.DATASET_ROOT = pathlib.Path(data.get("DATASET_ROOT", ""))
+                if not hasattr(self, "DATASET_ROOT") or not self.DATASET_ROOT or str(self.DATASET_ROOT) == ".":
+                    if "DATASET_ROOT" in data: self.DATASET_ROOT = pathlib.Path(data["DATASET_ROOT"])
             
             self.CHECKPOINT_DIR = self.CURRENT_RUN_DIR / "checkpoints"
             self.TEST_RESULT_DIR = self.CURRENT_RUN_DIR / "test_results"
             self.TEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # 3. Final Validation & Fallback Search
+        if not (self.DATASET_ROOT / "A" / "test").exists():
+            # Try to auto-locate common project structure
+            project_root = pathlib.Path(__file__).parent.parent.parent
+            search_paths = [
+                project_root / "Model_scenario_case" / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1",
+                project_root / "Prepare_data" / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1",
+                project_root / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1"
+            ]
+            for sp in search_paths:
+                if (sp / "A" / "test").exists():
+                    self.DATASET_ROOT = sp
+                    print(f"🔦 [AUTO-DETECT] Dataset found at {sp}")
+                    break
 
 # --- Model & Dataset (Duplicated for standalone capability) ---
 class ResNetBlock(nn.Module):
@@ -110,28 +141,47 @@ class Pix2PixTrajectoryDataset(Dataset):
         
         return self.transforms(img_a), self.transforms(img_b), torch.tensor([orig_w, orig_h])
 
-def run_evaluation(run_path):
+def run_evaluation(run_path, config_file=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # 🕵️ Device Reporting
     device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
     device_status = f"🚀 GPU: {device_name}" if device.type == "cuda" else "💻 CPU"
     print(f"\n{'='*50}\n🛰️ [SYSTEM] HD Evaluation on: {device_status}\n{'='*50}\n")
-    config = TestConfig(run_path)
-    
+    config = TestConfig(run_path, config_file)
     print(f"🔍 [TEST] Evaluating Run: {config.CURRENT_RUN_DIR.name}")
     print(f"📂 [DATA] Dataset: {config.DATASET_ROOT}")
+    print(f"⚙️ [CONFIG] Params: Size={config.image_size}, In/Out={config.input_channels}/{config.output_channels}")
 
     # Load Model
     generator = GeneratorNetwork(int(config.input_channels), int(config.output_channels)).to(device)
     best_ckpt = config.CHECKPOINT_DIR / "generator_best.pth"
     if not best_ckpt.exists():
-        print(f"❌ [ERROR] No checkpoint found at {best_ckpt}")
+        # Try finding any checkpoint if generator_best.pth is not here
+        checkpoints = sorted(list(config.CHECKPOINT_DIR.glob("*.pth")))
+        if checkpoints:
+            best_ckpt = checkpoints[-1]
+            print(f"⚠️ [WARNING] generator_best.pth not found. Using latest: {best_ckpt.name}")
+        else:
+            print(f"❌ [ERROR] No checkpoint found at {config.CHECKPOINT_DIR}")
+            return
+            
+    try:
+        print(f"🔄 [MODEL] Loading weights from {best_ckpt.name}...")
+        generator.load_state_dict(torch.load(best_ckpt, map_location=device))
+        generator.eval()
+        print("✅ [MODEL] Model loaded successfully.")
+    except Exception as e:
+        print(f"❌ [ERROR] Failed to load model: {e}")
         return
-    generator.load_state_dict(torch.load(best_ckpt, map_location=device))
-    generator.eval()
 
     # Data
     test_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "test", int(config.image_size))
+    if len(test_ds) == 0:
+        abs_path = (config.DATASET_ROOT).resolve() / "A" / "test"
+        print(f"\n❌ [ERROR] No test images found in: {abs_path}")
+        print(f"💡 [ADVICE] Please update 'DATASET_ROOT' in config_test.json via the Dashboard's 'Testing model' page.")
+        return
+
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False)
 
     # Metrics
@@ -155,8 +205,6 @@ def run_evaluation(run_path):
                     # Resize back to EXACT original size of THIS specific image
                     img = Image.fromarray(arr).resize((int(ow), int(oh)), Image.BICUBIC)
                     return np.array(img)
-                res_a = denorm_and_finalize(ta[ ta.size(0) - 1 ]) # Last channel is fake/result sometimes, but here we indexing batch
-                # Actually ta[0] is the batch index
                 res_a = denorm_and_finalize(ta[0])
                 res_b = denorm_and_finalize(tb[0])
                 res_f = denorm_and_finalize(tfb[0])
@@ -165,6 +213,10 @@ def run_evaluation(run_path):
 
     # Scoring
     n_test = len(test_loader)
+    if n_test == 0:
+        print("❌ [ERROR] No images processed.")
+        return
+        
     mae_score = test_metrics["mae"] / n_test
     mse_score = test_metrics["mse"] / n_test
     rmse_score = np.sqrt(mse_score)
@@ -182,5 +234,6 @@ def run_evaluation(run_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_path", type=str, required=True, help="Path to the training run folder (e.g. runs/run_xxx)")
+    parser.add_argument("--config", type=str, default="config_test.json", help="Path to testing config (e.g. config_test.json)")
     args = parser.parse_args()
-    run_evaluation(args.run_path)
+    run_evaluation(args.run_path, args.config)

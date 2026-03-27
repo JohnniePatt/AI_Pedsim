@@ -62,23 +62,80 @@ def show_sample_images(sample_dir):
 
 def show_test_evaluation(run_dir):
     """
-    Displays the test evaluation summary CSV and the side-by-side test samples.
+    Displays the test evaluation summary and the side-by-side test samples with 3-column layout.
+    Strictly following mockup: RESULT TEST -> Header Row (MAE, MSE, ...) -> Divider -> Value Row -> Divider -> Header Labels -> Images.
     """
     run_path = pathlib.Path(run_dir)
-    score_path = run_path / "test_evaluation_summary.csv"
+    score_path = run_path / "test_results" / "test_evaluation_summary.csv"
+    if not score_path.exists(): score_path = run_path / "test_evaluation_summary.csv" # Fallback
+    
     test_results_dir = run_path / "test_results"
 
-    if score_path.exists():
-        st.subheader("📊 Final Test Scores")
-        df_score = pd.read_csv(score_path)
-        st.table(df_score)
+    st.write("### RESULT TEST")
 
+    # 1. Metrics Header & Values
+    if score_path.exists():
+        try:
+            df_score = pd.read_csv(score_path)
+            # Filter and pivot to get headers and values
+            m_data = df_score[df_score['metric'].str.contains('MAE|MSE|RMSE|L1|mse|mae', case=False, na=False)]
+            if not m_data.empty:
+                # Row 1: Metric Names
+                m_cols_h = st.columns(max(3, len(m_data)))
+                for idx, row in enumerate(m_data.itertuples()):
+                    if idx < len(m_cols_h):
+                        m_cols_h[idx].write(f"**{row.metric.upper()}**")
+                
+                st.divider() # Line 1
+                
+                # Row 2: Metric Values
+                m_cols_v = st.columns(max(3, len(m_data)))
+                for idx, row in enumerate(m_data.itertuples()):
+                    if idx < len(m_cols_v):
+                        m_cols_v[idx].write(f"{float(row.value):.6f}")
+                
+            else:
+                st.table(df_score)
+        except Exception as e:
+            st.error(f"Error loading scores: {e}")
+    
+    st.divider() # Line 2
+
+    # 2. Evaluation Samples (3 separate columns per row)
     if test_results_dir.exists():
-        st.subheader("🖼️ Test Evaluation Samples (Input | Target | Prediction)")
         images = sorted(list(test_results_dir.glob("*.png")), key=lambda x: x.name)
         if images:
-            cols_per_row = 1 # Test samples are wide (3 images side-by-side)
+            # Header Row for Labels
+            h_col1, h_col2, h_col3 = st.columns(3)
+            h_col1.markdown("<h5 style='text-align: center;'>INPUT</h5>", unsafe_allow_html=True)
+            h_col2.markdown("<h5 style='text-align: center;'>GROUND TRUTH</h5>", unsafe_allow_html=True)
+            h_col3.markdown("<h5 style='text-align: center;'>AI</h5>", unsafe_allow_html=True)
+            st.divider() # Line 3
+
             for img_path in images:
-                st.image(str(img_path), caption=img_path.name, use_container_width=True)
+                try:
+                    img = Image.open(str(img_path))
+                    w, h = img.size
+                    
+                    # Split logic: Assuming hstack [res_a, res_b, res_f]
+                    # Check if w is roughly 3x h to confirm it's an hstack
+                    if w >= (h * 2.5):
+                        unit_w = w // 3
+                        input_img = img.crop((0, 0, unit_w, h))
+                        gt_img = img.crop((unit_w, 0, unit_w * 2, h))
+                        ai_img = img.crop((unit_w * 2, 0, w, h))
+                        
+                        r_col1, r_col2, r_col3 = st.columns(3)
+                        r_col1.image(input_img, use_container_width=True)
+                        r_col2.image(gt_img, use_container_width=True)
+                        r_col3.image(ai_img, use_container_width=True)
+                        st.divider()
+                    else:
+                        st.image(img, caption=img_path.name, use_container_width=True)
+                        st.divider()
+                except Exception as e:
+                    st.error(f"Error loading {img_path.name}: {e}")
         else:
             st.info("No test evaluation samples found.")
+    else:
+        st.info("No test results directory found.")

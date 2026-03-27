@@ -212,12 +212,15 @@ def execute_training():
         json.dump(config_dict, f, indent=4)
     print(f"📄 [CONFIG] Run snapshot saved to {run_config_path}")
 
-    # 💾 Also ARCHIVE the raw config_active.json in the run directory
-    raw_config_path = config.BASE_DIR / "config_active.json"
+    # 💾 Also ARCHIVE the raw config_train.json (or config_active) in the run directory
+    raw_config_path = config.BASE_DIR / "config_train.json"
+    if not raw_config_path.exists():
+        raw_config_path = config.BASE_DIR / "config_active.json" # Fallback
+        
     if raw_config_path.exists():
         import shutil
-        shutil.copy(raw_config_path, config.CURRENT_RUN_DIR / "config_active.json")
-        print(f"💾 [ARCHIVE] config_active.json copied to {config.CURRENT_RUN_DIR}")
+        shutil.copy(raw_config_path, config.CURRENT_RUN_DIR / raw_config_path.name)
+        print(f"💾 [ARCHIVE] {raw_config_path.name} copied to {config.CURRENT_RUN_DIR}")
 
     # 🚀 Initial Progress (0%)
     write_progress(-1, config.epochs, 0.0, 0.0)
@@ -331,12 +334,20 @@ def execute_training():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=None, help="Path to config_active.json")
+    parser.add_argument("--config", type=str, default="config_train.json", help="Path to training config (e.g. config_train.json)")
     args = parser.parse_args()
     
-    if args.config:
-        # If relative path, join with script directory
-        cpath = args.config if os.path.isabs(args.config) else os.path.join(os.path.dirname(__file__), args.config)
+    # If explicitly provided or default exists, load it
+    script_dir = os.path.dirname(__file__)
+    # Support both command line path and local script folder path
+    cpath = args.config if os.path.isabs(args.config) else os.path.join(script_dir, args.config)
+    
+    if os.path.exists(cpath):
         load_config_from_json(cpath)
+    else:
+        # Fallback for older naming convention
+        fallback = os.path.join(script_dir, "config_active.json")
+        if os.path.exists(fallback):
+            load_config_from_json(fallback)
         
     execute_training()
