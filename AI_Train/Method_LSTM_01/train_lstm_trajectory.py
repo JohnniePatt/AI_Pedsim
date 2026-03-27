@@ -47,12 +47,16 @@ class TrainingConfiguration:
     run_name = f"run_LSTM_{timestamp}"
     RUNS_ROOT = BASE_DIR / "runs"
     CURRENT_RUN_DIR = RUNS_ROOT / run_name
+    
+    # Standardized Subdirectories
     CHECKPOINT_DIR = CURRENT_RUN_DIR / "checkpoints"
+    LOG_DIR = CURRENT_RUN_DIR / "logs"
+    SAMPLE_DIR = CURRENT_RUN_DIR / "samples"
+    TEST_RESULT_DIR = CURRENT_RUN_DIR / "test_results"
 
     def setup_directories(self):
-        self.RUNS_ROOT.mkdir(exist_ok=True)
-        self.CURRENT_RUN_DIR.mkdir(parents=True, exist_ok=True)
-        self.CHECKPOINT_DIR.mkdir(exist_ok=True)
+        for d in [self.RUNS_ROOT, self.CURRENT_RUN_DIR, self.CHECKPOINT_DIR, self.LOG_DIR, self.SAMPLE_DIR, self.TEST_RESULT_DIR]:
+            d.mkdir(parents=True, exist_ok=True)
 
 def load_config_from_json(json_path):
     if not os.path.exists(json_path): return
@@ -60,6 +64,34 @@ def load_config_from_json(json_path):
     for key, value in data.items():
         if hasattr(config, key): setattr(config, key, value)
     print(f"📂 [CONFIG] Loaded parameters from {json_path}")
+
+def write_progress(epoch, total_epochs, loss, val_loss):
+    progress_file = config.CURRENT_RUN_DIR / "progress.json"
+    data = {
+        "epoch": epoch + 1,
+        "total_epochs": total_epochs,
+        "percentage": round(((epoch + 1) / total_epochs) * 100, 2),
+        "loss": round(loss, 6),
+        "val_loss": round(val_loss, 6),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(progress_file, "w") as f:
+        json.dump(data, f, indent=4)
+
+def save_run_config_snapshot():
+    snapshot_path = config.CURRENT_RUN_DIR / "run_config_snapshot.json"
+    # Extract only class attributes, stringify Paths, ignore methods
+    config_dict = {k: str(v) if isinstance(v, Path) else v 
+                   for k, v in config.__class__.__dict__.items() 
+                   if not k.startswith("__") and not callable(v)}
+    # Also include the values from the instance in case they were updated
+    for k in config_dict.keys():
+        val = getattr(config, k)
+        config_dict[k] = str(val) if isinstance(val, Path) else val
+    
+    with open(snapshot_path, "w") as f:
+        json.dump(config_dict, f, indent=4)
+    print(f"📄 [CONFIG] Run snapshot saved to {snapshot_path}")
 
 # Initialize Config
 config = TrainingConfiguration()
@@ -199,9 +231,13 @@ def execute_training():
     device_status = f"🚀 GPU: {device_name}" if device.type == "cuda" else "💻 CPU"
     print(f"\n{'='*50}\n🛰️ [SYSTEM] Training on: {device_status}\n{'='*50}\n")
 
-    # 💾 Archive Config
+    # 💾 Archive Config & Save Snapshot
+    save_run_config_snapshot()
     orig_config = config.BASE_DIR / "config_active.json"
     if orig_config.exists(): shutil.copy(orig_config, config.CURRENT_RUN_DIR / "config_active.json")
+    
+    # 🚀 Initial Progress (0%)
+    write_progress(-1, int(config.epochs), 0.0, 0.0)
     
     # 📂 Preparation
     room_polys = load_json_polygons(config.GEO_DIR / "geo_room.json")
@@ -227,7 +263,7 @@ def execute_training():
 
     criterion = nn.MSELoss(); optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
     
-    history_file = config.CURRENT_RUN_DIR / "training_history.csv"
+    history_file = config.LOG_DIR / "training_history.csv"
     best_loss = float('inf')
 
     print(f"\n--- 🚀 Starting ON-THE-FLY SQLite Streaming ({config.epochs} Epochs) ---")
@@ -286,6 +322,7 @@ def execute_training():
         print(f"✨ Epoch {epoch+1:03d}: Train Loss {avg_t_loss:.6f} | Val Loss {v_loss:.6f}")
         
         pd.DataFrame([epoch_stats]).to_csv(history_file, mode='a', header=not os.path.exists(history_file), index=False)
+        write_progress(epoch, int(config.epochs), avg_t_loss, v_loss)
 
         if v_loss < best_loss:
             best_loss = v_loss

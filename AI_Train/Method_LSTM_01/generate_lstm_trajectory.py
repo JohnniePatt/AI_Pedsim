@@ -41,8 +41,20 @@ def get_sqlite_metadata(sqlite_path: Path):
 
 def run_product_show(run_path):
     run_dir = Path(run_path).resolve()
+    
+    # 📄 Load Configuration Snapshot for Consistency
+    params = {"hidden_size": 256, "num_layers": 3, "seq_len": 20, "predict_len": 1}
+    snap_path = run_dir / "run_config_snapshot.json"
+    if snap_path.exists():
+        with open(snap_path, "r") as f:
+            snap = json.load(f)
+            for k in params.keys():
+                if k in snap: params[k] = int(snap[k])
+        print(f"📖 [CONFIG] Loaded params from snapshot: {params}")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    gen_dir = run_dir.parent / f"gen_{timestamp}"
+    samples_dir = run_dir / "samples"
+    gen_dir = samples_dir / f"gen_{timestamp}"
     gen_dir.mkdir(parents=True, exist_ok=True)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -64,7 +76,7 @@ def run_product_show(run_path):
     model_path = run_dir / "checkpoints" / "generator_best.pth"
     if not model_path.exists(): model_path = run_dir / "best_lstm.pt"
     
-    model = LSTM_Baseline(9, 256, 3, 2).to(device) # Defaults, better read from snap
+    model = LSTM_Baseline(9, params["hidden_size"], params["num_layers"], 2 * params["predict_len"]).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
     
@@ -87,7 +99,7 @@ def run_product_show(run_path):
         conn.close()
         
         # 🚀 Step-by-Step AI Prediction (Simplified Vectorized)
-        all_seeds = [agt.iloc[:20] for _, agt in gt_df.groupby('id') if len(agt) >= 20]
+        all_seeds = [agt.iloc[:params["seq_len"]] for _, agt in gt_df.groupby('id') if len(agt) >= params["seq_len"]]
         if not all_seeds: continue
         
         num_agents = len(all_seeds)
@@ -95,7 +107,7 @@ def run_product_show(run_path):
         diag = np.sqrt(w**2 + h**2)
         
         # Current status
-        pos_history = np.array([s[['pos_x', 'pos_y']].values for s in all_seeds], dtype=np.float32) # (N, 20, 2)
+        pos_history = np.array([s[['pos_x', 'pos_y']].values for s in all_seeds], dtype=np.float32) # (N, seq_len, 2)
         agent_ids = [s['id'].iloc[0] for s in all_seeds]
         active_mask = np.ones(num_agents, dtype=bool)
         
@@ -105,8 +117,8 @@ def run_product_show(run_path):
             if not active_mask.any(): break
             
             # Feature extraction
-            hist_20 = pos_history[:, -20:, :]
-            cx, cy = hist_20[:, :, 0], hist_20[:, :, 1]
+            hist_n = pos_history[:, -params["seq_len"]:, :]
+            cx, cy = hist_n[:, :, 0], hist_n[:, :, 1]
             last_x, last_y = cx[:, -1], cy[:, -1]
             
             # Predict
@@ -117,7 +129,7 @@ def run_product_show(run_path):
             dist_norm = np.sqrt((exit_poly.centroid.x - cx)**2 + (exit_poly.centroid.y - cy)**2) / diag
             
             # Area checks (Simplified constant for show if moving fast)
-            in_r, in_c = np.ones((num_agents, 20)), np.zeros((num_agents, 20)) # Placeholder for speed
+            in_r, in_c = np.ones((num_agents, params["seq_len"])), np.zeros((num_agents, params["seq_len"])) # Placeholder for speed
             
             feats = np.stack([ (cx-meta['xmin'])/w, (cy-meta['ymin'])/h, vx, vy, gdx, gdy, dist_norm, in_r, in_c ], axis=-1)
             feat_tensor = torch.tensor(feats, dtype=torch.float32).to(device)

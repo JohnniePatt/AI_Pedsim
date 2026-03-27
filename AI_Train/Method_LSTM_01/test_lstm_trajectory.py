@@ -92,6 +92,8 @@ def run_evaluation(run_path):
     DATASWARM_TEST_DIR = TOPO_DIR / "dataswarm" / "test"
     SPAWN_EXIT_TEST_DIR = TOPO_DIR / "spawn_exit_area" / "test"
     GEO_DIR = TOPO_DIR / "geo"
+    TEST_RESULT_DIR = run_dir / "test_results"
+    TEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load Model
     params = {"hidden_size": 256, "num_layers": 3, "feat_n": 9, "target_n": 2, "seq_len": 20}
@@ -130,7 +132,7 @@ def run_evaluation(run_path):
         rmse = np.sqrt(mse)
 
     # Save Summary
-    score_path = run_dir / "test_evaluation_summary.csv"
+    score_path = TEST_RESULT_DIR / "test_evaluation_summary.csv"
     with open(score_path, "w") as f:
         f.write("metric,value\n")
         f.write(f"MAE (L1),{mae:.6f}\n")
