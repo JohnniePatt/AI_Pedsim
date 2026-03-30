@@ -36,7 +36,7 @@ def get_sqlite_data(sqlite_path: Path):
     meta = {k: float(conn.execute("SELECT value FROM metadata WHERE key = ?", (k,)).fetchone()[0]) for k in ['xmin', 'xmax', 'ymin', 'ymax']}
     conn.close(); return df, meta
 
-def process_sqlite_to_sequences(sqlite_path: Path, csv_path: Path, room_polys, corridor_polys, seq_len, feat_cols, target_cols):
+def process_sqlite_to_sequences(sqlite_path: Path, csv_path: Path, room_polys, corridor_polys, seq_len, predict_len, feat_cols, target_cols):
     try:
         df, meta = get_sqlite_data(sqlite_path); exit_poly = load_exit_polygon(csv_path)
         exit_centroid = exit_poly.centroid
@@ -68,12 +68,13 @@ def process_sqlite_to_sequences(sqlite_path: Path, csv_path: Path, room_polys, c
         
         X_all, Y_all = [], []
         for agent_id, agent_data in df.groupby('id'):
-            if len(agent_data) < seq_len: continue
+            if len(agent_data) < seq_len + predict_len: continue
             feat_np = agent_data[feat_cols].values
             target_np = agent_data[target_cols].values
-            for i in range(len(agent_data) - seq_len + 1):
+            for i in range(len(agent_data) - seq_len - predict_len + 1):
                 X_all.append(feat_np[i : i + seq_len])
-                Y_all.append(target_np[i + seq_len - 1])
+                # Target window: predict_len steps starting from i + seq_len - 1
+                Y_all.append(target_np[i + seq_len - 1 : i + seq_len - 1 + predict_len].flatten())
         return X_all, Y_all
     except Exception as e:
         print(f"⚠️ Skip {sqlite_path.name}: {e}"); return [], []
@@ -86,8 +87,9 @@ def run_evaluation(run_path):
     print(f"\n{'='*50}\n🛰️ [SYSTEM] Evaluation on: {device_status}\n{'='*50}\n")
     run_dir = Path(run_path).resolve()
     
-    # 📁 Static Paths relative to scripts
-    PROJECT_ROOT = run_dir.parent.parent.parent
+    # 📁 Static Paths relative to This Script's Location
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    PROJECT_ROOT = SCRIPT_DIR.parent.parent # AI_Pedsim
     TOPO_DIR = PROJECT_ROOT / "Topo_2"
     DATASWARM_TEST_DIR = TOPO_DIR / "dataswarm" / "test"
     SPAWN_EXIT_TEST_DIR = TOPO_DIR / "spawn_exit_area" / "test"
@@ -95,12 +97,23 @@ def run_evaluation(run_path):
     TEST_RESULT_DIR = run_dir / "test_results"
     TEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Load Model
-    params = {"hidden_size": 256, "num_layers": 3, "feat_n": 9, "target_n": 2, "seq_len": 20}
+    # 🔧 Load Configuration (Standardized)
+    params = {"hidden_size": 256, "num_layers": 3, "feat_n": 9, "target_n": 2, "seq_len": 20, "predict_len": 1}
+    config_p = run_dir / "config_active.json"
+    if not config_p.exists(): config_p = run_dir / "run_config_snapshot.json"
+    if config_p.exists():
+        with open(config_p, 'r') as f:
+            c_data = json.load(f)
+            # Map common keys and ensure integers
+            for k in ["hidden_size", "num_layers", "seq_len", "predict_len"]:
+                if k in c_data: params[k] = int(c_data[k])
+        print(f"📂 [CONFIG] Loaded dynamic parameters: {params}")
+
     feat_cols = ["x_norm", "y_norm", "vx_norm", "vy_norm", "goal_dx_norm", "goal_dy_norm", "dist_to_exit_norm", "in_room", "in_corridor"]
     target_cols = ["target_dx_norm", "target_dy_norm"]
 
-    model = LSTM_Baseline(params["feat_n"], params["hidden_size"], params["num_layers"], params["target_n"]).to(device)
+    output_dim = params["target_n"] * params["predict_len"]
+    model = LSTM_Baseline(params["feat_n"], params["hidden_size"], params["num_layers"], output_dim).to(device)
     ckpt = run_dir / "checkpoints" / "generator_best.pth"
     if not ckpt.exists(): ckpt = run_dir / "best_lstm.pt"
     if not ckpt.exists(): print(f"❌ No checkpoint at {ckpt}"); return
@@ -113,23 +126,43 @@ def run_evaluation(run_path):
     room_polys = load_json_polygons(GEO_DIR / "geo_room.json")
     corridor_polys = load_json_polygons(GEO_DIR / "geo_corridor.json")
     
-    X_test, Y_test = [], []
-    print(f"📂 [SQLITE] Loading TEST data from {len(files)} files...")
+    batch_size = 1024
+    total_mae, total_mse, total_samples = 0.0, 0.0, 0
+    l1_loss_fn = nn.L1Loss(reduction='sum')
+    mse_loss_fn = nn.MSELoss(reduction='sum')
+
+    print(f"📂 [SQLITE] Processing TEST data from {len(files)} files in batches...")
     for f in tqdm(files):
         seed = f.stem.split('_')[1]
         csv_f = SPAWN_EXIT_TEST_DIR / f"spawn_exit_{seed}.csv"
-        x_s, y_s = process_sqlite_to_sequences(f, csv_f, room_polys, corridor_polys, params["seq_len"], feat_cols, target_cols)
-        X_test.extend(x_s); Y_test.extend(y_s)
+        x_s, y_s = process_sqlite_to_sequences(f, csv_f, room_polys, corridor_polys, params["seq_len"], params["predict_len"], feat_cols, target_cols)
+        
+        if not x_s: continue
+        
+        X_np = np.array(x_s, dtype=np.float32)
+        Y_np = np.array(y_s, dtype=np.float32)
+        n_samples = len(X_np)
+        
+        for i in range(0, n_samples, batch_size):
+            end_idx = min(i + batch_size, n_samples)
+            X_batch = torch.tensor(X_np[i:end_idx]).to(device)
+            Y_batch = torch.tensor(Y_np[i:end_idx]).to(device)
+            
+            with torch.no_grad():
+                out = model(X_batch)
+                total_mae += l1_loss_fn(out, Y_batch).item()
+                total_mse += mse_loss_fn(out, Y_batch).item()
+                
+        total_samples += n_samples
 
-    if not X_test: print("❌ No test data found."); return
+    if total_samples == 0: 
+        print("❌ No test data found."); return
     
-    X_t, Y_t = torch.tensor(np.array(X_test), dtype=torch.float32).to(device), torch.tensor(np.array(Y_test), dtype=torch.float32).to(device)
-    
-    with torch.no_grad():
-        out = model(X_t)
-        mae = nn.L1Loss()(out, Y_t).item()
-        mse = nn.MSELoss()(out, Y_t).item()
-        rmse = np.sqrt(mse)
+    # Calculate exact averages (metrics divide by total elements across all valid batches)
+    total_elements = total_samples * output_dim
+    mae = total_mae / total_elements
+    mse = total_mse / total_elements
+    rmse = np.sqrt(mse)
 
     # Save Summary
     score_path = TEST_RESULT_DIR / "test_evaluation_summary.csv"
@@ -138,13 +171,26 @@ def run_evaluation(run_path):
         f.write(f"MAE (L1),{mae:.6f}\n")
         f.write(f"MSE,{mse:.6f}\n")
         f.write(f"RMSE,{rmse:.6f}\n")
-        f.write(f"Total Test Samples,{len(X_t)}\n")
+        f.write(f"Total Test Samples,{total_samples}\n")
 
     print(f"\n🏆 Results: MAE: {mae:.4f} | RMSE: {rmse:.4f}")
     print(f"✅ Saved to {score_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_path", type=str, required=True)
+    parser.add_argument("--run_path", type=str, required=True, help="Path to the training run directory.")
+    parser.add_argument("--config", type=str, default="config_test.json", help="Path to testing config (e.g. config_test.json)")
     args = parser.parse_args()
+    
+    # Optional: Load config if needed by script in the future
+    # script_dir = os.path.dirname(__file__)
+    # cpath = args.config if os.path.isabs(args.config) else os.path.join(script_dir, args.config)
+    
     run_evaluation(args.run_path)
+
+    # 🎬 Auto-launch Visual Trajectory Generation
+    script_dir = Path(__file__).resolve().parent
+    gen_script = script_dir / 'generate_lstm_trajectory.py'
+    if gen_script.exists():
+        print(f"\n🎬 Launching Visual Trajectory Generation for Dashboard...")
+        os.system(f"{sys.executable} {gen_script} --run_path {args.run_path}")

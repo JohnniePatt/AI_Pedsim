@@ -1,5 +1,5 @@
 # Data files
-*.sqlite
+*.sqlite*
 *.csv
 *.png
 
@@ -20,6 +20,7 @@ outputs/
 .DS_Store
 
 .pth
+.pt
 
 outputs*/
 run_*/

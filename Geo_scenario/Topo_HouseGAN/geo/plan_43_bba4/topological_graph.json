@@ -1,0 +1,55 @@
+{
+    "nodes": [
+        {
+            "id": 0,
+            "name": "Cor-0",
+            "type": "corridor"
+        },
+        {
+            "id": 1,
+            "name": "Room-0",
+            "type": "room"
+        },
+        {
+            "id": 2,
+            "name": "Room-1",
+            "type": "room"
+        },
+        {
+            "id": 3,
+            "name": "Room-2",
+            "type": "room"
+        },
+        {
+            "id": 4,
+            "name": "Room-3",
+            "type": "room"
+        }
+    ],
+    "edges": [
+        {
+            "from": 0,
+            "to": 1
+        },
+        {
+            "from": 1,
+            "to": 2
+        },
+        {
+            "from": 1,
+            "to": 3
+        },
+        {
+            "from": 3,
+            "to": 4
+        },
+        {
+            "from": 0,
+            "to": 3
+        },
+        {
+            "from": 0,
+            "to": 4
+        }
+    ]
+}

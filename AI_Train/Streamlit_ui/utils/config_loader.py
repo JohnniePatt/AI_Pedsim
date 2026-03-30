@@ -8,7 +8,7 @@ def get_available_methods(ai_train_dir):
     Returns a list of method names.
     """
     path = pathlib.Path(ai_train_dir)
-    methods = [d.name for d in path.iterdir() if d.is_dir() and d.name.startswith("Method_")]
+    methods = [d.name for d in path.iterdir() if d.is_dir() and (d.name.startswith("Method_") or d.name == "Generate_HouseGAN")]
     return sorted(methods)
 
 def get_method_config_path(method_path, config_type="train"):

@@ -7,7 +7,7 @@ import time
 # Import utilities
 from utils.config_loader import get_available_methods, load_config, save_config, get_method_runs
 from utils.executor import ProcessManager
-from utils.visualizer import plot_training_history, show_sample_images, show_test_evaluation
+from utils.visualizer import plot_training_history, show_sample_images, show_test_evaluation, show_housegan_results
 
 # Initialization
 st.set_page_config(page_title="AI Pedsim | Dashboard", page_icon="🚀", layout="wide")
@@ -95,6 +95,7 @@ st.sidebar.markdown("# 🚀 AI Pedsim")
 # 📁 Section: Workspace
 st.sidebar.markdown('<p class="sidebar-header">Workspace</p>', unsafe_allow_html=True)
 AI_TRAIN_DIR = pathlib.Path(__file__).parent.parent
+PROJECT_ROOT = AI_TRAIN_DIR.parent
 available_methods = get_available_methods(AI_TRAIN_DIR)
 
 if not available_methods:
@@ -108,11 +109,18 @@ st.sidebar.markdown(f"📍 Method: **{selected_method}**")
 
 # ⚙️ Section: Pipeline
 st.sidebar.markdown('<p class="sidebar-header">Training Pipeline</p>', unsafe_allow_html=True)
-navigation = st.sidebar.radio(
-    "Pipeline",
-    ["🚀 Training model", "🔬 Testing model", "📈 View results"],
-    label_visibility="collapsed"
-)
+if selected_method == "Generate_HouseGAN":
+    navigation = st.sidebar.radio(
+        "Pipeline",
+        ["🏠 Design Floor Plan", "📈 View Generated AI Layouts", "🏃 Run Pedsim (Architecture)"],
+        label_visibility="collapsed"
+    )
+else:
+    navigation = st.sidebar.radio(
+        "Pipeline",
+        ["🚀 Training model", "🔬 Testing model", "📈 View results"],
+        label_visibility="collapsed"
+    )
 
 st.sidebar.divider()
 st.sidebar.caption("v1.2.5 | JohnniePatt build")
@@ -265,3 +273,217 @@ elif navigation == "📈 View results":
             show_sample_images(run_full_path / "samples")
         with t3:
             show_test_evaluation(run_full_path)
+
+# --- PAGE: HouseGAN Design Floor Plan ---
+elif navigation == "🏠 Design Floor Plan":
+    st.header("🏠 AI Topology Generator (HouseGAN)")
+    st.markdown("Automated generation of diverse topologies using HouseGAN, including dynamic room connection parsing and door carving.")
+    
+    # 1. Configs
+    st.subheader("🛠 Generation Settings")
+    
+    c1, c2, c3, c4, c5 = st.columns(5)
+    num_scenarios = c1.number_input("Total Topologies", min_value=1, max_value=100, value=5)
+    num_corridors = c2.number_input("No. Corridors", min_value=1, max_value=10, value=1)
+    random_seed = c3.number_input("Base Seed", min_value=0, max_value=999999, value=42)
+    door_width = c4.slider("Door Width (m)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+    complexity = c5.selectbox("Graph Complexity", ["Low (3-5 Rooms)", "Medium (5-8 Rooms)", "High (8-15 Rooms)"], index=1)
+    
+    config_dict = {
+        "num_scenarios": num_scenarios,
+        "num_corridors": num_corridors,
+        "random_seed": random_seed,
+        "door_width": door_width,
+        "complexity": complexity
+    }
+    
+    st.divider()
+    
+    # 2. Execution
+    gen_script_path = method_path / "generate_layout.py"
+    if not gen_script_path.exists():
+        st.warning("HouseGAN Generator script not found yet.")
+    else:
+        st.subheader("🏃 Execute Generation")
+        with st.expander("Show current config", expanded=False):
+            st.json(config_dict)
+            
+        config_file = method_path / "config_housegan.json"
+        
+        if st.button("✨ Auto-Generate New Topologies", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+            # Save config for the script to use
+            with open(config_file, "w") as f:
+                json.dump(config_dict, f, indent=4)
+                
+            python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+            if not python_path.exists(): python_path = "python3"
+            
+            command = [str(python_path), str(gen_script_path), "--config", "config_housegan.json"]
+            st.session_state.process_manager.start_process(command, str(method_path))
+            st.rerun()
+
+        # Monitoring Loop
+        if st.session_state.process_manager.is_running:
+            st.info("⌛ AI is actively generating floor plans and carving doors...")
+            log_container = st.empty()
+            if "gen_logs" not in st.session_state: st.session_state.gen_logs = ""
+            new_output = "".join(list(st.session_state.process_manager.get_output()))
+            if new_output: st.session_state.gen_logs += new_output
+            log_container.code(st.session_state.gen_logs)
+            time.sleep(1); st.rerun()
+        else:
+            if "gen_logs" in st.session_state and st.session_state.gen_logs:
+                st.subheader("Generator Output")
+                st.code(st.session_state.gen_logs)
+                if st.button("🧹 Clear Logs"): st.session_state.gen_logs = ""; st.rerun()
+
+# --- PAGE: HouseGAN View Generated ---
+elif navigation == "📈 View Generated AI Layouts":
+    st.header("📈 Generated AI Topologies")
+    
+    runs_dir = PROJECT_ROOT / "Geo_scenario" / "Topo_HouseGAN" / "geo"
+    if not runs_dir.exists():
+        st.info("No generated layouts found in Geo_scenario/Topo_HouseGAN.")
+    else:
+        tab1, tab2 = st.tabs(["🖼️ Grid Overview (All Runs)", "🔍 Detailed Run Inspector"])
+        
+        with tab1:
+            # Show Grid Overview
+            show_housegan_results(runs_dir)
+        
+        with tab2:
+            # Detailed Inspector
+            available_runs = sorted([d.name for d in runs_dir.iterdir() if d.is_dir() and d.name.startswith("plan_")], reverse=True)
+            if available_runs:
+                st.subheader("🔍 Detailed Run Inspector")
+                selected_run = st.selectbox("Select Generation Run to Inspect", available_runs)
+                run_full_path = runs_dir / selected_run
+                
+                # Preview + JSON inspect
+                st.markdown("### 🗺️ Visualization Preview")
+                img_path = run_full_path / "preview.png"
+                graph_path = run_full_path / "preview_graph.png"
+                
+                p_col1, p_col2 = st.columns(2)
+                if graph_path.exists():
+                    p_col1.image(str(graph_path), caption="Topological Graph (Logic)", use_container_width=True)
+                if img_path.exists():
+                    p_col2.image(str(img_path), caption="Physical Layout (Space)", use_container_width=True)
+                
+                # Show Seed Metadata
+                meta_path = run_full_path / "metadata.json"
+                if meta_path.exists():
+                    with open(meta_path, "r") as f: meta = json.load(f)
+                    st.info(f"🧬 Generation Seed: **{meta.get('seed', 'N/A')}** | 🚪 Rooms: **{meta.get('rooms', 0)}**")
+                    
+                st.markdown("### 🗃️ Generated Assets (For Pedsim & Research)")
+                c1, c2, c3 = st.columns(3)
+                room_json = run_full_path / "geo_room.json"
+                corridor_json = run_full_path / "geo_corridor.json"
+                graph_json = run_full_path / "topological_graph.json"
+                
+                if room_json.exists():
+                    with c1.expander(f"📄 {room_json.name}"):
+                        try:
+                            with open(room_json, "r") as f: d = json.load(f)
+                            st.json(d)
+                        except: pass
+                if corridor_json.exists():
+                    with c2.expander(f"📄 {corridor_json.name}"):
+                        try:
+                            with open(corridor_json, "r") as f: d = json.load(f)
+                            st.json(d)
+                        except: pass
+                if graph_json.exists():
+                    with c3.expander("📄 topological_graph.json"):
+                        try:
+                            with open(graph_json, "r") as f: d = json.load(f)
+                            st.json(d)
+                        except: pass
+
+# --- PAGE: Run Pedsim (Architecture) ---
+elif navigation == "🏃 Run Pedsim (Architecture)":
+    st.header("🏃 Pedestrian Simulation (Architecture Plan)")
+    st.markdown("Run Jupedsim simulation on generated HouseGAN layouts with realistic wall obstacles and carved doors.")
+    
+    # 1. Selection of Plan
+    runs_dir = PROJECT_ROOT / "Geo_scenario" / "Topo_HouseGAN" / "geo"
+    if not runs_dir.exists():
+        st.info("No generated layouts found in Geo_scenario/Topo_HouseGAN/geo.")
+    else:
+        available_plans = sorted([d.name for d in runs_dir.iterdir() if d.is_dir() and d.name.startswith("plan_")], reverse=True)
+        if not available_plans:
+            st.info("No architecture plans found yet.")
+        else:
+            # 2. Config UI
+            st.subheader("🛠 Simulation Settings")
+            c1, c2, c3, c4 = st.columns(4)
+            selected_plan = c1.selectbox("Select Architecture Plan", available_plans)
+            num_agents = c2.number_input("Agents", min_value=1, max_value=200, value=50)
+            sim_seed = c3.number_input("Seed", min_value=0, max_value=999, value=42)
+            grid_size = c4.number_input("Heatmap Grid", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
+            
+            view_options = st.multiselect("View Options", ["Trajectory", "Density Heatmap", "Speed Heatmap"], default=["Trajectory", "Density Heatmap", "Speed Heatmap"])
+            st.divider()
+            
+            # --- PREVIEW SECTION ---
+            from utils.visualizer import preview_walkable_area
+            if st.button("🔍 Preview Walkable Area & Walls", use_container_width=True):
+                with st.spinner("Generating Geometric Preview..."):
+                    preview_walkable_area(runs_dir / selected_plan)
+
+            st.divider()
+
+            # 3. Execute
+            prepare_script = PROJECT_ROOT / "Prepare_data" / "Architecture_housePlan" / "bottleneck_archhouseplan.py"
+            
+            cb1, cb2 = st.columns(2)
+            
+            if cb1.button("🚀 Start New Simulation", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+                python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                if not python_path.exists(): python_path = "python3"
+                
+                command = [
+                    str(python_path), str(prepare_script), 
+                    "--plan", selected_plan,
+                    "--agents", str(num_agents),
+                    "--seed", str(sim_seed),
+                    "--grid", str(grid_size)
+                ]
+                st.session_state.process_manager.start_process(command, str(prepare_script.parent))
+                st.rerun()
+
+            if cb2.button("🎨 Regenerate Previews (Grid Update)", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+                python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                if not python_path.exists(): python_path = "python3"
+                
+                command = [
+                    str(python_path), str(prepare_script), 
+                    "--plan", selected_plan,
+                    "--agents", str(num_agents),
+                    "--seed", str(sim_seed),
+                    "--grid", str(grid_size),
+                    "--preview"
+                ]
+                st.session_state.process_manager.start_process(command, str(prepare_script.parent))
+                st.rerun()
+
+            # Monitoring
+            if st.session_state.process_manager.is_running:
+                st.info(f"🔥 Simulating Pedestrians on `{selected_plan}`...")
+                log_container = st.empty()
+                if "sim_arch_logs" not in st.session_state: st.session_state.sim_arch_logs = ""
+                new_output = "".join(list(st.session_state.process_manager.get_output()))
+                if new_output: st.session_state.sim_arch_logs += new_output
+                log_container.code(st.session_state.sim_arch_logs)
+                time.sleep(1); st.rerun()
+            else:
+                if "sim_arch_logs" in st.session_state and st.session_state.sim_arch_logs:
+                    st.subheader("Simulation Console Output")
+                    st.code(st.session_state.sim_arch_logs)
+                    if st.button("🧹 Clear Logs"): st.session_state.sim_arch_logs = ""; st.rerun()
+                
+                # Show results if exist
+                output_base = PROJECT_ROOT / "Prepare_data" / "Architecture_housePlan" / "outputs" / selected_plan
+                from utils.visualizer import show_pedsim_arch_results
+                show_pedsim_arch_results(output_base, options=view_options)

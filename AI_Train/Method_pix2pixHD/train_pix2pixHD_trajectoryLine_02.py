@@ -18,20 +18,21 @@ import json
 # ==========================================
 class TrainingConfiguration:
     # 1. Hyperparameters
-    generator_learning_rate = 0.0002
+    generator_learning_rate = 0.0001
     discriminator_learning_rate = 0.0001
-    beta1 = 0.5
-    beta2 = 0.999
+    beta1 = 0.0
+    beta2 = 0.9
     batch_size = 2 # Pix2PixHD is memory heavy, start small
     epochs = 100
     
     # 2. Loss Weights (HD specific)
     l1_loss_weight = 10.0 # Standard L1
     feature_matching_weight = 10.0 # Help stabilize HD details
+    lambda_gp = 10.0 # Gradient Penalty weight
     
     # 3. GAN Options
     num_discriminators = 2 
-    use_label_smoothing = True
+    use_label_smoothing = False # Not needed for WGAN
     d_train_freq = 1 # Train D every N steps (default 1)
     
     # 4. Resume
@@ -163,6 +164,35 @@ class DiscriminatorNetwork(nn.Module):
             if i < self.scales - 1: x = self.downsample(x)
         return outputs
 
+def compute_gradient_penalty(critic, real_samples, fake_samples, device):
+    """Calculates the gradient penalty loss for WGAN GP"""
+    # Random weight term for interpolation between real and fake samples
+    alpha = torch.rand((real_samples.size(0), 1, 1, 1), device=device)
+    # Get random interpolation between real and fake samples
+    interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
+    
+    d_interpolates = critic(interpolates)
+    
+    fake = torch.ones(d_interpolates[0][-1].shape, device=device, requires_grad=False)
+    
+    # Get gradient w.r.t. interpolates (for the first scale of multi-scale discriminator)
+    # WGAN-GP usually applies to one scale or sum of scales? 
+    # Usually applied to the main scale or all. Applying to all for multi-scale.
+    gp = 0
+    for i in range(len(d_interpolates)):
+        gradients = torch.autograd.grad(
+            outputs=d_interpolates[i][-1],
+            inputs=interpolates,
+            grad_outputs=torch.ones_like(d_interpolates[i][-1]),
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        gradients = gradients.view(gradients.size(0), -1)
+        gp += ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+    
+    return gp / len(d_interpolates)
+
 # --- Dataset and Training ---
 class Pix2PixTrajectoryDataset(Dataset):
     def __init__(self, root_directory, subset="train", image_size=512):
@@ -240,7 +270,8 @@ def execute_training():
     with open(log_hist_path, "w") as f:
         f.write("epoch,d_loss,g_adv,fm,l1,val_l1\n")
 
-    gan_loss_criterion = nn.BCEWithLogitsLoss()
+    # WGAN-GP replaces BCE with mean-loss
+    # gan_loss_criterion = nn.BCEWithLogitsLoss() 
     pixel_loss_criterion = nn.L1Loss()
     mse_criterion = nn.MSELoss()
     fm_loss_criterion = nn.L1Loss() # Feature Matching uses L1
@@ -267,20 +298,25 @@ def execute_training():
             joint_real = torch.cat([real_a, real_b], 1)
             joint_fake = torch.cat([real_a, fake_b.detach()], 1)
             
-            # --- Train Discriminator (Conditional) ---
+            # --- Train Critic (Discriminator) ---
             loss_d_val = 0
             if global_step % config.d_train_freq == 0:
                 discriminator_optimizer.zero_grad()
+                
+                real_outputs = discriminator(joint_real)
+                fake_outputs = discriminator(joint_fake)
+                
                 loss_d = 0
-                
-                real_outputs = discriminator(joint_real); fake_outputs = discriminator(joint_fake)
                 for i in range(config.num_discriminators):
-                    r_pred = real_outputs[i][-1]; f_pred = fake_outputs[i][-1]
-                    r_target = torch.full_like(r_pred, 0.9) if config.use_label_smoothing else torch.ones_like(r_pred)
-                    loss_d += (gan_loss_criterion(r_pred, r_target) + gan_loss_criterion(f_pred, torch.zeros_like(f_pred))) * 0.5
+                    # WGAN Loss: mean(Critic(Fake)) - mean(Critic(Real))
+                    loss_d += (fake_outputs[i][-1].mean() - real_outputs[i][-1].mean())
                 
-                loss_d.backward(); discriminator_optimizer.step()
-                loss_d_val = loss_d.item()
+                # Add Gradient Penalty
+                gp = compute_gradient_penalty(discriminator, joint_real, joint_fake, device)
+                loss_total_d = loss_d + config.lambda_gp * gp
+                
+                loss_total_d.backward(); discriminator_optimizer.step()
+                loss_d_val = loss_total_d.item()
 
             # --- Train Generator ---
             generator_optimizer.zero_grad()
@@ -289,8 +325,8 @@ def execute_training():
             
             loss_g_adv = 0; loss_fm = 0
             for i in range(config.num_discriminators):
-                # GAN Loss
-                loss_g_adv += gan_loss_criterion(fake_outputs_g[i][-1], torch.ones_like(fake_outputs_g[i][-1]))
+                # WGAN Adversarial Loss for Generator: -mean(Critic(Fake))
+                loss_g_adv += -fake_outputs_g[i][-1].mean()
                 # Feature Matching Loss (compare layers 0 to N-1)
                 for j in range(len(fake_outputs_g[i]) - 1):
                     loss_fm += fm_loss_criterion(fake_outputs_g[i][j], real_outputs_g[i][j].detach())

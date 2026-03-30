@@ -44,17 +44,18 @@ def run_product_show(run_path):
     
     # 📄 Load Configuration Snapshot for Consistency
     params = {"hidden_size": 256, "num_layers": 3, "seq_len": 20, "predict_len": 1}
-    snap_path = run_dir / "run_config_snapshot.json"
-    if snap_path.exists():
-        with open(snap_path, "r") as f:
+    config_p = run_dir / "config_active.json"
+    if not config_p.exists(): config_p = run_dir / "run_config_snapshot.json"
+    if config_p.exists():
+        with open(config_p, "r") as f:
             snap = json.load(f)
-            for k in params.keys():
+            for k in ["hidden_size", "num_layers", "seq_len", "predict_len"]:
                 if k in snap: params[k] = int(snap[k])
         print(f"📖 [CONFIG] Loaded params from snapshot: {params}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    samples_dir = run_dir / "samples"
-    gen_dir = samples_dir / f"gen_{timestamp}"
+    # New Standardized Output Path
+    gen_dir = run_dir / "test_results" / "trajectories"
     gen_dir.mkdir(parents=True, exist_ok=True)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -63,8 +64,9 @@ def run_product_show(run_path):
     device_status = f"🚀 GPU: {device_name}" if device.type == "cuda" else "💻 CPU"
     print(f"\n{'='*50}\n🛰️ [SYSTEM] Generation on: {device_status}\n{'='*50}\n")
     
-    # 📁 Static Paths relative to scripts
-    PROJECT_ROOT = run_dir.parent.parent.parent
+    # 📁 Static Paths relative to This Script's Location
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    PROJECT_ROOT = SCRIPT_DIR.parent.parent # AI_Pedsim
     TOPO_DIR = PROJECT_ROOT / "Topo_2"
     DATASWARM_TEST_DIR = TOPO_DIR / "dataswarm" / "test"
     SPAWN_EXIT_TEST_DIR = TOPO_DIR / "spawn_exit_area" / "test"
@@ -134,11 +136,13 @@ def run_product_show(run_path):
             feats = np.stack([ (cx-meta['xmin'])/w, (cy-meta['ymin'])/h, vx, vy, gdx, gdy, dist_norm, in_r, in_c ], axis=-1)
             feat_tensor = torch.tensor(feats, dtype=torch.float32).to(device)
             
+            # Predict - Output indices [0, 1] represent dx, dy of first step in predict window
             with torch.no_grad():
                 preds = model(feat_tensor).cpu().numpy()
             
-            next_x = last_x + preds[:, 0]
-            next_y = last_y + preds[:, 1]
+            dx, dy = preds[:, 0], preds[:, 1]
+            next_x = last_x + dx
+            next_y = last_y + dy
             
             new_pos = np.stack([next_x, next_y], axis=-1)[:, np.newaxis, :]
             pos_history = np.concatenate([pos_history, new_pos], axis=1)
@@ -164,9 +168,11 @@ def run_product_show(run_path):
         
         # AI Predicted (Solid Orange)
         for i in range(num_agents):
-            ax.plot(pos_history[i, :, 0], pos_history[i, :, 1], color='#ff7f0e', alpha=0.7, linewidth=0.8)
+            ax.plot(pos_history[i, :, 0], pos_history[i, :, 1], color='#ff7f0e', alpha=0.8, linewidth=1.5)
+            # Add a small dot to mark start point
+            ax.scatter(pos_history[i, 0, 0], pos_history[i, 0, 1], color='green', s=10, zorder=5)
             
-        ax.set_aspect('equal'); ax.set_title(f"AI Product Show: Seed {seed_id}"); ax.axis('off')
+        ax.set_aspect('equal'); ax.set_title(f"Trajectory Product Show: Seed {seed_id}\n(Blue=Reality, Orange=AI Recursive)"); ax.axis('off')
         plt.tight_layout()
         plt.savefig(gen_dir / f"product_show_{seed_id}.png", dpi=200)
         plt.close(fig)

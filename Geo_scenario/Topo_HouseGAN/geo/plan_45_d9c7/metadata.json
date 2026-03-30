@@ -1,0 +1,12 @@
+{
+    "seed": 45,
+    "params": {
+        "num_scenarios": 5,
+        "num_corridors": 2,
+        "random_seed": 42,
+        "door_width": 1.5,
+        "complexity": "Medium (5-8 Rooms)"
+    },
+    "rooms": 7,
+    "corridors": 2
+}

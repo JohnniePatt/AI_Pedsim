@@ -20,42 +20,100 @@ class TestConfig:
     DATASET_ROOT = pathlib.Path(".")
     
     def __init__(self, run_path=None, config_file=None):
+        self.SCRIPT_DIR = pathlib.Path(__file__).parent.resolve()
+        self.CHECKPOINT_DIR = None
+        
         # 1. Load from external config file (e.g. config_test.json)
         if config_file:
             cf_path = pathlib.Path(config_file)
-            if not cf_path.is_absolute():
-                cf_path = pathlib.Path(__file__).parent / config_file
-            if cf_path.exists():
+            if not cf_path.is_absolute() and not cf_path.exists():
+                cf_path = self.SCRIPT_DIR / config_file
+            if cf_path.exists() and cf_path.is_file():
                 with open(cf_path, "r") as f:
                     data = json.load(f)
                     for k, v in data.items(): 
                         if k == "DATASET_ROOT": v = pathlib.Path(v)
+                        if k == "checkpoints": self.CHECKPOINT_DIR = pathlib.Path(v)
                         setattr(self, k, v)
                 print(f"📖 [CONFIG] Loaded test parameters from {cf_path}")
 
         # 2. Overwrite with specific RUN snapshot (Architectural parameters)
+        # Handle the case where run_path is not provided or is invalid
+        detected_run = None
         if run_path:
-            self.CURRENT_RUN_DIR = pathlib.Path(run_path).resolve()
+            rp = pathlib.Path(run_path)
+            if not rp.is_absolute() and not rp.exists():
+                rp = self.SCRIPT_DIR / run_path
+            
+            # Use RP if it's a directory AND has checkpoints, OR if it has .pth files directly
+            if rp.exists() and rp.is_dir():
+                has_ckpt_folder = (rp / "checkpoints").exists()
+                has_pth_files = len(list(rp.glob("*.pth"))) > 0
+                if has_ckpt_folder or has_pth_files:
+                    detected_run = rp.resolve()
+                else:
+                    print(f"⚠️ [WARNING] '{rp.name}' exists but doesn't look like a valid run folder (no checkpoints found).")
+            elif rp.exists() and rp.is_file():
+                 if rp.suffix == ".pth":
+                     self.CHECKPOINT_DIR = rp.resolve()
+                     detected_run = rp.parent.resolve()
+                     print(f"🎯 [DIRECT] Using specific checkpoint file: {rp.name}")
+                 else:
+                     print(f"⚠️ [WARNING] '--run_path' points to a file ({rp.name}). Searching for actual run folders instead...")
+        
+        if not detected_run and not self.CHECKPOINT_DIR:
+            # Try to auto-locate the latest run in common locations
+            search_roots = [self.SCRIPT_DIR / "runs_trajectory", self.SCRIPT_DIR / "runs"]
+            all_runs = []
+            for root in search_roots:
+                if root.exists():
+                    all_runs.extend([d for d in root.iterdir() if d.is_dir()])
+            
+            if all_runs:
+                # Sort by name (timestamped) to get the latest
+                all_runs.sort(key=lambda x: x.name, reverse=True)
+                detected_run = all_runs[0]
+                print(f"🔦 [AUTO-DETECT] Using latest run folder: {detected_run}")
+            else:
+                # Last resort: check if the script directory itself looks like a run folder
+                if (self.SCRIPT_DIR / "checkpoints").exists():
+                    detected_run = self.SCRIPT_DIR
+                    print(f"🔦 [AUTO-DETECT] Using current script directory as run (checkpoints found).")
+
+        if detected_run:
+            self.CURRENT_RUN_DIR = detected_run
             snap = self.CURRENT_RUN_DIR / "run_config_snapshot.json"
             if snap.exists():
                 with open(snap, "r") as f:
                     data = json.load(f)
                     for k, v in data.items():
                         if k == "DATASET_ROOT": v = pathlib.Path(v)
-                        setattr(self, k, v)
-                # Re-fix paths
-                self.CURRENT_RUN_DIR = pathlib.Path(run_path).resolve()
-                if not hasattr(self, "DATASET_ROOT") or not self.DATASET_ROOT or str(self.DATASET_ROOT) == ".":
-                    if "DATASET_ROOT" in data: self.DATASET_ROOT = pathlib.Path(data["DATASET_ROOT"])
+                        # Don't overwrite if already set by config or direct path
+                        if not hasattr(self, k) or (k == "checkpoints" and not self.CHECKPOINT_DIR):
+                             setattr(self, k, v)
             
-            self.CHECKPOINT_DIR = self.CURRENT_RUN_DIR / "checkpoints"
+            if not self.CHECKPOINT_DIR:
+                self.CHECKPOINT_DIR = self.CURRENT_RUN_DIR / "checkpoints"
+                if not self.CHECKPOINT_DIR.exists():
+                    self.CHECKPOINT_DIR = self.CURRENT_RUN_DIR # Fallback to run dir itself
+            
+            self.TEST_RESULT_DIR = self.CURRENT_RUN_DIR / "test_results"
+            self.TEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+        else:
+            if not self.CHECKPOINT_DIR:
+                print("❌ [ERROR] Could not find a valid run directory with checkpoints.")
+                self.CURRENT_RUN_DIR = pathlib.Path(".")
+                self.CHECKPOINT_DIR = pathlib.Path("checkpoints")
+            else:
+                self.CURRENT_RUN_DIR = self.CHECKPOINT_DIR.parent
+            
             self.TEST_RESULT_DIR = self.CURRENT_RUN_DIR / "test_results"
             self.TEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
         # 3. Final Validation & Fallback Search
-        if not (self.DATASET_ROOT / "A" / "test").exists():
+        if not hasattr(self, "DATASET_ROOT") or not (self.DATASET_ROOT / "A" / "test").exists():
             # Try to auto-locate common project structure
-            project_root = pathlib.Path(__file__).parent.parent.parent
+            project_root = self.SCRIPT_DIR.parent.parent
             search_paths = [
                 project_root / "Model_scenario_case" / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1",
                 project_root / "Prepare_data" / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1",
@@ -154,16 +212,21 @@ def run_evaluation(run_path, config_file=None):
 
     # Load Model
     generator = GeneratorNetwork(int(config.input_channels), int(config.output_channels)).to(device)
-    best_ckpt = config.CHECKPOINT_DIR / "generator_best.pth"
-    if not best_ckpt.exists():
-        # Try finding any checkpoint if generator_best.pth is not here
-        checkpoints = sorted(list(config.CHECKPOINT_DIR.glob("*.pth")))
-        if checkpoints:
-            best_ckpt = checkpoints[-1]
-            print(f"⚠️ [WARNING] generator_best.pth not found. Using latest: {best_ckpt.name}")
-        else:
-            print(f"❌ [ERROR] No checkpoint found at {config.CHECKPOINT_DIR}")
-            return
+    
+    # Check if CHECKPOINT_DIR is actually a file
+    if config.CHECKPOINT_DIR.is_file():
+        best_ckpt = config.CHECKPOINT_DIR
+    else:
+        best_ckpt = config.CHECKPOINT_DIR / "generator_best.pth"
+        if not best_ckpt.exists():
+            # Try finding any checkpoint if generator_best.pth is not here
+            checkpoints = sorted(list(config.CHECKPOINT_DIR.glob("*.pth")))
+            if checkpoints:
+                best_ckpt = checkpoints[-1]
+                print(f"⚠️ [WARNING] generator_best.pth not found. Using latest: {best_ckpt.name}")
+            else:
+                print(f"❌ [ERROR] No checkpoint found at {config.CHECKPOINT_DIR}")
+                return
             
     try:
         print(f"🔄 [MODEL] Loading weights from {best_ckpt.name}...")
@@ -190,6 +253,13 @@ def run_evaluation(run_path, config_file=None):
     test_metrics = {"mae": 0.0, "mse": 0.0}
 
     print(f"🧪 [TEST] Running inference on {len(test_ds)} images...")
+    
+    # 📁 Prepare subdirectories for cleaner results
+    pred_dir = config.TEST_RESULT_DIR / "predictions"
+    input_dir = config.TEST_RESULT_DIR / "inputs"
+    target_dir = config.TEST_RESULT_DIR / "targets"
+    for d in [pred_dir, input_dir, target_dir]: d.mkdir(parents=True, exist_ok=True)
+
     with torch.no_grad():
         for i, (ta, tb, orig_size) in enumerate(test_loader):
             ta, tb = ta.to(device), tb.to(device)
@@ -198,18 +268,23 @@ def run_evaluation(run_path, config_file=None):
             test_metrics["mae"] += mae_criterion(tfb, tb).item()
             test_metrics["mse"] += mse_criterion(tfb, tb).item()
             
-            if i < 20:
+            # Save periodic samples (first 50)
+            if i < 50:
                 ow, oh = orig_size[0].tolist()
                 def denorm_and_finalize(x):
+                    # Use high-quality LANCZOS for better final presentation
                     arr = ((x.cpu().numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
-                    # Resize back to EXACT original size of THIS specific image
-                    img = Image.fromarray(arr).resize((int(ow), int(oh)), Image.BICUBIC)
-                    return np.array(img)
+                    img = Image.fromarray(arr).resize((int(ow), int(oh)), Image.LANCZOS)
+                    return img
+                
                 res_a = denorm_and_finalize(ta[0])
                 res_b = denorm_and_finalize(tb[0])
                 res_f = denorm_and_finalize(tfb[0])
-                combined = np.hstack([res_a, res_b, res_f])
-                Image.fromarray(combined).save(config.TEST_RESULT_DIR / f"eval_sample_{i}.png")
+                
+                # 🖼️ Save files individually for better quality and UX
+                res_f.save(pred_dir / f"result_{i}.png")
+                res_a.save(input_dir / f"input_{i}.png")
+                res_b.save(target_dir / f"target_{i}.png")
 
     # Scoring
     n_test = len(test_loader)

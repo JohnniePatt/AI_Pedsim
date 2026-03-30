@@ -335,9 +335,15 @@ def execute_training():
     
     # Final Test Trigger
     test_script = config.BASE_DIR / 'test_lstm_trajectory.py'
+    gen_script = config.BASE_DIR / 'generate_lstm_trajectory.py'
+    
     if test_script.exists():
-        print(f"🚀 Launching Final Test Evaluation...")
-        os.system(f"{sys.executable} {test_script} --run_path {config.CURRENT_RUN_DIR}")
+        print(f"🚀 Launching Numerical Evaluation...")
+        os.system(f"{sys.executable} {test_script} --run_path {config.CURRENT_RUN_DIR} --config config_test.json")
+    
+    if gen_script.exists():
+        print(f"🎬 Launching Visual Trajectory Generation...")
+        os.system(f"{sys.executable} {gen_script} --run_path {config.CURRENT_RUN_DIR}")
 
 if __name__ == "__main__":
     execute_training()

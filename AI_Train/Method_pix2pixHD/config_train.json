@@ -7,6 +7,6 @@
     "feature_matching_weight": 10.0,
     "num_discriminators": 2,
     "use_label_smoothing": true,
-    "d_train_freq": 1,
+    "d_train_freq": 5,
     "resume_checkpoint_path": "-"
 }
