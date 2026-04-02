@@ -76,6 +76,8 @@ def show_test_evaluation(run_dir):
     run_path = pathlib.Path(run_dir)
     # Search for summary in run root or test_results
     score_path = run_path / "test_evaluation_summary.csv"
+    txt_score_path = run_path / "evaluation.txt"
+    
     if not score_path.exists(): score_path = run_path / "test_results" / "test_evaluation_summary.csv"
     
     test_results_dir = run_path / "test_results"
@@ -86,8 +88,8 @@ def show_test_evaluation(run_dir):
     if score_path.exists():
         try:
             df_score = pd.read_csv(score_path)
-            # Find common error metrics
-            m_data = df_score[df_score['metric'].str.contains('MAE|MSE|RMSE|L1|mse|mae', case=False, na=False)]
+            # Find common error metrics (Added ADE/FDE)
+            m_data = df_score[df_score['metric'].str.contains('MAE|MSE|RMSE|L1|mse|mae|ade|fde', case=False, na=False)]
             if not m_data.empty:
                 # Use st.columns for metric cards
                 m_cols = st.columns(len(m_data))
@@ -97,6 +99,20 @@ def show_test_evaluation(run_dir):
                 st.dataframe(df_score)
         except Exception as e:
             st.error(f"Error loading score file: {e}")
+    elif txt_score_path.exists():
+        try:
+            with open(txt_score_path, "r") as f:
+                content = f.read()
+            st.code(content, language="markdown")
+            # Proactively try to parse some metrics for the cards if possible
+            import re
+            metrics = re.findall(r"(ADE|FDE|Average Displacement Error|Final Displacement Error):\s+([\d\.]+)", content, re.IGNORECASE)
+            if metrics:
+                m_cols = st.columns(len(metrics))
+                for idx, (m_name, m_val) in enumerate(metrics):
+                    m_cols[idx].metric(label=m_name.upper(), value=m_val)
+        except: pass
+
     
     st.divider()
 

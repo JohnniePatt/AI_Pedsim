@@ -29,23 +29,40 @@ class TrajectoryDataset(IterableDataset):
 
         self.all_files = list(self.data_dir.glob("*.parquet"))
         if len(self.all_files) == 0:
-            print(f"No parquet files found in {self.data_dir}")
+            print(f"⚠️ No parquet files found in {self.data_dir}")
             
-        print(f"Found {len(self.all_files)} files from {split}. Will stream them on-the-fly.")
+        print(f"🔍 Found {len(self.all_files)} files from {split}. Processing...")
         
-        # สร้างโฟลเดอร์ Cache เพื่อเก็บข้อมูลที่ประมวลผลแล้ว
+        # Create cache directory
         self.cache_dir = self.data_dir / ".cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
             
     def _extract_from_file(self, df):
-        """Extract valid scenes with pre-calculated relative trajectories. Returns a list of (obs, pred, obs_rel, pred_rel)."""
+        """Extract valid scenes with robust column matching."""
         samples = []
-        if self.col_frame not in df.columns or self.col_agent not in df.columns:
-            return samples
-            
-        df = df.drop_duplicates(subset=[self.col_frame, self.col_agent])
-        pivot_x = df.pivot(index=self.col_frame, columns=self.col_agent, values=self.col_x)
-        pivot_y = df.pivot(index=self.col_frame, columns=self.col_agent, values=self.col_y)
+        
+        # Robust column matching
+        col_map = {
+            'frame': [self.col_frame, 'frame_id', 'frame', 'FR', 'Frame'],
+            'agent': [self.col_agent, 'id', 'ID', 'agent_id', 'person_id'],
+            'x': [self.col_x, 'pos_x', 'x', 'X', 'pos_X'],
+            'y': [self.col_y, 'pos_y', 'y', 'Y', 'pos_Y']
+        }
+        
+        actual_cols = {}
+        for key, candidates in col_map.items():
+            for c in candidates:
+                if c in df.columns:
+                    actual_cols[key] = c
+                    break
+            if key not in actual_cols:
+                return [] # Missing essential column
+        
+        df = df.drop_duplicates(subset=[actual_cols['frame'], actual_cols['agent']])
+        
+        # Filter sequences that are long enough
+        pivot_x = df.pivot(index=actual_cols['frame'], columns=actual_cols['agent'], values=actual_cols['x'])
+        pivot_y = df.pivot(index=actual_cols['frame'], columns=actual_cols['agent'], values=actual_cols['y'])
         
         frames = pivot_x.index.values
         x_mat = pivot_x.values
@@ -54,32 +71,33 @@ class TrajectoryDataset(IterableDataset):
         num_frames = len(frames)
         window_size = self.seq_len * self.skip
         
+        if num_frames < window_size:
+            return []
+
         for i in range(0, num_frames - window_size + 1, self.skip):
             x_window = x_mat[i : i + window_size : self.skip, :] 
             y_window = y_mat[i : i + window_size : self.skip, :] 
             
+            # Agent must be present for the entire window
             valid_mask = ~np.isnan(x_window).any(axis=0)
             if not np.any(valid_mask):
                 continue
                 
-            # Slices: (seq_len, num_valid) -> Transpose to (num_valid, seq_len)
             vx = x_window[:, valid_mask].T
             vy = y_window[:, valid_mask].T
             
-            # Combine into (num_valid, seq_len, 2)
             traj = np.stack((vx, vy), axis=-1)
             traj_torch = torch.from_numpy(traj).float()
             
-            # Vectorized relative trajectory calculation
             rel_traj = torch.zeros_like(traj_torch)
             rel_traj[:, 1:, :] = traj_torch[:, 1:, :] - traj_torch[:, :-1, :]
             
-            obs_traj = traj_torch[:, :self.obs_len, :]
-            pred_traj = traj_torch[:, self.obs_len:, :]
-            obs_rel_traj = rel_traj[:, :self.obs_len, :]
-            pred_rel_traj = rel_traj[:, self.obs_len:, :]
-            
-            samples.append((obs_traj, pred_traj, obs_rel_traj, pred_rel_traj))
+            samples.append((
+                traj_torch[:, :self.obs_len, :],
+                traj_torch[:, self.obs_len:, :],
+                rel_traj[:, :self.obs_len, :],
+                rel_traj[:, self.obs_len:, :]
+            ))
             
         return samples
 

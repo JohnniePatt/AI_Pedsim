@@ -16,7 +16,7 @@ def get_run_dir(base_dir):
     project_root = os.path.dirname(os.path.dirname(base_dir))
     runs_dir = os.path.join(project_root, "AI_Result", method_name, "outputs")
     os.makedirs(runs_dir, exist_ok=True)
-    existing_runs = [d for d in os.listdir(runs_dir) if d.startswith("outputs_")]
+    existing_runs = [d for d in os.listdir(runs_dir) if d.startswith("run_")]
     run_idx = len(existing_runs) + 1
     run_dir = os.path.join(runs_dir, f"run_{run_idx}")
     os.makedirs(run_dir, exist_ok=True)

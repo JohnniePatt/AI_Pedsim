@@ -66,7 +66,8 @@ def test():
     samples_out = os.path.join(args.run_path, "samples")
     os.makedirs(samples_out, exist_ok=True)
     
-    total_ade, total_fde = 0, 0
+    total_ade_running_sum, total_fde_running_sum = 0, 0
+    total_peds_evaluated = 0
     samples_count = 0
     
     print("SGAN Generating test trajectories...")
@@ -96,10 +97,23 @@ def test():
                 curr = curr + pred_rel_traj[t]
                 pred_traj[t] = curr
 
-            # Calculate metrics 
-            # ADE: Average Displacement Error
-            # FDE: Final Displacement Error
-            # Not heavily tracked right now but good for printouts
+            # Calculate metrics (ADE & FDE)
+            # pred_traj: (pred_len, total_batch_peds, 2)
+            # pred_traj_gt: (pred_len, total_batch_peds, 2)
+            
+            # 1. ADE (Average Displacement Error) over all steps
+            diff = pred_traj - pred_traj_gt
+            dist_per_step = torch.norm(diff, dim=-1) # (pred_len, total_batch_peds)
+            batch_ade = dist_per_step.mean(dim=0).sum().item() # Sum of ADEs for all peds in batch
+            
+            # 2. FDE (Final Displacement Error) at the last step
+            final_diff = pred_traj[-1] - pred_traj_gt[-1]
+            dist_final = torch.norm(final_diff, dim=-1) # (total_batch_peds)
+            batch_fde = dist_final.sum().item()
+
+            total_ade_running_sum += batch_ade
+            total_fde_running_sum += batch_fde
+            total_peds_evaluated += dist_final.shape[0]
             
             # Visualize Scene
             obs_traj_cpu = obs_traj.cpu().numpy()
@@ -137,14 +151,29 @@ def test():
                 samples_count += 1
                 
     # Finish Evaluation Log
+    avg_ade = total_ade_running_sum / total_peds_evaluated if total_peds_evaluated > 0 else 0
+    avg_fde = total_fde_running_sum / total_peds_evaluated if total_peds_evaluated > 0 else 0
+    
     eval_file = os.path.join(args.run_path, "evaluation.txt")
     with open(eval_file, "w") as f:
-        f.write("Evaluation Results\n")
-        f.write("------------------\n")
+        f.write("Evaluation Results (SGAN)\n")
+        f.write("-------------------------\n")
         f.write(f"Evaluated Scenes: {samples_count}\n")
+        f.write(f"Total Pedestrians: {total_peds_evaluated}\n")
+        f.write(f"Average Displacement Error (ADE): {avg_ade:.4f}\n")
+        f.write(f"Final Displacement Error (FDE):   {avg_fde:.4f}\n")
         f.write("Plots generated in samples/ directory.\n")
         
+    # Save CSV for UI Dashboard
+    import pandas as pd
+    summary_df = pd.DataFrame([
+        {"metric": "ADE", "value": avg_ade},
+        {"metric": "FDE", "value": avg_fde}
+    ])
+    summary_df.to_csv(os.path.join(args.run_path, "test_evaluation_summary.csv"), index=False)
+        
     print(f"✅ Testing complete! Generated {samples_count} scene visualisations.")
+    print(f"📊 ADE: {avg_ade:.4f} | FDE: {avg_fde:.4f}")
 
 if __name__ == "__main__":
     test()
