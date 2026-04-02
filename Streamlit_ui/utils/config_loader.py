@@ -45,16 +45,16 @@ def save_config(method_path, config_data, config_type="train"):
 
 def get_method_runs(method_path):
     """
-    Scans for 'runs_' or 'runs' folder within the method directory 
+    Scans for 'outputs' folder within the method directory 
     and returns a list of individual run folders.
     """
     path = pathlib.Path(method_path)
-    # Search for directories that might contain runs
-    run_containers = [d for d in path.iterdir() if d.is_dir() and d.name.startswith("runs")]
+    outputs_dir = path / "outputs"
     
-    all_runs = []
-    for container in run_containers:
-        runs = [r.name for r in container.iterdir() if r.is_dir()]
-        all_runs.extend([f"{container.name}/{r}" for r in runs])
+    if not outputs_dir.exists() or not outputs_dir.is_dir():
+        return []
+        
+    runs = [r.name for r in outputs_dir.iterdir() if r.is_dir() and r.name.startswith("run_")]
+    all_runs = [f"outputs/{r}" for r in runs]
     
     return sorted(all_runs, reverse=True)

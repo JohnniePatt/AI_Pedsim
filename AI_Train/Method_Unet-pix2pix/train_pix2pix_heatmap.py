@@ -125,9 +125,15 @@ def train():
     # Paths
     BASE_DIR = pathlib.Path(__file__).parent.resolve()
     DATA_DIR = BASE_DIR.parent.parent / "Topo_2" / "heatmap_density" / "Cleandata_1"
-    CHECKPOINT_DIR = BASE_DIR / "checkpoints"
-    OUTPUT_DIR = BASE_DIR / "outputs"
-    LOG_DIR = BASE_DIR / "log_loss"
+    
+    # New AI_Result pathing
+    PROJECT_ROOT = BASE_DIR.parent.parent
+    METHOD_NAME = BASE_DIR.name
+    RESULT_DIR = PROJECT_ROOT / "AI_Result" / METHOD_NAME / "outputs" / "run_latest"
+    
+    CHECKPOINT_DIR = RESULT_DIR / "checkpoints"
+    OUTPUT_DIR = RESULT_DIR / "samples"
+    LOG_DIR = RESULT_DIR / "logs"
     
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)

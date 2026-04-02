@@ -58,24 +58,36 @@ def inject_custom_css():
             border: none !important;
         }
         
-        /* Active Item: Use a theme-neutral alpha background */
+        /* active Item: Use a theme-neutral alpha background */
         div[role="radiogroup"] label[data-selected="true"] {
             background-color: rgba(128, 128, 128, 0.2) !important;
             font-weight: 600 !important;
         }
         
-        /* Hover State */
-        div[role="radiogroup"] label:hover {
+        /* 5. Custom Button Styling (for standalone nav items) */
+        .stButton > button.nav-button {
+            background-color: transparent;
+            border: none;
+            padding: 8px 16px !important;
+            border-radius: 10px !important;
+            text-align: left;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            transition: all 0.2s;
+            color: inherit;
+        }
+        
+        .stButton > button.nav-button:hover {
             background-color: rgba(128, 128, 128, 0.1) !important;
         }
-
-        /* Text Sizing */
-        div[role="radiogroup"] label p {
-            font-size: 0.98rem !important;
-            margin: 0 !important;
+        
+        .stButton > button.nav-button.active {
+            background-color: rgba(128, 128, 128, 0.2) !important;
+            font-weight: 600 !important;
         }
 
-        /* 5. Tidy up the UI */
+        /* 6. Tidy up the UI */
         section[data-testid="stSidebar"] hr {
             margin: 1rem 0 !important;
             opacity: 0.15 !important;
@@ -94,8 +106,10 @@ st.sidebar.markdown("# 🚀 AI Pedsim")
 
 # 📁 Section: Workspace
 st.sidebar.markdown('<p class="sidebar-header">Workspace</p>', unsafe_allow_html=True)
-AI_TRAIN_DIR = pathlib.Path(__file__).parent.parent
-PROJECT_ROOT = AI_TRAIN_DIR.parent
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+AI_TRAIN_DIR = PROJECT_ROOT / "AI_Train"
+AI_RESULT_DIR = PROJECT_ROOT / "AI_Result"
+
 available_methods = get_available_methods(AI_TRAIN_DIR)
 
 if not available_methods:
@@ -105,22 +119,77 @@ if not available_methods:
 # Method selection
 selected_method = st.sidebar.selectbox("Current AI Method", available_methods, label_visibility="collapsed")
 method_path = AI_TRAIN_DIR / selected_method
+result_method_path = AI_RESULT_DIR / selected_method
 st.sidebar.markdown(f"📍 Method: **{selected_method}**")
+
+# --- NAVIGATION SYNC LOGIC ---
+if "current_nav" not in st.session_state:
+    if selected_method == "Generate_HouseGAN":
+        st.session_state.current_nav = "🏠 Design Floor Plan"
+    else:
+        st.session_state.current_nav = "🚀 Training model"
+
+def update_nav():
+    # Detect which radio was clicked by checking if it matches current_nav
+    # If not, update current_nav and reset other radios conceptually
+    pass # Managed by direct assignment in this version for simplicity
 
 # ⚙️ Section: Pipeline
 st.sidebar.markdown('<p class="sidebar-header">Training Pipeline</p>', unsafe_allow_html=True)
 if selected_method == "Generate_HouseGAN":
-    navigation = st.sidebar.radio(
-        "Pipeline",
-        ["🏠 Design Floor Plan", "📈 View Generated AI Layouts", "🏃 Run Pedsim (Architecture)"],
-        label_visibility="collapsed"
-    )
+    pipeline_options = ["🏠 Design Floor Plan", "📈 View Generated AI Layouts", "🏃 Run Pedsim (Architecture)"]
 else:
-    navigation = st.sidebar.radio(
-        "Pipeline",
-        ["🚀 Training model", "🔬 Testing model", "📈 View results"],
-        label_visibility="collapsed"
-    )
+    pipeline_options = ["🚀 Training model", "🔬 Testing model", "📈 View results"]
+
+# Index to keep radio selected if current_nav is in pipeline_options
+try:
+    pipe_index = pipeline_options.index(st.session_state.current_nav)
+except ValueError:
+    pipe_index = 0
+
+nav_pipeline = st.sidebar.radio(
+    "Pipeline",
+    pipeline_options,
+    index=pipe_index,
+    label_visibility="collapsed",
+    key="pipe_radio"
+)
+
+# Update session state if this radio is clicked
+if nav_pipeline != st.session_state.current_nav and nav_pipeline in pipeline_options:
+    if not (st.session_state.current_nav == "🧹 Data Formatter" and nav_pipeline == pipeline_options[0]): # Avoid reset loop
+        st.session_state.current_nav = nav_pipeline
+        st.rerun()
+
+# 🛠️ Section: Utilities (Separated Area)
+st.sidebar.divider()
+st.sidebar.markdown('<p class="sidebar-header">Utilities</p>', unsafe_allow_html=True)
+
+# Use a button with custom class to match radio look
+formatter_active_class = "active" if st.session_state.current_nav == "🧹 Data Formatter" else ""
+if st.sidebar.button(
+    "🧹 Data Formatter", 
+    key="btn_formatter", 
+    use_container_width=True,
+    help="Convert SQLite to Parquet",
+    # Note: Streamlit doesn't support custom classes on buttons directly yet, 
+    # but we can wrap it in a div or target the key
+):
+    st.session_state.current_nav = "🧹 Data Formatter"
+    st.rerun()
+
+# Apply the active style via Markdown/CSS hack for the button
+if st.session_state.current_nav == "🧹 Data Formatter":
+    st.sidebar.markdown("""
+    <style>
+        div[data-testid="stSidebar"] button[kind="secondary"]:has(div:contains("Data Formatter")) {
+            background-color: rgba(128, 128, 128, 0.2) !important;
+            font-weight: 600 !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+navigation = st.session_state.current_nav
 
 st.sidebar.divider()
 st.sidebar.caption("v1.2.5 | JohnniePatt build")
@@ -173,9 +242,9 @@ if navigation == "🚀 Training model":
         # Monitoring
         if st.session_state.process_manager.is_running:
             st.info("🔥 Training in progress...")
-            available_runs = get_method_runs(method_path)
+            available_runs = get_method_runs(result_method_path)
             if available_runs:
-                latest_run_path = method_path / available_runs[0]
+                latest_run_path = result_method_path / available_runs[0]
                 progress_file = latest_run_path / "progress.json"
                 if progress_file.exists():
                     try:
@@ -219,12 +288,12 @@ elif navigation == "🔬 Testing model":
 
     # 🔬 2. Manual Evaluation
     st.subheader("🔬 Manual Evaluation")
-    available_runs = get_method_runs(method_path)
+    available_runs = get_method_runs(result_method_path)
     if not available_runs:
         st.info("No runs found to test.")
     else:
         selected_run = st.selectbox("Select Run", available_runs)
-        run_full_path = method_path / selected_run
+        run_full_path = result_method_path / selected_run
         test_scripts = sorted(list(method_path.glob("test_*.py")))
         
         if not test_scripts:
@@ -258,12 +327,12 @@ elif navigation == "🔬 Testing model":
 # --- PAGE: View results ---
 elif navigation == "📈 View results":
     st.header(f"Results: {selected_method}")
-    available_runs = get_method_runs(method_path)
+    available_runs = get_method_runs(result_method_path)
     if not available_runs:
         st.info("No runs found for this method yet.")
     else:
         selected_run = st.selectbox("Select Run", available_runs)
-        run_full_path = method_path / selected_run
+        run_full_path = result_method_path / selected_run
         
         t1, t2, t3 = st.tabs(["📊 Loss Curves", "🖼 Training Samples", "🏁 Final Evaluation"])
         with t1:
@@ -487,3 +556,102 @@ elif navigation == "🏃 Run Pedsim (Architecture)":
                 output_base = PROJECT_ROOT / "Prepare_data" / "Architecture_housePlan" / "outputs" / selected_plan
                 from utils.visualizer import show_pedsim_arch_results
                 show_pedsim_arch_results(output_base, options=view_options)
+
+# --- PAGE: Data Formatter ---
+elif navigation == "🧹 Data Formatter":
+    st.header("🧹 Data Formatter")
+    st.markdown("Convert SQLite simulation datasets into highly-efficient Parquet format for faster AI training and analysis.")
+    
+    GEO_SCENARIO_ROOT = PROJECT_ROOT / "Geo_scenario"
+    
+    if not GEO_SCENARIO_ROOT.exists():
+        st.error(f"❌ Root directory `Geo_scenario` not found at {GEO_SCENARIO_ROOT}")
+    else:
+        # 1. Select Topology
+        st.subheader("📁 Select Scenario Topology")
+        all_topos = sorted([d.name for d in GEO_SCENARIO_ROOT.iterdir() if d.is_dir()])
+        
+        if not all_topos:
+            st.info("No topologies found in `Geo_scenario`.")
+        else:
+            selected_topo = st.selectbox("Select Directory to Format", all_topos)
+            topo_path = GEO_SCENARIO_ROOT / selected_topo
+            
+            # Check for dataswarm folder
+            dataswarm_dir = topo_path / "dataswarm"
+            output_parquet_dir = topo_path / "dataswarm_parquet"
+            
+            c1, c2 = st.columns(2)
+            c1.info(f"📂 **Source:** `{dataswarm_dir.relative_to(PROJECT_ROOT)}`")
+            c2.info(f"✨ **Output:** `{output_parquet_dir.relative_to(PROJECT_ROOT)}`")
+            
+            if not dataswarm_dir.exists():
+                st.warning(f"⚠️ Source directory `dataswarm` not found inside `{selected_topo}`.")
+            else:
+                st.divider()
+                st.subheader("⚙️ Formatting Settings")
+                
+                # 1. Filter Input
+                table_filter = st.text_input("Table Name Filter", value="trajectory_data", help="Only convert tables containing this text (e.g. 'trajectory_data'). Leave empty to convert all tables.")
+                
+                # 2. Cleanup Utility
+                with st.expander("🗑️ Cleanup Utility"):
+                    st.write("(Deletes files in the output folder that do NOT match the filter above.(Typing -> xxxxx_Trajectory_data.parquet so you can imput it only Trajectory_data))")
+                    if st.button("🧹 Clean Unwanted Parquet Files", use_container_width=True):
+                        if output_parquet_dir.exists():
+                            files_deleted = 0
+                            for p_file in output_parquet_dir.rglob("*.parquet"):
+                                if table_filter.lower() not in p_file.name.lower():
+                                    p_file.unlink()
+                                    files_deleted += 1
+                            st.success(f"✅ Deleted {files_deleted} files that didn't match '{table_filter}'.")
+                        else:
+                            st.warning("No output directory found to clean.")
+
+                st.subheader("🏃 Execute Conversion")
+                
+                # Check for existing data
+                num_sqlite = len(list(dataswarm_dir.rglob("*.sqlite")))
+                st.write(f"🔍 Found **{num_sqlite}** SQLite simulation files.")
+                
+                if st.button("⚡ Start Formatting (SQLite ➡️ Parquet)", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+                    formatter_script = PROJECT_ROOT / "Formater" / "format_to_parquet.py"
+                    
+                    if not formatter_script.exists():
+                        st.error(f"❌ Formatter script not found at {formatter_script}")
+                    else:
+                        python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                        if not python_path.exists(): python_path = "python3"
+                        
+                        command = [
+                            str(python_path), str(formatter_script),
+                            "--source", str(dataswarm_dir),
+                            "--output", str(output_parquet_dir)
+                        ]
+                        
+                        if table_filter:
+                            command.extend(["--filter", table_filter])
+                            
+                        st.session_state.process_manager.start_process(command, str(PROJECT_ROOT))
+                        st.rerun()
+
+                # Monitoring Output
+                if st.session_state.process_manager.is_running:
+                    st.info(f"🔥 Formatting data for `{selected_topo}`...")
+                    log_container = st.empty()
+                    if "formatter_logs" not in st.session_state: st.session_state.formatter_logs = ""
+                    new_output = "".join(list(st.session_state.process_manager.get_output()))
+                    if new_output: st.session_state.formatter_logs += new_output
+                    log_container.code(st.session_state.formatter_logs)
+                    time.sleep(1); st.rerun()
+                else:
+                    if "formatter_logs" in st.session_state and st.session_state.formatter_logs:
+                        st.subheader("Formatter Output")
+                        st.code(st.session_state.formatter_logs)
+                        if st.button("🧹 Clear Formatter Logs"): st.session_state.formatter_logs = ""; st.rerun()
+                    
+                    # Show quick stats if output exists
+                    if output_parquet_dir.exists():
+                        num_parquet = len(list(output_parquet_dir.rglob("*.parquet")))
+                        if num_parquet > 0:
+                            st.success(f"📚 Successfully formatted **{num_parquet}** parquet files in `{selected_topo}/dataswarm_parquet`.")

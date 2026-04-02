@@ -1,0 +1,16 @@
+{
+    "dataset_path": "../../Geo_scenario/Topo_2/dataswarm_parquet",
+    "batch_size": 128,
+    "epochs": 100,
+    "learning_rate": 0.001,
+    "obs_len": 8,
+    "pred_len": 12,
+    "skip": 5,
+    "emb_size": 64,
+    "hidden_size": 128,
+    "social_pooling_size": 16,
+    "col_frame": "frame",
+    "col_agent": "id",
+    "col_x": "pos_x",
+    "col_y": "pos_y"
+}

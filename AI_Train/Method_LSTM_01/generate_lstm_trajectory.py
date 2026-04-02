@@ -1,7 +1,7 @@
 """
 generate_lstm_trajectory.py
 The "Product Show" script for LSTM - Generates full trajectory predictions and visualizations.
-Saves results into standardized runs/gen_xxx folders.
+Saves results into standardized outputs/gen_xxx folders.
 """
 import os
 import sqlite3

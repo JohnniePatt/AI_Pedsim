@@ -201,12 +201,12 @@ def show_housegan_results(outputs_dir):
     st.subheader(f"Generated Layouts ({len(runs)})")
     
     # Show in a 2-column grid (each item has dual preview)
-    cols = st.columns(2)
+    cols = st.columns(4)
     for idx, run_dir in enumerate(runs):
         layout_img = run_dir / "preview.png"
         graph_img = run_dir / "preview_graph.png"
         
-        col_idx = idx % 2
+        col_idx = idx % 4
         with cols[col_idx]:
             st.markdown(f"**Run:** `{run_dir.name}`")
             # Side-by-side sub-columns for Graph and Layout

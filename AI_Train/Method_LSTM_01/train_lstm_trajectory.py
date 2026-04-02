@@ -45,7 +45,7 @@ class TrainingConfiguration:
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"run_LSTM_{timestamp}"
-    RUNS_ROOT = BASE_DIR / "runs"
+    RUNS_ROOT = BASE_DIR / "outputs"
     CURRENT_RUN_DIR = RUNS_ROOT / run_name
     
     # Standardized Subdirectories

@@ -47,7 +47,8 @@ class TrainingConfiguration:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"run_RL_{timestamp}"
-    RUNS_ROOT = BASE_DIR / "runs"
+    METHOD_NAME = BASE_DIR.name
+    RUNS_ROOT = PROJECT_ROOT / "AI_Result" / METHOD_NAME / "outputs"
     CURRENT_RUN_DIR = RUNS_ROOT / run_name
     CHECKPOINT_DIR = CURRENT_RUN_DIR / "checkpoints"
     LOG_DIR = CURRENT_RUN_DIR / "logs"

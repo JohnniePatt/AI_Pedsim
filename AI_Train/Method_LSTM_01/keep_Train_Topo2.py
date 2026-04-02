@@ -24,7 +24,7 @@ print("Initializing Training Script (Clean Pipeline)...")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOPO_DIR = PROJECT_ROOT / "Topo_2"
 PROCESSED_DIR = PROJECT_ROOT / "AI_Train" / "dataswarm_processed_topo2"
-OUTPUT_DIR = PROJECT_ROOT / "AI_Train" / "outputs" / "Topo2"
+OUTPUT_DIR = PROJECT_ROOT / "AI_Result" / "Method_LSTM_01" / "outputs" / "Topo2"
 
 CONFIG = {
     "seq_len": 20,        

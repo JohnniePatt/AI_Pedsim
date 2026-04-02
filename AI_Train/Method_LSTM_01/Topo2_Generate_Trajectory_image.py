@@ -29,8 +29,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOPO_DIR = PROJECT_ROOT / "Topo_2"
 GEO_DIR = TOPO_DIR / "geo"
 DATASWARM_DIR = TOPO_DIR / "dataswarm" / "test"
-GEN_PATH_DIR = PROJECT_ROOT / "AI_Train" / "outputs" / "Topo2" / "generated_paths"
-IMG_OUTPUT_DIR = PROJECT_ROOT / "AI_Train" / "outputs" / "Topo2" / "generated_images"
+GEN_PATH_DIR = PROJECT_ROOT / "AI_Result" / "Method_LSTM_01" / "outputs" / "Topo2" / "generated_paths"
+IMG_OUTPUT_DIR = PROJECT_ROOT / "AI_Result" / "Method_LSTM_01" / "outputs" / "Topo2" / "generated_images"
 
 # ===================================================================== #
 # HELPERS

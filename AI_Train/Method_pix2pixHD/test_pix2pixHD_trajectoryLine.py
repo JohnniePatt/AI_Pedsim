@@ -63,7 +63,7 @@ class TestConfig:
         
         if not detected_run and not self.CHECKPOINT_DIR:
             # Try to auto-locate the latest run in common locations
-            search_roots = [self.SCRIPT_DIR / "runs_trajectory", self.SCRIPT_DIR / "runs"]
+            search_roots = [self.SCRIPT_DIR / "runs_trajectory", self.SCRIPT_DIR / "outputs"]
             all_runs = []
             for root in search_roots:
                 if root.exists():
@@ -308,7 +308,7 @@ def run_evaluation(run_path, config_file=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_path", type=str, required=True, help="Path to the training run folder (e.g. runs/run_xxx)")
+    parser.add_argument("--run_path", type=str, required=True, help="Path to the training run folder (e.g. outputs/run_xxx)")
     parser.add_argument("--config", type=str, default="config_test.json", help="Path to testing config (e.g. config_test.json)")
     args = parser.parse_args()
     run_evaluation(args.run_path, args.config)
