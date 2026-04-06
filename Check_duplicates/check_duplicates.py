@@ -31,8 +31,8 @@ def find_duplicates(directory):
 
 if __name__ == "__main__":
     results = {
-        "spawn_exit": find_duplicates("Topo_2/spawn_exit"),
-        "trajectory_line": find_duplicates("Topo_2/trajectory_line")
+        "spawn_exit": find_duplicates("Topo_bottleneck/spawn_exit"),
+        "trajectory_line": find_duplicates("Topo_bottleneck/trajectory_line")
     }
     
     with open("duplicate_results.json", "w") as f:

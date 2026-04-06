@@ -32,7 +32,7 @@ def find_duplicates_in_csvs(base_dir):
     return duplicates
 
 if __name__ == "__main__":
-    base_path = "Topo_2/spawn_exit_area"
+    base_path = "Topo_bottleneck/spawn_exit_area"
     results = find_duplicates_in_csvs(base_path)
     
     if not results:

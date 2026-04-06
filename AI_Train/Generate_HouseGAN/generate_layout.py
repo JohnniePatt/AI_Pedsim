@@ -21,11 +21,12 @@ class Room:
         c = list(self.poly.exterior.coords)
         return [[float(p[0]), float(p[1])] for p in c]
 
-def generate_procedural_layout(total_rooms_range, num_corridors, door_width, seed):
+def generate_procedural_layout(total_rooms_range, max_corridors, door_width, seed):
     random.seed(seed)
     np.random.seed(seed)
     
     total_nodes = random.randint(*total_rooms_range)
+    num_corridors = random.randint(1, max_corridors)
     rooms = []
     edges = [] # Graph edges
     
@@ -34,7 +35,7 @@ def generate_procedural_layout(total_rooms_range, num_corridors, door_width, see
         placed = False
         for _ in range(100):
             if not rooms:
-                w, h = random.uniform(6, 10), random.uniform(2.5, 3.5)
+                w, h = random.uniform(6, 12), random.uniform(2.5, 4.0)
                 if random.random() > 0.5: w, h = h, w
                 rooms.append(Room(0, 0, w, h, name=f"Cor-0", type="corridor"))
                 placed = True; break
@@ -45,16 +46,18 @@ def generate_procedural_layout(total_rooms_range, num_corridors, door_width, see
             
             target_room = rooms[target_idx]
             side = random.choice(['N', 'S', 'E', 'W'])
-            w, h = random.uniform(5, 8), random.uniform(2.5, 3.5)
+            w, h = random.uniform(5, 10), random.uniform(2.5, 4.0)
             if side in ['E', 'W']: w, h = h, w
             
-            if side == 'N': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y + target_room.h
-            elif side == 'S': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y - h
-            elif side == 'E': nx, ny = target_room.x + target_room.w, round(target_room.y + random.uniform(0, target_room.h - h), 2)
-            else: nx, ny = target_room.x - w, round(target_room.y + random.uniform(0, target_room.h - h), 2)
+            # Add 0.05m overlap to ensure physical connectivity for JuPedSim
+            OVERLAP = 0.05
+            if side == 'N': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y + target_room.h - OVERLAP
+            elif side == 'S': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y - h + OVERLAP
+            elif side == 'E': nx, ny = target_room.x + target_room.w - OVERLAP, round(target_room.y + random.uniform(0, target_room.h - h), 2)
+            else: nx, ny = target_room.x - w + OVERLAP, round(target_room.y + random.uniform(0, target_room.h - h), 2)
             
             new_room = Room(nx, ny, w, h, name=f"Cor-{i}", type="corridor")
-            if not any(new_room.poly.intersects(r.poly) and new_room.poly.intersection(r.poly).area > 0.05 for r in rooms):
+            if not any(new_room.poly.intersects(r.poly) and new_room.poly.intersection(r.poly).area > 0.051 for r in rooms):
                 rooms.append(new_room)
                 edges.append((target_idx, len(rooms) - 1)) # Connect to parent
                 placed = True; break
@@ -67,15 +70,17 @@ def generate_procedural_layout(total_rooms_range, num_corridors, door_width, see
             target_idx = random.randrange(len(rooms))
             target_room = rooms[target_idx]
             side = random.choice(['N', 'S', 'E', 'W'])
-            w, h = random.uniform(3, 5), random.uniform(3, 5)
+            w, h = random.uniform(2.5, 7.0), random.uniform(2.5, 7.0)
             
-            if side == 'N': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y + target_room.h
-            elif side == 'S': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y - h
-            elif side == 'E': nx, ny = target_room.x + target_room.w, round(target_room.y + random.uniform(0, target_room.h - h), 2)
-            else: nx, ny = target_room.x - w, round(target_room.y + random.uniform(0, target_room.h - h), 2)
+            # Add 0.05m overlap to ensure physical connectivity for JuPedSim
+            OVERLAP = 0.05
+            if side == 'N': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y + target_room.h - OVERLAP
+            elif side == 'S': nx, ny = round(target_room.x + random.uniform(0, target_room.w - w), 2), target_room.y - h + OVERLAP
+            elif side == 'E': nx, ny = target_room.x + target_room.w - OVERLAP, round(target_room.y + random.uniform(0, target_room.h - h), 2)
+            else: nx, ny = target_room.x - w + OVERLAP, round(target_room.y + random.uniform(0, target_room.h - h), 2)
             
             new_room = Room(nx, ny, w, h, name=f"Room-{i}", type="room")
-            if not any(new_room.poly.intersects(r.poly) and new_room.poly.intersection(r.poly).area > 0.05 for r in rooms):
+            if not any(new_room.poly.intersects(r.poly) and new_room.poly.intersection(r.poly).area > 0.051 for r in rooms):
                 rooms.append(new_room)
                 edges.append((target_idx, len(rooms) - 1)) # Connect to parent
                 placed = True; break
@@ -184,7 +189,12 @@ def main():
         with open(args.config, "r") as f: config.update(json.load(f))
 
     comp = config["complexity"]
-    r_range = (3, 5) if "Low" in comp else (8, 15) if "High" in comp else (5, 8)
+    if "3-5" in comp: r_range = (3, 5)
+    elif "5-8" in comp: r_range = (5, 8)
+    elif "8-15" in comp: r_range = (8, 15)
+    elif "15-20" in comp: r_range = (15, 20)
+    elif "20-30" in comp: r_range = (20, 30)
+    else: r_range = (5, 8)
     
     for i in range(config["num_scenarios"]):
         current_seed = config["random_seed"] + i

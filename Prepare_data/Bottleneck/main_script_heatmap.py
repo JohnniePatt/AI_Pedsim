@@ -272,7 +272,7 @@ DPI = 300  # Default DPI for all saved figures
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
 
 # Define input/output folders based on new structure
-TOPO_DIR = BASE_DIR.parent.parent / "Topo_2"
+TOPO_DIR = BASE_DIR.parent.parent / "Topo_bottleneck"
 DATASWARM_DIR = TOPO_DIR / "dataswarm"
 HEATMAP_DENSITY_DIR = TOPO_DIR / "heatmap_density"
 HEATMAP_SPEED_DIR = TOPO_DIR / "heatmap_speed"

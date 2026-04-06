@@ -16,7 +16,7 @@ from vir_pedsim import PedsimRL_Env
 class TestConfig:
     def __init__(self, run_path=None):
         self.PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-        self.TOPO_DIR = self.PROJECT_ROOT / "Topo_2"
+        self.TOPO_DIR = self.PROJECT_ROOT / "Topo_bottleneck"
         
         # Defaults
         self.input_size = 14

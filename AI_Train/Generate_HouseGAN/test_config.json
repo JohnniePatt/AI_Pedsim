@@ -1,0 +1,7 @@
+{
+    "num_scenarios": 1,
+    "num_corridors": 4,
+    "random_seed": 100,
+    "door_width": 1.2,
+    "complexity": "20-30 Rooms"
+}

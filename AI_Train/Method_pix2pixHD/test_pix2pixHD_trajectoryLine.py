@@ -115,9 +115,9 @@ class TestConfig:
             # Try to auto-locate common project structure
             project_root = self.SCRIPT_DIR.parent.parent
             search_paths = [
-                project_root / "Model_scenario_case" / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1",
-                project_root / "Prepare_data" / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1",
-                project_root / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1"
+                project_root / "Model_scenario_case" / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1",
+                project_root / "Prepare_data" / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1",
+                project_root / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1"
             ]
             for sp in search_paths:
                 if (sp / "A" / "test").exists():

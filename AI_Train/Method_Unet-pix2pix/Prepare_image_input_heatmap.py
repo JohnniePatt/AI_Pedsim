@@ -76,7 +76,7 @@ def draw_wkt_pure(img, wkt_str_or_poly, grid_size, color_rgb):
 
 # --- Setup Paths ---
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
-TOPO_DIR = BASE_DIR.parent.parent / "Topo_2"
+TOPO_DIR = BASE_DIR.parent.parent / "Topo_bottleneck"
 DATASWARM_DIR = TOPO_DIR / "dataswarm"
 AREA_DIR = TOPO_DIR / "spawn_exit_area"
 DATASET_DIR = TOPO_DIR / "heatmap_density" / "Cleandata_1"

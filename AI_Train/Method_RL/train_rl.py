@@ -36,7 +36,7 @@ class TrainingConfiguration:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     BASE_DIR = Path(__file__).resolve().parent
     PROJECT_ROOT = BASE_DIR.parent.parent
-    TOPO_DIR = PROJECT_ROOT / "Topo_2"
+    TOPO_DIR = PROJECT_ROOT / "Topo_bottleneck"
     train_file = str(TOPO_DIR / "dataswarm" / "test" / "double-botteleneck_100801.sqlite")
     spawn_exit_csv = str(TOPO_DIR / "spawn_exit_area" / "test" / "spawn_exit_100801.csv")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -124,7 +124,7 @@ def train():
 
     # Paths
     BASE_DIR = pathlib.Path(__file__).parent.resolve()
-    DATA_DIR = BASE_DIR.parent.parent / "Topo_2" / "heatmap_density" / "Cleandata_1"
+    DATA_DIR = BASE_DIR.parent.parent / "Topo_bottleneck" / "heatmap_density" / "Cleandata_1"
     
     # New AI_Result pathing
     PROJECT_ROOT = BASE_DIR.parent.parent

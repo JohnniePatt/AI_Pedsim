@@ -129,6 +129,7 @@ class TrajectoryDataset(IterableDataset):
                     # ถ้าไม่มีค่อยอ่าน Parquet และเซฟเกึบไว้
                     df = pd.read_parquet(path)
                     file_samples = self._extract_from_file(df)
+                    print(f"DEBUG: Extracted samples: {len(file_samples)}")
                     torch.save(file_samples, cache_file)
                 
                 for sample in file_samples:

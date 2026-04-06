@@ -1,0 +1,21 @@
+{
+    "obs_len": 20,
+    "pred_len": 10,
+    "max_seq_len": 30,
+    "data_subset_percent": 5,
+    "d_model": 128,
+    "nhead": 4,
+    "num_layers": 4,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "batch_size": 32,
+    "lr": 0.0003,
+    "epochs": 100,
+    "col_frame": "frame",
+    "col_agent": "id",
+    "col_x": "pos_x",
+    "col_y": "pos_y",
+    "normalize": true,
+    "save_every": 10,
+    "dataset_path": "../../Dataset_Traj_Table/Topo_bottleneck"
+}

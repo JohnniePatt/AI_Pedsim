@@ -53,7 +53,7 @@ def find_duplicates(directory):
 
 if __name__ == "__main__":
     results = {
-        "spawn_exit_scenarios": find_duplicates("Topo_2/spawn_exit")
+        "spawn_exit_scenarios": find_duplicates("Topo_bottleneck/spawn_exit")
     }
     
     with open("scenario_duplicates.json", "w") as f:

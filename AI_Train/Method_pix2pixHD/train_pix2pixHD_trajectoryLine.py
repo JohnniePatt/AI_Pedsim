@@ -45,7 +45,7 @@ class TrainingConfiguration:
     # 6. Run Organization
     BASE_DIR = pathlib.Path(__file__).parent.resolve()
     PROJECT_ROOT = BASE_DIR.parent.parent
-    DATASET_ROOT = PROJECT_ROOT / "Topo_2" / "trajectory_line_dataset" / "Cleandata_1"
+    DATASET_ROOT = PROJECT_ROOT / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1"
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"run_HD_{timestamp}"

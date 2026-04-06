@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-TOPO_DIR = PROJECT_ROOT / "Topo_2"
+TOPO_DIR = PROJECT_ROOT / "Topo_bottleneck"
 
 CONFIG = {
     # 🎯 ตัวที่ใช้เทรน (ระบุไฟล์เดียวตามต้องการ)

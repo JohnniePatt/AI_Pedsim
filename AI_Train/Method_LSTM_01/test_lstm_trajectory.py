@@ -90,7 +90,7 @@ def run_evaluation(run_path):
     # 📁 Static Paths relative to This Script's Location
     SCRIPT_DIR = Path(__file__).resolve().parent
     PROJECT_ROOT = SCRIPT_DIR.parent.parent # AI_Pedsim
-    TOPO_DIR = PROJECT_ROOT / "Topo_2"
+    TOPO_DIR = PROJECT_ROOT / "Topo_bottleneck"
     DATASWARM_TEST_DIR = TOPO_DIR / "dataswarm" / "test"
     SPAWN_EXIT_TEST_DIR = TOPO_DIR / "spawn_exit_area" / "test"
     GEO_DIR = TOPO_DIR / "geo"

@@ -22,5 +22,9 @@ outputs/
 .pth
 .pt
 
+.pdf
+
 AI_Result
 Geo_scenario
+Knowledge
+Dataset_Traj_Table

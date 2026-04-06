@@ -10,3 +10,4 @@ torch
 pyarrow
 torchvision
 streamlit
+transformers

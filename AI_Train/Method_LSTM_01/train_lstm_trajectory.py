@@ -38,7 +38,7 @@ class TrainingConfiguration:
 
     BASE_DIR = Path(__file__).resolve().parent
     PROJECT_ROOT = BASE_DIR.parent.parent
-    TOPO_DIR = PROJECT_ROOT / "Topo_2"
+    TOPO_DIR = PROJECT_ROOT / "Topo_bottleneck"
     DATASWARM_DIR = TOPO_DIR / "dataswarm"
     GEO_DIR = TOPO_DIR / "geo"
     SPAWN_EXIT_DIR = TOPO_DIR / "spawn_exit_area"

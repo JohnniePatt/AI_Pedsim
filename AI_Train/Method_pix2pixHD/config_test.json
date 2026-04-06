@@ -1,4 +1,4 @@
 {
     "batch_size": 1,
-    "DATASET_ROOT": "Model_scenario_case/Topo_2/trajectory_line_dataset/Cleandata_1"
+    "DATASET_ROOT": "Model_scenario_case/Topo_bottleneck/trajectory_line_dataset/Cleandata_1"
 }

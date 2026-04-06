@@ -156,8 +156,16 @@ nav_pipeline = st.sidebar.radio(
 )
 
 # Update session state if this radio is clicked
-if nav_pipeline != st.session_state.current_nav and nav_pipeline in pipeline_options:
-    if not (st.session_state.current_nav == "🧹 Data Formatter" and nav_pipeline == pipeline_options[0]): # Avoid reset loop
+if nav_pipeline != st.session_state.current_nav:
+    # Check if this change was likely a manual click from the user
+    # If we are in utility mode, the radio defaults to pipeline_options[0].
+    # We only switch back if the user clicks something that is NOT the default 
+    # OR if we were previously in a pipeline mode anyway.
+    
+    in_pipeline = st.session_state.current_nav in pipeline_options
+    is_manual_switch = (nav_pipeline != pipeline_options[0]) or in_pipeline
+    
+    if is_manual_switch:
         st.session_state.current_nav = nav_pipeline
         st.rerun()
 
@@ -177,12 +185,24 @@ if st.sidebar.button(
 ):
     st.session_state.current_nav = "🧹 Data Formatter"
     st.rerun()
+if st.sidebar.button(
+    "📊 Split data (Train,Test,Val)", 
+    key="btn_split", 
+    use_container_width=True,
+    help="Split dataset into Train, Test, and Val sets"
+):
+    st.session_state.current_nav = "📊 Split data (Train,Test,Val)"
+    st.rerun()
 
 # Apply the active style via Markdown/CSS hack for the button
 if st.session_state.current_nav == "🧹 Data Formatter":
     st.sidebar.markdown("""
     <style>
         div[data-testid="stSidebar"] button[kind="secondary"]:has(div:contains("Data Formatter")) {
+            background-color: rgba(128, 128, 128, 0.2) !important;
+            font-weight: 600 !important;
+        }
+        div[data-testid="stSidebar"] button[kind="secondary"]:has(div:contains("Split data")) {
             background-color: rgba(128, 128, 128, 0.2) !important;
             font-weight: 600 !important;
         }
@@ -353,10 +373,10 @@ elif navigation == "🏠 Design Floor Plan":
     
     c1, c2, c3, c4, c5 = st.columns(5)
     num_scenarios = c1.number_input("Total Topologies", min_value=1, max_value=100, value=5)
-    num_corridors = c2.number_input("No. Corridors", min_value=1, max_value=10, value=1)
+    num_corridors = c2.number_input("Max Corridors", min_value=1, max_value=10, value=1)
     random_seed = c3.number_input("Base Seed", min_value=0, max_value=999999, value=42)
     door_width = c4.slider("Door Width (m)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
-    complexity = c5.selectbox("Graph Complexity", ["Low (3-5 Rooms)", "Medium (5-8 Rooms)", "High (8-15 Rooms)"], index=1)
+    complexity = c5.selectbox("Graph Complexity", ["3-5 Rooms", "5-8 Rooms", "8-15 Rooms", "15-20 Rooms", "20-30 Rooms"], index=1)
     
     config_dict = {
         "num_scenarios": num_scenarios,
@@ -380,6 +400,9 @@ elif navigation == "🏠 Design Floor Plan":
         config_file = method_path / "config_housegan.json"
         
         if st.button("✨ Auto-Generate New Topologies", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+            # Clear logs before starting
+            st.session_state.gen_logs = ""
+            
             # Save config for the script to use
             with open(config_file, "w") as f:
                 json.dump(config_dict, f, indent=4)
@@ -484,13 +507,46 @@ elif navigation == "🏃 Run Pedsim (Architecture)":
         if not available_plans:
             st.info("No architecture plans found yet.")
         else:
+            # --- BATCH SIMULATION SECTION ---
+            swarm_root = PROJECT_ROOT / "Geo_scenario" / "Topo_HouseGAN" / "dataswarm"
+            unsimulated_plans = []
+            for p in available_plans:
+                p_swarm = swarm_root / p
+                if not p_swarm.exists() or not any(p_swarm.glob("*.sqlite")):
+                    unsimulated_plans.append(p)
+            
+            st.subheader("📦 Batch Migration & Simulation (HouseGAN)")
+            col_b1, col_b2 = st.columns([3, 1])
+            with col_b1:
+                if unsimulated_plans:
+                    st.warning(f"🔔 Found **{len(unsimulated_plans)}** plans that have **not been simulated** yet.")
+                else:
+                    st.success("✅ All generated HouseGAN plans have simulation results.")
+            
+            with col_b2:
+                if st.button("🚀 Run All Unsimulated", use_container_width=True, help="Batch simulate all HouseGAN plans that lack results", disabled=st.session_state.process_manager.is_running or not unsimulated_plans):
+                    st.session_state.sim_arch_logs = ""
+                    python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                    if not python_path.exists(): python_path = "python3"
+                    
+                    command = [
+                        str(python_path), str(PROJECT_ROOT / "Prepare_data" / "Architecture_housePlan" / "bottleneck_archhouseplan.py"), 
+                        "--batch",
+                        "--timeout", str(st.session_state.get("sim_timeout", 5))
+                    ]
+                    st.session_state.process_manager.start_process(command, str(PROJECT_ROOT / "Prepare_data" / "Architecture_housePlan"))
+                    st.rerun()
+
+            st.divider()
+
             # 2. Config UI
-            st.subheader("🛠 Simulation Settings")
-            c1, c2, c3, c4 = st.columns(4)
+            st.subheader("🛠 Single Plan Settings")
+            c1, c2, c3, c4, c5 = st.columns(5)
             selected_plan = c1.selectbox("Select Architecture Plan", available_plans)
             num_agents = c2.number_input("Agents", min_value=1, max_value=200, value=50)
             sim_seed = c3.number_input("Seed", min_value=0, max_value=999, value=42)
             grid_size = c4.number_input("Heatmap Grid", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
+            sim_timeout = c5.number_input("Timeout (Min)", min_value=1, max_value=60, value=5, key="sim_timeout")
             
             view_options = st.multiselect("View Options", ["Trajectory", "Density Heatmap", "Speed Heatmap"], default=["Trajectory", "Density Heatmap", "Speed Heatmap"])
             st.divider()
@@ -509,6 +565,9 @@ elif navigation == "🏃 Run Pedsim (Architecture)":
             cb1, cb2 = st.columns(2)
             
             if cb1.button("🚀 Start New Simulation", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+                # Clear session state logs before starting
+                st.session_state.sim_arch_logs = ""
+                
                 python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
                 if not python_path.exists(): python_path = "python3"
                 
@@ -517,7 +576,8 @@ elif navigation == "🏃 Run Pedsim (Architecture)":
                     "--plan", selected_plan,
                     "--agents", str(num_agents),
                     "--seed", str(sim_seed),
-                    "--grid", str(grid_size)
+                    "--grid", str(grid_size),
+                    "--timeout", str(sim_timeout)
                 ]
                 st.session_state.process_manager.start_process(command, str(prepare_script.parent))
                 st.rerun()
@@ -655,3 +715,80 @@ elif navigation == "🧹 Data Formatter":
                         num_parquet = len(list(output_parquet_dir.rglob("*.parquet")))
                         if num_parquet > 0:
                             st.success(f"📚 Successfully formatted **{num_parquet}** parquet files in `{selected_topo}/dataswarm_parquet`.")
+
+# --- PAGE: Split Data ---
+elif navigation == "📊 Split data (Train,Test,Val)":
+    st.header("📊 Split Data (Train / Test / Val)")
+    st.markdown("Divide your cases into subsets for AI training. This tool randomly shuffles and assigns directories to the correct splits.")
+    
+    DATASET_TABLE_ROOT = PROJECT_ROOT / "Dataset_Traj_Table"
+    
+    if not DATASET_TABLE_ROOT.exists():
+        st.error(f"❌ Root directory `Dataset_Traj_Table` not found at {DATASET_TABLE_ROOT}")
+    else:
+        # 1. Select Dataset Directory
+        st.subheader("📁 Select Target Dataset")
+        all_datasets = sorted([d.name for d in DATASET_TABLE_ROOT.iterdir() if d.is_dir()])
+        
+        if not all_datasets:
+            st.info("No datasets found in `Dataset_Traj_Table`.")
+        else:
+            selected_ds = st.selectbox("Select Dataset to Split", all_datasets)
+            ds_path = DATASET_TABLE_ROOT / selected_ds
+            
+            # 2. Split Ratio Setup
+            st.subheader("⚙️ Split Configuration")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1: train_pct = st.number_input("Train Ratio (%)", min_value=0, max_value=100, value=70)
+            with col2: test_pct = st.number_input("Test Ratio (%)", min_value=0, max_value=100, value=20)
+            with col3: val_pct = st.number_input("Val Ratio (%)", min_value=0, max_value=100, value=10)
+            
+            total_pct = train_pct + test_pct + val_pct
+            
+            if total_pct != 100:
+                st.warning(f"⚠️ Total percentage is **{total_pct}%**. It must be exactly **100%**.")
+            else:
+                st.info(f"✅ Split Ratio: **{train_pct}/{test_pct}/{val_pct}**")
+                
+                # Stats
+                # Use a specific glob to count cases
+                all_cases = [d for d in ds_path.rglob("case_*") if d.is_dir()]
+                st.write(f"🔍 Found **{len(all_cases)}** cases inside this dataset folder.")
+                
+                # 3. Execution
+                st.divider()
+                if st.button("🚀 Start Split Data", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+                    split_script = PROJECT_ROOT / "Tool_utility" / "split_dataset.py"
+                    
+                    if not split_script.exists():
+                        st.error(f"❌ Split script not found at {split_script}")
+                    else:
+                        python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                        if not python_path.exists(): python_path = "python3"
+                        
+                        command = [
+                            str(python_path), str(split_script),
+                            "--source", str(ds_path),
+                            "--train", str(train_pct / 100),
+                            "--test", str(test_pct / 100),
+                            "--val", str(val_pct / 100)
+                        ]
+                        
+                        st.session_state.process_manager.start_process(command, str(PROJECT_ROOT))
+                        st.rerun()
+
+    # Monitoring Output
+    if st.session_state.process_manager.is_running:
+        st.info(f"🔥 Splitting data for `{selected_ds if 'selected_ds' in locals() else ''}`...")
+        log_container = st.empty()
+        if "split_logs" not in st.session_state: st.session_state.split_logs = ""
+        new_output = "".join(list(st.session_state.process_manager.get_output()))
+        if new_output: st.session_state.split_logs += new_output
+        log_container.code(st.session_state.split_logs)
+        time.sleep(1); st.rerun()
+    else:
+        if "split_logs" in st.session_state and st.session_state.split_logs:
+            st.subheader("Split Tool Output")
+            st.code(st.session_state.split_logs)
+            if st.button("🧹 Clear Split Logs"): st.session_state.split_logs = ""; st.rerun()

@@ -1,5 +1,5 @@
 {
-    "dataset_path": "../../Geo_scenario/Topo_2/dataswarm_parquet",
+    "dataset_path": "../../Geo_scenario/Topo_bottleneck/dataswarm_parquet",
     "batch_size": 1,
     "obs_len": 50,
     "pred_len": 25,

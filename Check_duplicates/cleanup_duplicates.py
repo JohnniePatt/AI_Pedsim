@@ -9,18 +9,18 @@ def extract_id(filename):
     return match.group(1) if match else None
 
 def get_all_linked_files(base_repo, target_id):
-    """Finds all files in Topo_2 that contain the target_id."""
+    """Finds all files in Topo_bottleneck that contain the target_id."""
     # List of common patterns:
-    # Topo_2/spawn_exit_area/split/spawn_exit_{id}.csv
-    # Topo_2/spawn_exit/spawn_exit{id}.png (No underscore)
-    # Topo_2/trajectory_line/trajectory_{id}.png
-    # Topo_2/dataswarm/split/spawn_exit_{id}.sqlite
-    # Topo_2/heatmap_density/heatmap_density{id}.png
-    # Topo_2/heatmap_speed/heatmap_speed{id}.png
-    # Topo_2/geo/spawn_exit_{id}.geo.json (maybe?)
+    # Topo_bottleneck/spawn_exit_area/split/spawn_exit_{id}.csv
+    # Topo_bottleneck/spawn_exit/spawn_exit{id}.png (No underscore)
+    # Topo_bottleneck/trajectory_line/trajectory_{id}.png
+    # Topo_bottleneck/dataswarm/split/spawn_exit_{id}.sqlite
+    # Topo_bottleneck/heatmap_density/heatmap_density{id}.png
+    # Topo_bottleneck/heatmap_speed/heatmap_speed{id}.png
+    # Topo_bottleneck/geo/spawn_exit_{id}.geo.json (maybe?)
     
     files_to_remove = []
-    topo_path = Path(base_repo) / "Topo_2"
+    topo_path = Path(base_repo) / "Topo_bottleneck"
     
     # We'll search for files that have the target_id in their name
     # Be careful not to match substrings of longer IDs if possible, 

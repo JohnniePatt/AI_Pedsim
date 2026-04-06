@@ -39,7 +39,7 @@ class TrainingConfiguration:
     # 2. Paths
     BASE_DIR = Path(__file__).resolve().parent
     PROJECT_ROOT = BASE_DIR.parent.parent
-    TOPO_DIR = PROJECT_ROOT / "Topo_2"
+    TOPO_DIR = PROJECT_ROOT / "Topo_bottleneck"
     
     # Defaults for data (Can be overridden via JSON)
     train_file = str(TOPO_DIR / "dataswarm" / "test" / "double-botteleneck_100801.sqlite")
