@@ -67,6 +67,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, cfg, epoch: int):
     kl_w     = get_kl_weight(epoch, cfg)
     goal_w   = cfg.get("goal_weight", 1.0)
     oob_w    = cfg.get("oob_weight", 0.5)
+    seg_oob_w = cfg.get("segment_oob_weight", 0.0)
 
     for batch in tqdm(loader, desc="  Train", leave=False):
         b = batch_to_device(batch, device)
@@ -81,6 +82,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, cfg, epoch: int):
                 goal_weight     = goal_w,
                 kl_weight       = kl_w,
                 oob_weight      = oob_w,
+                segment_oob_weight = seg_oob_w,
                 teacher_forcing = True,
             )
         loss = out["loss"]
@@ -108,6 +110,7 @@ def validate(model, loader, device, cfg, epoch: int):
     kl_w    = get_kl_weight(epoch, cfg)
     goal_w  = cfg.get("goal_weight", 1.0)
     oob_w   = cfg.get("oob_weight", 0.5)
+    seg_oob_w = cfg.get("segment_oob_weight", 0.0)
 
     for batch in tqdm(loader, desc="  Val  ", leave=False):
         b = batch_to_device(batch, device)
@@ -121,6 +124,7 @@ def validate(model, loader, device, cfg, epoch: int):
                 goal_weight     = goal_w,
                 kl_weight       = kl_w,
                 oob_weight      = oob_w,
+                segment_oob_weight = seg_oob_w,
                 teacher_forcing = True,
                 sample_latent   = False,
             )
@@ -137,7 +141,23 @@ def denorm_positions(norm_positions: np.ndarray, meta: dict) -> np.ndarray:
     return world
 
 
-def compute_scene_metrics(pred_world: np.ndarray, gt_world: np.ndarray, mask: np.ndarray, walkable, collision_threshold_m: float):
+def compute_scene_metrics(
+    pred_world: np.ndarray,
+    gt_world: np.ndarray,
+    mask: np.ndarray,
+    walkable,
+    collision_threshold_m: float,
+    exit_centroid_world: np.ndarray | None = None,
+):
+    """
+    exit_centroid_world : [2] array (x, y) in world metres – the goal star.
+        FDE = mean distance from each agent's FINAL predicted position to this
+        centroid.  This is the correct reference because GT is truncated
+        (max_seq_len cuts trajectories before they reach the exit), so
+        ||AI_final - GT_final|| would penalise a model that correctly reaches
+        the goal simply because GT never got there.
+        If None, falls back to the old ||AI_final - GT_final|| behaviour.
+    """
     valid_steps = mask[:, 1:]
     pred_future = pred_world[:, 1:]
     gt_future = gt_world[:, 1:]
@@ -156,7 +176,16 @@ def compute_scene_metrics(pred_world: np.ndarray, gt_world: np.ndarray, mask: np
             continue
         agent_dists = np.linalg.norm(pred_future[aidx, valid_idx] - gt_future[aidx, valid_idx], axis=1)
         dists.extend(agent_dists.tolist())
-        final_dists.append(float(agent_dists[-1]))
+
+        # FDE: distance from AI's last predicted position to exit centroid (⭐).
+        # GT is truncated and does not reach the exit, so using GT_final as
+        # reference would incorrectly penalise a model that reaches the goal.
+        last_pred = pred_future[aidx, valid_idx[-1]]
+        if exit_centroid_world is not None:
+            final_dists.append(float(np.linalg.norm(last_pred - exit_centroid_world)))
+        else:
+            final_dists.append(float(agent_dists[-1]))
+
         for tidx in valid_idx.tolist():
             x, y = pred_future[aidx, tidx]
             outside_count += 0 if point_is_inside_walkable(x, y, walkable) else 1
@@ -234,12 +263,21 @@ def run_epoch_report(model, val_dataset, report_dir: pathlib.Path, epoch: int, d
 
     pred_world = denorm_positions(pred_norm, meta)
     gt_world = denorm_positions(gt_norm, meta)
+
+    # Convert normalised goal_pt → world coordinates for FDE reference (⭐).
+    goal_norm = sample["goal_pt"][0].numpy()   # [2]  first agent's goal (all share same exit)
+    exit_centroid_world = np.array(
+        grid_to_world(float(goal_norm[0]), float(goal_norm[1]), meta),
+        dtype=np.float32,
+    )
+
     ade, fde, collision_rate, out_of_bounds_rate = compute_scene_metrics(
         pred_world,
         gt_world,
         mask,
         walkable,
         collision_threshold_m=cfg.get("collision_threshold_m", 0.4),
+        exit_centroid_world=exit_centroid_world,
     )
 
     epoch_dir = report_dir / f"epoch_{epoch:03d}"
@@ -278,7 +316,14 @@ def main(config_path: str):
         path.mkdir(parents=True, exist_ok=True)
 
     shutil.copy(cfg_file, run_dir / "config_train.json")
+    run_meta = {
+        "resolved_config_path": str(cfg_file),
+        "scope_name": cfg.get("scope_name", "unnamed_scope"),
+    }
+    with open(run_dir / "run_meta.json", "w") as f:
+        json.dump(run_meta, f, indent=2)
     print(f"[Train] Run: {run_dir}")
+    print(f"[Train] Config: {cfg_file}")
     print(f"[Train] Scope: {cfg.get('scope_name', 'unnamed_scope')}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -310,6 +355,8 @@ def main(config_path: str):
         neighbor_radius=cfg.get("neighbor_radius", 0.08),
         dropout=cfg.get("dropout", 0.1),
         use_social=cfg.get("use_social", True),
+        max_residual=cfg.get("max_residual", 0.15),
+        segment_samples=cfg.get("segment_samples", 5),
     ).to(device)
 
     optimizer = build_optimizer(model, cfg)

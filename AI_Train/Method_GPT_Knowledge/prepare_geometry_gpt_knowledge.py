@@ -13,7 +13,7 @@ import re
 import numpy as np
 import pandas as pd
 from shapely import wkt
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 
 
@@ -30,7 +30,36 @@ def load_polygons_from_json(file_path: str | pathlib.Path) -> list[Polygon]:
     return [Polygon(coords) for coords in data]
 
 
-def build_walkable_area(room_json: str | pathlib.Path, corridor_json: str | pathlib.Path):
+def _build_housegan_walkable_area(room_json: str | pathlib.Path, corridor_json: str | pathlib.Path, door_json: str | pathlib.Path):
+    rooms = load_polygons_from_json(room_json)
+    corridors = load_polygons_from_json(corridor_json)
+    with open(door_json, "r", encoding="utf-8") as f:
+        doors_data = json.load(f)
+
+    footprint = unary_union(rooms + corridors)
+    wall_thickness = 0.2
+    door_width = 1.5
+
+    raw_walls = unary_union([poly.exterior.buffer(wall_thickness / 2.0, join_style=2) for poly in rooms + corridors])
+    door_cutouts = []
+    for door in doors_data:
+        px, py = door["pos"]
+        cut_depth = wall_thickness * 4.0
+        if bool(door.get("horizontal", False)):
+            cutout = box(px - door_width / 2.0, py - cut_depth / 2.0, px + door_width / 2.0, py + cut_depth / 2.0)
+        else:
+            cutout = box(px - cut_depth / 2.0, py - door_width / 2.0, px + cut_depth / 2.0, py + door_width / 2.0)
+        door_cutouts.append(cutout)
+
+    if door_cutouts:
+        raw_walls = raw_walls.difference(unary_union(door_cutouts))
+
+    return footprint.difference(raw_walls)
+
+
+def build_walkable_area(room_json: str | pathlib.Path, corridor_json: str | pathlib.Path, door_json: str | pathlib.Path | None = None):
+    if door_json is not None and pathlib.Path(door_json).exists():
+        return _build_housegan_walkable_area(room_json, corridor_json, door_json)
     rooms = load_polygons_from_json(room_json)
     corridors = load_polygons_from_json(corridor_json)
     return unary_union(rooms + corridors)
@@ -73,7 +102,8 @@ def load_trajectory(case_dir: str | pathlib.Path) -> pd.DataFrame:
 def load_scene(case_dir: str | pathlib.Path) -> dict:
     case_dir = pathlib.Path(case_dir)
     spawn_df, exit_df = load_spawn_exit(case_dir)
-    walkable = build_walkable_area(case_dir / "Geo_room.json", case_dir / "Geo_corridor.json")
+    door_path = case_dir / "Geo_door.json"
+    walkable = build_walkable_area(case_dir / "Geo_room.json", case_dir / "Geo_corridor.json", door_path if door_path.exists() else None)
 
     spawn_poly = None
     exit_poly = None

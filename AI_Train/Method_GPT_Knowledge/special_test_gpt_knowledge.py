@@ -180,12 +180,13 @@ def main(config_path: str, input_case_dir: str, output_dir: str, gt_parquet: str
         result["prediction_df"],
         output_dir / "ai_prediction.png",
         gt_df=None,
-        title_prefix=f"special_test | case {case_id} | retrieved={result['retrieved_cases'][0]['case_id']} | AI prediction only",
+        title_prefix=f"special_test | case {case_id} | blend_top={len(result.get('blend_cases', []))} | lead={result['retrieved_cases'][0]['case_id']} | AI prediction only",
     )
 
     print(f"[SpecialTest] Generated AI prediction for case_{case_id}")
     print(f"[SpecialTest] Output dir: {output_dir}")
     print(f"[SpecialTest] Retrieved top case: {result['retrieved_cases'][0]['case_id']} score={result['retrieved_cases'][0]['score']:.4f}")
+    print(f"[SpecialTest] Blend cases used: {len(result.get('blend_cases', []))}")
 
     if gt_parquet:
         gt_parquet_path = pathlib.Path(gt_parquet).resolve()

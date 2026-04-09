@@ -173,6 +173,9 @@ def normalize_housegan(source_root: pathlib.Path, output_root: pathlib.Path, tab
             traj_df.to_parquet(case_dir / parquet_name, index=False)
             shutil.copy2(geo_dir / "geo_room.json", case_dir / "Geo_room.json")
             shutil.copy2(geo_dir / "geo_corridor.json", case_dir / "Geo_corridor.json")
+            door_src = geo_dir / "geo_door.json"
+            if door_src.exists():
+                shutil.copy2(door_src, case_dir / "Geo_door.json")
 
             spawn_exit_df = pd.DataFrame(
                 [

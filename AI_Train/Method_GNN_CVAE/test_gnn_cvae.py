@@ -122,6 +122,8 @@ def main(config_path: str, model_path: str | None = None, run_path: str | None =
         neighbor_radius=cfg.get("neighbor_radius", 0.08),
         dropout=cfg.get("dropout", 0.0),
         use_social=cfg.get("use_social", True),
+        max_residual=cfg.get("max_residual", 0.15),
+        segment_samples=cfg.get("segment_samples", 5),
     ).to(device)
 
     if model_path and model_path.exists():

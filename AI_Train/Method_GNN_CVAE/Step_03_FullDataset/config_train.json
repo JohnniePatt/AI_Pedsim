@@ -19,7 +19,7 @@
     "use_social": true,
     "dropout": 0.1,
     "optimizer": "adam",
-    "lr": 0.0003,
+    "lr": 0.0001,
     "weight_decay": 0.0001,
     "epochs": 60,
     "save_every": 10,
@@ -28,5 +28,5 @@
     "goal_weight": 1.0,
     "oob_weight": 0.5,
     "collision_threshold_m": 0.4,
-    "resume_checkpoint": null
+    "resume_checkpoint": "../../AI_Result/Method_GNN_CVAE/outputs/step_02_best_model_placeholder.pth"
 }

@@ -728,6 +728,8 @@ def show_gpt_knowledge_results(method_result_dir):
                 summary_json = selected_sample / "generation_summary.json"
                 retrieved_json = selected_sample / "retrieved_cases.json"
                 prompt_txt = selected_sample / "planner_prompt.txt"
+                route_skeleton_png = selected_sample / "route_skeleton.png"
+                route_skeleton_json = selected_sample / "route_skeleton.json"
                 pred_files = sorted(selected_sample.glob("AI_pred_*.parquet"))
 
                 if summary_json.exists():
@@ -739,6 +741,10 @@ def show_gpt_knowledge_results(method_result_dir):
                     c3.metric("Retrieved Cases", len(summary.get("retrieved_cases", [])))
                     with st.expander("Show generation summary", expanded=False):
                         st.json(summary)
+                    attempts = summary.get("generation_attempts", [])
+                    if attempts:
+                        with st.expander("Show generation attempts", expanded=False):
+                            st.dataframe(pd.DataFrame(attempts), use_container_width=True)
 
                 if retrieved_json.exists():
                     retrieved = json.loads(retrieved_json.read_text(encoding="utf-8"))
@@ -749,6 +755,13 @@ def show_gpt_knowledge_results(method_result_dir):
                 if prompt_txt.exists():
                     with st.expander("Show planner prompt", expanded=False):
                         st.code(prompt_txt.read_text(encoding="utf-8"))
+
+                if route_skeleton_png.exists():
+                    st.markdown("#### Route Skeleton Preview")
+                    st.image(str(route_skeleton_png), caption=route_skeleton_png.name, use_container_width=True)
+                if route_skeleton_json.exists():
+                    with st.expander("Show route skeleton JSON", expanded=False):
+                        st.json(json.loads(route_skeleton_json.read_text(encoding="utf-8")))
 
                 if pred_files:
                     selected_pred = st.selectbox("Select Prediction File", pred_files, format_func=lambda p: p.name)
@@ -839,6 +852,8 @@ def show_gpt_knowledge_special_tests(method_result_dir):
     if generation_dir.exists():
         retrieved_json = generation_dir / "retrieved_cases.json"
         prompt_txt = generation_dir / "planner_prompt.txt"
+        route_skeleton_png = generation_dir / "route_skeleton.png"
+        route_skeleton_json = generation_dir / "route_skeleton.json"
         pred_files = sorted(generation_dir.glob("AI_pred_*.parquet"))
         if retrieved_json.exists():
             retrieved = json.loads(retrieved_json.read_text(encoding="utf-8"))
@@ -848,10 +863,23 @@ def show_gpt_knowledge_special_tests(method_result_dir):
         if prompt_txt.exists():
             with st.expander("Show planner prompt", expanded=False):
                 st.code(prompt_txt.read_text(encoding="utf-8"))
+        if route_skeleton_png.exists():
+            st.markdown("#### Route Skeleton Preview")
+            st.image(str(route_skeleton_png), caption=route_skeleton_png.name, use_container_width=True)
+        if route_skeleton_json.exists():
+            with st.expander("Show route skeleton JSON", expanded=False):
+                st.json(json.loads(route_skeleton_json.read_text(encoding="utf-8")))
         if pred_files:
             pred_df = pd.read_parquet(pred_files[0])
             with st.expander("Show AI prediction table", expanded=False):
                 st.dataframe(pred_df, use_container_width=True)
+        summary_json = generation_dir / "generation_summary.json"
+        if summary_json.exists():
+            summary = json.loads(summary_json.read_text(encoding="utf-8"))
+            attempts = summary.get("generation_attempts", [])
+            if attempts:
+                with st.expander("Show generation attempts", expanded=False):
+                    st.dataframe(pd.DataFrame(attempts), use_container_width=True)
 
     if ai_image.exists():
         st.markdown("#### AI Visual")

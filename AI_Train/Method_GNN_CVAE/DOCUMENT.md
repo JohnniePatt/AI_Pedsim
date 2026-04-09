@@ -35,6 +35,7 @@ This keeps the environment simpler and makes iteration easier before we scale th
 ## Step Layout
 Scoped training stages now live in subdirectories:
 - `Step_01_GoalOnly`
+- `Step_01_5_GoalGeometry`
 - `Step_02_GoalSocial`
 - `Step_03_FullDataset`
 
@@ -45,3 +46,9 @@ Each step contains its own:
 - `test_gnn_cvae.py`
 
 Those step scripts are lightweight wrappers around the shared core files in the method root.
+
+Recommended order:
+1. `Step_01_GoalOnly`
+2. `Step_01_5_GoalGeometry`
+3. `Step_02_GoalSocial`
+4. `Step_03_FullDataset`

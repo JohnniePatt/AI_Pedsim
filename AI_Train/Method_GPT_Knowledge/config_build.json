@@ -5,5 +5,5 @@
   ],
   "split": "train",
   "max_cases": 0,
-  "knowledge_output_dir": "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v2"
+  "knowledge_output_dir": "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v3"
 }

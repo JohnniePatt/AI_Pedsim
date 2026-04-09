@@ -488,8 +488,10 @@ elif navigation == "🔬 Testing model":
             c1, c2 = st.columns(2)
             session_name = c1.text_input("Session Name", value=f"special_{int(time.time())}")
             case_id_input = c2.text_input("Numeric Case ID", value=default_case_id)
+            st.caption("For HouseGAN scenes, upload `Geo_door.json` too so the route respects walls and door openings.")
             geo_room_file = st.file_uploader("Geo_room.json", type=["json"], key="gpt_special_geo_room")
             geo_corridor_file = st.file_uploader("Geo_corridor.json", type=["json"], key="gpt_special_geo_corridor")
+            geo_door_file = st.file_uploader("Geo_door.json (Optional, required for HouseGAN)", type=["json"], key="gpt_special_geo_door")
             spawn_location_file = st.file_uploader("Spawn_location.csv", type=["csv"], key="gpt_special_spawn_location")
             spawn_exit_file = st.file_uploader("Spawn_exit.csv", type=["csv"], key="gpt_special_spawn_exit")
 
@@ -505,6 +507,8 @@ elif navigation == "🔬 Testing model":
                     case_dir = session_dir / "input_case" / f"case_{case_id_input}"
                     save_uploaded_file(geo_room_file, case_dir / "Geo_room.json")
                     save_uploaded_file(geo_corridor_file, case_dir / "Geo_corridor.json")
+                    if geo_door_file is not None:
+                        save_uploaded_file(geo_door_file, case_dir / "Geo_door.json")
                     save_uploaded_file(spawn_location_file, case_dir / f"Spawn_location_{case_id_input}.csv")
                     save_uploaded_file(spawn_exit_file, case_dir / f"Spawn_exit_{case_id_input}.csv")
 

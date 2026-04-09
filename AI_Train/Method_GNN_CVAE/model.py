@@ -89,6 +89,8 @@ class GNNCVAE(nn.Module):
         dropout: float = 0.1,
         use_social: bool = True,
         oob_weight: float = 0.5,
+        max_residual: float = 0.15,
+        segment_samples: int = 5,
     ):
         super().__init__()
         self.hidden_dim      = hidden_dim
@@ -98,6 +100,7 @@ class GNNCVAE(nn.Module):
         self.neighbor_radius = neighbor_radius
         self.use_social      = use_social
         self.oob_weight      = oob_weight
+        self.segment_samples = max(int(segment_samples), 2)
 
         self.geo_encoder  = GeoEncoder(geo_dim)
         self.agent_encoder = nn.Sequential(
@@ -127,14 +130,17 @@ class GNNCVAE(nn.Module):
         self.decoder_cell = nn.GRUCell(gru_in, hidden_dim)
 
         # ── Position head: predicts RESIDUAL from linear anchor ─────────────
-        # Replaces the old delta_head.  Output is NOT a delta from current
-        # position; it is a deviation from the straight-line interpolation
-        # between start and goal.  This eliminates accumulation drift.
+        # Output is a bounded deviation from the straight-line interpolation
+        # between start and goal.  tanh + max_residual keeps the residual in
+        # [-max_residual, +max_residual] so next_pos stays near [0, 1].
         self.pos_head = nn.Sequential(
             nn.Linear(hidden_dim + hidden_dim + 2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 2),
         )
+        # Maximum deviation from linear anchor in normalised [0,1] space.
+        # 0.15 ≈ 20 m on a 132 m map – enough for realistic detours.
+        self.max_residual = max_residual
 
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
 
@@ -243,8 +249,11 @@ class GNNCVAE(nn.Module):
             linear_anchor = start_pt + progress * (goal_pt - start_pt)
 
             goal_delta = goal_pt - current
-            residual   = self.pos_head(torch.cat([h, social, goal_delta], dim=-1))
-            next_pos   = linear_anchor + residual
+            # tanh bounds residual to [-max_residual, +max_residual] smoothly.
+            # This keeps next_pos near the linear anchor and prevents the model
+            # from drifting outside the normalised [0, 1] coordinate space.
+            residual   = torch.tanh(self.pos_head(torch.cat([h, social, goal_delta], dim=-1))) * self.max_residual
+            next_pos   = (linear_anchor + residual).clamp(0.0, 1.0)
 
             if agent_mask is not None:
                 next_mask = agent_mask[:, :, step + 1].unsqueeze(-1).float()
@@ -287,6 +296,47 @@ class GNNCVAE(nn.Module):
         penalty = (1.0 - geo_vals) * agent_mask.float()
         return penalty.sum() / (agent_mask.float().sum() + 1e-8)
 
+    def _segment_oob_loss(
+        self,
+        pred_positions: torch.Tensor,
+        agent_mask: torch.Tensor,
+        geo_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Penalise straight segments that pass through non-walkable cells between
+        two valid timesteps. This is the key difference for the geometry step:
+        it teaches "do not cut through obstacles", not only "endpoints stay in-bounds".
+        """
+        start = pred_positions[:, :, :-1]
+        end = pred_positions[:, :, 1:]
+        seg_mask = agent_mask[:, :, :-1] & agent_mask[:, :, 1:]
+        if not torch.any(seg_mask):
+            return pred_positions.new_tensor(0.0)
+
+        alphas = torch.linspace(
+            0.0,
+            1.0,
+            steps=self.segment_samples,
+            device=pred_positions.device,
+            dtype=pred_positions.dtype,
+        )[1:-1]
+        if alphas.numel() == 0:
+            return pred_positions.new_tensor(0.0)
+
+        samples = start.unsqueeze(3) + (end - start).unsqueeze(3) * alphas.view(1, 1, 1, -1, 1)
+        bsz, n_agents, t_minus_1, n_samples, _ = samples.shape
+        grid = samples.reshape(bsz, n_agents * t_minus_1 * n_samples, 1, 2) * 2.0 - 1.0
+        geo_vals = F.grid_sample(
+            geo_mask.float(),
+            grid,
+            mode="bilinear",
+            align_corners=True,
+            padding_mode="zeros",
+        )
+        geo_vals = geo_vals.squeeze(1).squeeze(-1).view(bsz, n_agents, t_minus_1, n_samples)
+        penalty = (1.0 - geo_vals) * seg_mask.unsqueeze(-1).float()
+        return penalty.sum() / (seg_mask.float().sum() * n_samples + 1e-8)
+
     def compute_losses(
         self,
         pred_positions: torch.Tensor,
@@ -299,6 +349,7 @@ class GNNCVAE(nn.Module):
         goal_weight:    float = 1.0,
         kl_weight:      float = 0.01,
         oob_weight:     float = 0.5,
+        segment_oob_weight: float = 0.0,
     ) -> dict:
         point_mask = agent_mask.unsqueeze(-1).float()
 
@@ -319,12 +370,14 @@ class GNNCVAE(nn.Module):
 
         # OOB soft penalty (differentiable via geo_mask bilinear sampling)
         oob_loss = self._oob_loss(pred_positions, agent_mask, geo_mask)
+        segment_oob_loss = self._segment_oob_loss(pred_positions, agent_mask, geo_mask)
 
         total = (
             recon_loss
             + kl_weight  * kl_loss
             + goal_weight * goal_loss
             + oob_weight  * oob_loss
+            + segment_oob_weight * segment_oob_loss
         )
         return {
             "loss":       total,
@@ -332,6 +385,7 @@ class GNNCVAE(nn.Module):
             "kl_loss":    kl_loss,
             "goal_loss":  goal_loss,
             "oob_loss":   oob_loss,
+            "segment_oob_loss": segment_oob_loss,
         }
 
     # ── Forward ──────────────────────────────────────────────────────────────
@@ -347,6 +401,7 @@ class GNNCVAE(nn.Module):
         goal_weight:     float = 1.0,
         kl_weight:       float = 0.01,
         oob_weight:      float = 0.5,
+        segment_oob_weight: float = 0.0,
         teacher_forcing: bool  = True,
         return_dict:     bool  = True,
     ) -> dict:
@@ -370,6 +425,7 @@ class GNNCVAE(nn.Module):
             goal_weight = goal_weight,
             kl_weight   = kl_weight,
             oob_weight  = oob_weight,
+            segment_oob_weight = segment_oob_weight,
         )
         result = {**losses, "positions": pred_positions, "mu": mu, "logvar": logvar}
         if return_dict:

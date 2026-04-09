@@ -58,15 +58,41 @@ def plot_polygon(ax, geom, facecolor: str, edgecolor: str, alpha: float, linewid
         ax.fill(coords[:, 0], coords[:, 1], facecolor="white", edgecolor=edgecolor, alpha=1.0, linewidth=linewidth * 0.75)
 
 
-def compute_metrics(gt_df: pd.DataFrame, pred_df: pd.DataFrame) -> tuple[float, float]:
+def compute_metrics(
+    gt_df: pd.DataFrame,
+    pred_df: pd.DataFrame,
+    exit_centroid: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """
+    exit_centroid : [x, y] in world metres (the goal star ⭐).
+        FDE = mean distance from each agent's FINAL predicted position to the
+        exit centroid.  GT is truncated by max_seq_len and never reaches the
+        exit, so using ||AI_final - GT_final|| would penalise a model that
+        correctly reaches the goal.  If None, falls back to old behaviour.
+    ADE = step-by-step mean error (unchanged – still compared to GT).
+    """
     merged = gt_df.merge(pred_df, on=["frame", "id"], suffixes=("_gt", "_pred"))
     if merged.empty:
         return 0.0, 0.0
 
-    merged["dist"] = np.sqrt((merged["pos_x_pred"] - merged["pos_x_gt"]) ** 2 + (merged["pos_y_pred"] - merged["pos_y_gt"]) ** 2)
+    merged["dist"] = np.sqrt(
+        (merged["pos_x_pred"] - merged["pos_x_gt"]) ** 2
+        + (merged["pos_y_pred"] - merged["pos_y_gt"]) ** 2
+    )
     ade = float(merged["dist"].mean())
-    final_rows = merged.sort_values("frame").groupby("id").tail(1)
-    fde = float(final_rows["dist"].mean()) if not final_rows.empty else 0.0
+
+    if exit_centroid is not None:
+        # FDE vs exit centroid ⭐
+        ai_final = pred_df.sort_values("frame").groupby("id").tail(1)
+        fde_vals = np.sqrt(
+            (ai_final["pos_x"].values - exit_centroid[0]) ** 2
+            + (ai_final["pos_y"].values - exit_centroid[1]) ** 2
+        )
+        fde = float(fde_vals.mean()) if len(fde_vals) > 0 else 0.0
+    else:
+        final_rows = merged.sort_values("frame").groupby("id").tail(1)
+        fde = float(final_rows["dist"].mean()) if not final_rows.empty else 0.0
+
     return ade, fde
 
 
@@ -123,7 +149,20 @@ def make_epoch_plot(epoch_dir: pathlib.Path, out_path: pathlib.Path) -> dict:
     pred_df = load_traj_table(ai_path)
     gt_df = load_traj_table(gt_path)
     walkable = build_walkable_area(str(room_json), str(corridor_json))
-    ade_m, fde_m = compute_metrics(gt_df, pred_df)
+
+    # Resolve exit centroid for FDE (GT is truncated – never reaches exit)
+    exit_centroid = None
+    spawn_exit = next(epoch_dir.glob("Spawn_exit_*.csv"), None)
+    if spawn_exit is not None:
+        _exit_df = pd.read_csv(spawn_exit)
+        if {"type", "area"}.issubset(_exit_df.columns):
+            _exit_rows = _exit_df[_exit_df["type"] == "exit_area"]
+            if not _exit_rows.empty:
+                from shapely import wkt as shapely_wkt
+                _poly = shapely_wkt.loads(_exit_rows.iloc[0]["area"])
+                exit_centroid = np.array([_poly.centroid.x, _poly.centroid.y])
+
+    ade_m, fde_m = compute_metrics(gt_df, pred_df, exit_centroid=exit_centroid)
 
     all_agent_ids = sorted(set(gt_df["id"].tolist()) | set(pred_df["id"].tolist()))
     colors = build_agent_colors([int(x) for x in all_agent_ids])
