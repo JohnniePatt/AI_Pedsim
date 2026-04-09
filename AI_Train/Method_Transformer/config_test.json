@@ -1,17 +1,18 @@
 {
-    "obs_len": 20,
-    "pred_len": 10,
-    "max_seq_len": 30,
-    "d_model": 128,
-    "nhead": 4,
-    "num_layers": 4,
-    "dim_feedforward": 512,
-    "dropout": 0.0,
-    "col_frame": "Frame",
-    "col_agent": "Agent id",
-    "col_x": "position X",
-    "col_y": "Y",
-    "normalize": true,
-    "dataset_path": "../../Dataset_Traj_Table/Topo_HouseGAN",
-    "model_checkpoint": "../outputs/Method_Transformer_latest/best_model.pth"
+    "dataset_path"      : "../../Dataset_Traj_Table/Topo_bottleneck",
+    "model_checkpoint"  : "../../AI_Result/Method_Transformer/outputs/run_1/weights/best_model.pth",
+
+    "obs_len"           : 5,
+    "frame_stride"      : 8,
+    "max_seq_len"       : 512,
+    "grid_size"         : 64,
+    "geo_padding"       : 1.0,
+    "subset_percent"    : 100.0,
+
+    "d_model"           : 128,
+    "nhead"             : 4,
+    "num_layers"        : 4,
+
+    "batch_size"        : 8,
+    "num_workers"       : 0
 }

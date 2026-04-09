@@ -3,11 +3,13 @@ import pathlib
 import os
 import json
 import time
+import pandas as pd
+import shutil
 
 # Import utilities
 from utils.config_loader import get_available_methods, load_config, save_config, get_method_runs
 from utils.executor import ProcessManager
-from utils.visualizer import plot_training_history, show_sample_images, show_test_evaluation, show_housegan_results
+from utils.visualizer import plot_training_history, show_sample_images, show_test_evaluation, show_housegan_results, show_transformer_val_visuals, show_gnn_cvae_val_visuals, show_gpt_knowledge_results, show_gpt_knowledge_special_tests
 
 # Initialization
 st.set_page_config(page_title="AI Pedsim | Dashboard", page_icon="🚀", layout="wide")
@@ -94,6 +96,13 @@ def inject_custom_css():
         }
     </style>
     """, unsafe_allow_html=True)
+
+
+def save_uploaded_file(uploaded_file, target_path):
+    target = pathlib.Path(target_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
 if "process_manager" not in st.session_state:
     st.session_state.process_manager = ProcessManager()
@@ -194,6 +203,33 @@ if st.sidebar.button(
     st.session_state.current_nav = "📊 Split data (Train,Test,Val)"
     st.rerun()
 
+if st.sidebar.button(
+    "🏠 HouseGAN Format",
+    key="btn_housegan_format",
+    use_container_width=True,
+    help="Normalize HouseGAN outputs into Dataset_Traj_Table case folders"
+):
+    st.session_state.current_nav = "🏠 HouseGAN Format"
+    st.rerun()
+
+if st.sidebar.button(
+    "📚 Method Documentation",
+    key="btn_doc",
+    use_container_width=True,
+    help="Read technical documentation for AI Methods"
+):
+    st.session_state.current_nav = "📚 Method Documentation"
+    st.rerun()
+
+if st.sidebar.button(
+    "💡 Method Concept",
+    key="btn_concept",
+    use_container_width=True,
+    help="Read the concept and architecture explanation for AI Methods"
+):
+    st.session_state.current_nav = "💡 Method Concept"
+    st.rerun()
+
 # Apply the active style via Markdown/CSS hack for the button
 if st.session_state.current_nav == "🧹 Data Formatter":
     st.sidebar.markdown("""
@@ -203,6 +239,14 @@ if st.session_state.current_nav == "🧹 Data Formatter":
             font-weight: 600 !important;
         }
         div[data-testid="stSidebar"] button[kind="secondary"]:has(div:contains("Split data")) {
+            background-color: rgba(128, 128, 128, 0.2) !important;
+            font-weight: 600 !important;
+        }
+        div[data-testid="stSidebar"] button[kind="secondary"]:has(div:contains("Method Documentation")) {
+            background-color: rgba(128, 128, 128, 0.2) !important;
+            font-weight: 600 !important;
+        }
+        div[data-testid="stSidebar"] button[kind="secondary"]:has(div:contains("Method Concept")) {
             background-color: rgba(128, 128, 128, 0.2) !important;
             font-weight: 600 !important;
         }
@@ -218,6 +262,98 @@ st.sidebar.caption("v1.2.5 | JohnniePatt build")
 
 # --- PAGE: Training model ---
 if navigation == "🚀 Training model":
+    if selected_method == "Method_GPT_Knowledge":
+        st.header("Feed Knowledge: Method_GPT_Knowledge")
+        build_config_path = method_path / "config_build.json"
+        build_script_path = method_path / "build_knowledge.py"
+        config_build = {}
+        if build_config_path.exists():
+            with open(build_config_path, "r") as f:
+                config_build = json.load(f)
+
+        st.subheader("🧠 Knowledge Configuration")
+        dataset_table_root = PROJECT_ROOT / "Dataset_Traj_Table"
+        available_datasets = sorted([d.name for d in dataset_table_root.iterdir() if d.is_dir()]) if dataset_table_root.exists() else []
+        selected_datasets = st.multiselect(
+            "Select datasets to feed into knowledge",
+            options=available_datasets,
+            default=[pathlib.Path(p).name for p in config_build.get("dataset_roots", config_build.get("dataset_root", []))] if available_datasets else [],
+        )
+
+        split = st.selectbox("Split", ["train", "test", "val"], index=["train", "test", "val"].index(config_build.get("split", "train")))
+        max_cases = st.number_input("Max Cases (0 = all)", min_value=0, value=int(config_build.get("max_cases", 0)))
+        knowledge_output_default = config_build.get("knowledge_output_dir", "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v1")
+        knowledge_output_dir = st.text_input("Knowledge Output Directory", value=knowledge_output_default)
+
+        with st.expander("📝 Current Build Config", expanded=False):
+            st.code(json.dumps(config_build, indent=2), language="json")
+
+        st.divider()
+        st.subheader("🧠 Execute Feed Knowledge")
+        c1, c2 = st.columns(2)
+        if c1.button("🚀 Start Feed Knowledge", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+            if not selected_datasets:
+                st.error("Please select at least one dataset.")
+            elif not build_script_path.exists():
+                st.error("build_knowledge.py not found.")
+            else:
+                new_config = {
+                    "dataset_roots": [f"../../Dataset_Traj_Table/{name}" for name in selected_datasets],
+                    "split": split,
+                    "max_cases": int(max_cases),
+                    "knowledge_output_dir": knowledge_output_dir,
+                }
+                with open(build_config_path, "w") as f:
+                    json.dump(new_config, f, indent=2)
+
+                python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                if not python_path.exists(): python_path = "python3"
+                command = [str(python_path), str(build_script_path), "--config", "config_build.json"]
+                st.session_state.training_logs = ""
+                st.session_state.training_task = "gpt_feed_knowledge"
+                st.session_state.process_manager.start_process(command, str(method_path))
+                st.rerun()
+
+        if c2.button("🛑 Stop Feed Knowledge", use_container_width=True, disabled=not st.session_state.process_manager.is_running):
+            st.session_state.process_manager.stop_process()
+            st.rerun()
+
+        if st.session_state.process_manager.is_running and st.session_state.get("training_task") == "gpt_feed_knowledge":
+            st.info("🔥 Feeding knowledge in progress...")
+            log_container = st.empty()
+            if "training_logs" not in st.session_state:
+                st.session_state.training_logs = ""
+            new_output = "".join(list(st.session_state.process_manager.get_output()))
+            if new_output:
+                st.session_state.training_logs += new_output
+            log_container.code(st.session_state.training_logs, language="bash")
+            time.sleep(1)
+            st.rerun()
+        else:
+            if "training_logs" in st.session_state and st.session_state.training_logs:
+                st.subheader("Console Output")
+                st.code(st.session_state.training_logs)
+                if st.button("🧹 Clear Feed Knowledge Logs", key="clear_feed_knowledge_logs"):
+                    st.session_state.training_logs = ""
+                    st.rerun()
+
+            knowledge_root = result_method_path / "knowledge"
+            if knowledge_root.exists():
+                builds = sorted([d for d in knowledge_root.iterdir() if d.is_dir()], key=lambda x: x.name, reverse=True)
+                if builds:
+                    latest_build = builds[0]
+                    manifest_path = latest_build / "knowledge_manifest.json"
+                    if manifest_path.exists():
+                        with open(manifest_path, "r") as f:
+                            manifest = json.load(f)
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Latest Build", latest_build.name)
+                        c2.metric("Cases", manifest.get("num_cases", 0))
+                        c3.metric("Datasets", len(manifest.get("dataset_roots", [])))
+                        with st.expander("Show latest knowledge manifest", expanded=False):
+                            st.json(manifest)
+        st.stop()
+
     st.header(f"Training: {selected_method}")
     
     # 📝 1. Configuration Section (Integrated)
@@ -306,6 +442,148 @@ elif navigation == "🔬 Testing model":
 
     st.divider()
 
+    if selected_method == "Method_GPT_Knowledge":
+        st.subheader("🧪 Special Blind Test")
+        st.caption("Upload a new scene, generate AI paths from the knowledge base, then optionally upload the hidden ground truth to compare AI vs GT.")
+
+        special_cfg = config_test or {}
+        special_root = result_method_path / "special_tests"
+        default_case_id = "990001"
+        knowledge_root = result_method_path / "knowledge"
+        knowledge_builds = sorted([d for d in knowledge_root.iterdir() if d.is_dir()], key=lambda x: x.name, reverse=True) if knowledge_root.exists() else []
+        configured_build_name = pathlib.Path(str(special_cfg.get("knowledge_dir", "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v1"))).name
+        build_names = [d.name for d in knowledge_builds]
+        if configured_build_name in build_names:
+            default_build_idx = build_names.index(configured_build_name)
+        else:
+            default_build_idx = 0 if build_names else None
+
+        selected_build_name = st.selectbox(
+            "Knowledge Build",
+            options=build_names if build_names else [configured_build_name],
+            index=default_build_idx if default_build_idx is not None else 0,
+            help="Choose which built knowledge index the special test should use.",
+        )
+        knowledge_dir = knowledge_root / selected_build_name
+        scene_index_path = knowledge_dir / "scene_index.parquet"
+
+        kc1, kc2 = st.columns([2, 1])
+        with kc1:
+            if scene_index_path.exists():
+                st.success(f"Knowledge ready: `{knowledge_dir}`")
+            else:
+                st.warning(f"Knowledge not built yet: `{knowledge_dir}`")
+        with kc2:
+            if st.button("🧠 Go Build Knowledge", use_container_width=True, key="goto_feed_knowledge"):
+                st.session_state.current_nav = "🚀 Training model"
+                st.rerun()
+
+        if st.button("💾 Use This Knowledge Build", key="save_selected_knowledge_build"):
+            config_test["knowledge_dir"] = f"../../AI_Result/Method_GPT_Knowledge/knowledge/{selected_build_name}"
+            save_config(method_path, config_test, config_type="test")
+            st.success(f"Saved test config to use `{selected_build_name}`.")
+            st.rerun()
+
+        with st.expander("📥 Input Scene Upload", expanded=True):
+            c1, c2 = st.columns(2)
+            session_name = c1.text_input("Session Name", value=f"special_{int(time.time())}")
+            case_id_input = c2.text_input("Numeric Case ID", value=default_case_id)
+            geo_room_file = st.file_uploader("Geo_room.json", type=["json"], key="gpt_special_geo_room")
+            geo_corridor_file = st.file_uploader("Geo_corridor.json", type=["json"], key="gpt_special_geo_corridor")
+            spawn_location_file = st.file_uploader("Spawn_location.csv", type=["csv"], key="gpt_special_spawn_location")
+            spawn_exit_file = st.file_uploader("Spawn_exit.csv", type=["csv"], key="gpt_special_spawn_exit")
+
+            if st.button("🚀 Generate Path", use_container_width=True, key="gpt_special_generate", disabled=st.session_state.process_manager.is_running or not scene_index_path.exists()):
+                if not all([geo_room_file, geo_corridor_file, spawn_location_file, spawn_exit_file]):
+                    st.error("Please upload Geo_room, Geo_corridor, Spawn_location, and Spawn_exit before generating.")
+                elif not case_id_input.isdigit():
+                    st.error("Case ID must be numeric.")
+                else:
+                    session_dir = special_root / session_name
+                    if session_dir.exists():
+                        shutil.rmtree(session_dir)
+                    case_dir = session_dir / "input_case" / f"case_{case_id_input}"
+                    save_uploaded_file(geo_room_file, case_dir / "Geo_room.json")
+                    save_uploaded_file(geo_corridor_file, case_dir / "Geo_corridor.json")
+                    save_uploaded_file(spawn_location_file, case_dir / f"Spawn_location_{case_id_input}.csv")
+                    save_uploaded_file(spawn_exit_file, case_dir / f"Spawn_exit_{case_id_input}.csv")
+
+                    python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                    if not python_path.exists(): python_path = "python3"
+                    special_script = method_path / "special_test_gpt_knowledge.py"
+                    command = [
+                        str(python_path),
+                        str(special_script),
+                        "--config", "config_test.json",
+                        "--input_case_dir", str(case_dir),
+                        "--output_dir", str(session_dir),
+                    ]
+                    st.session_state.test_logs = ""
+                    st.session_state.test_task = "gpt_special_generate"
+                    st.session_state.process_manager.start_process(command, str(method_path))
+                    st.rerun()
+
+        with st.expander("🎯 Upload GT Answer And Compare", expanded=False):
+            ready_sessions = []
+            if special_root.exists():
+                for d in sorted([d for d in special_root.iterdir() if d.is_dir()], key=lambda x: x.name, reverse=True):
+                    if (d / "special_test_manifest.json").exists():
+                        ready_sessions.append(d)
+            if not ready_sessions:
+                st.info("Generate at least one successful special test session first.")
+            else:
+                selected_session = st.selectbox("Select Session To Compare", ready_sessions, format_func=lambda p: p.name, key="gpt_special_compare_session")
+                gt_parquet_file = st.file_uploader("Ground Truth Trajectory (.parquet)", type=["parquet"], key="gpt_special_gt")
+                if st.button("⚖️ Compare AI vs GT", use_container_width=True, key="gpt_special_compare", disabled=st.session_state.process_manager.is_running):
+                    manifest_path = selected_session / "special_test_manifest.json"
+                    if not manifest_path.exists():
+                        st.error("This session does not have a manifest yet. Generate the AI prediction first.")
+                    elif gt_parquet_file is None:
+                        st.error("Please upload the GT parquet file before comparing.")
+                    else:
+                        with open(manifest_path, "r", encoding="utf-8") as f:
+                            manifest = json.load(f)
+                        gt_path = selected_session / "uploaded_gt.parquet"
+                        save_uploaded_file(gt_parquet_file, gt_path)
+                        python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                        if not python_path.exists(): python_path = "python3"
+                        special_script = method_path / "special_test_gpt_knowledge.py"
+                        command = [
+                            str(python_path),
+                            str(special_script),
+                            "--config", "config_test.json",
+                            "--input_case_dir", manifest["input_case_dir"],
+                            "--output_dir", str(selected_session),
+                            "--gt_parquet", str(gt_path),
+                        ]
+                        st.session_state.test_logs = ""
+                        st.session_state.test_task = "gpt_special_compare"
+                        st.session_state.process_manager.start_process(command, str(method_path))
+                        st.rerun()
+
+        if st.session_state.process_manager.is_running and st.session_state.get("test_task") in {"gpt_special_generate", "gpt_special_compare"}:
+            status_text = "Generating AI path..." if st.session_state.get("test_task") == "gpt_special_generate" else "Comparing AI vs GT..."
+            st.info(f"⌛ {status_text}")
+            log_container = st.empty()
+            if "test_logs" not in st.session_state:
+                st.session_state.test_logs = ""
+            new_output = "".join(list(st.session_state.process_manager.get_output()))
+            if new_output:
+                st.session_state.test_logs += new_output
+            log_container.code(st.session_state.test_logs)
+            time.sleep(1)
+            st.rerun()
+        else:
+            if "test_logs" in st.session_state and st.session_state.test_logs:
+                st.subheader("Special Test Output")
+                st.code(st.session_state.test_logs)
+                if st.button("🧹 Clear Special Test Logs", key="clear_gpt_special_logs"):
+                    st.session_state.test_logs = ""
+                    st.rerun()
+
+        show_gpt_knowledge_special_tests(result_method_path)
+        st.stop()
+
     # 🔬 2. Manual Evaluation
     st.subheader("🔬 Manual Evaluation")
     available_runs = get_method_runs(result_method_path)
@@ -347,6 +625,40 @@ elif navigation == "🔬 Testing model":
 # --- PAGE: View results ---
 elif navigation == "📈 View results":
     st.header(f"Results: {selected_method}")
+    if selected_method == "Method_GPT_Knowledge":
+        visual_script = method_path / "visual_gpt_knowledge.py"
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button("🧭 Generate Visuals", use_container_width=True, key="gen_gpt_knowledge_visuals", disabled=st.session_state.process_manager.is_running or not visual_script.exists()):
+                python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                if not python_path.exists(): python_path = "python3"
+                command = [str(python_path), str(visual_script), "--result_dir", str(result_method_path)]
+                st.session_state.results_logs = ""
+                st.session_state.results_task = "gpt_knowledge_visuals"
+                st.session_state.process_manager.start_process(command, str(method_path))
+                st.rerun()
+        with c2:
+            if not visual_script.exists():
+                st.warning("visual_gpt_knowledge.py not found in this method folder.")
+            else:
+                st.info("Generate GT vs AI visual comparisons from the saved retrieval outputs and show them below.")
+
+        if st.session_state.process_manager.is_running and st.session_state.get("results_task") == "gpt_knowledge_visuals":
+            st.info("🧭 Generating GPT knowledge visuals...")
+            if "results_logs" not in st.session_state:
+                st.session_state.results_logs = ""
+            new_output = "".join(list(st.session_state.process_manager.get_output()))
+            if new_output:
+                st.session_state.results_logs += new_output
+            st.code(st.session_state.results_logs)
+            time.sleep(1)
+            st.rerun()
+        else:
+            if st.session_state.get("results_task") == "gpt_knowledge_visuals" and st.session_state.get("results_logs"):
+                with st.expander("Visual generation logs", expanded=False):
+                    st.code(st.session_state.results_logs)
+        show_gpt_knowledge_results(result_method_path)
+        st.stop()
     available_runs = get_method_runs(result_method_path)
     if not available_runs:
         st.info("No runs found for this method yet.")
@@ -354,14 +666,70 @@ elif navigation == "📈 View results":
         selected_run = st.selectbox("Select Run", available_runs)
         run_full_path = result_method_path / selected_run
         
-        t1, t2, t3 = st.tabs(["📊 Loss Curves", "🖼 Training Samples", "🏁 Final Evaluation"])
-        with t1:
-            csv_path = run_full_path / "logs" / "training_history.csv"
-            plot_training_history(csv_path)
-        with t2:
-            show_sample_images(run_full_path / "samples")
-        with t3:
-            show_test_evaluation(run_full_path)
+        if selected_method in ["Method_Transformer", "Method_GNN_CVAE"]:
+            t1, t2, t3, t4 = st.tabs(["📊 Loss Curves", "🖼 Training Samples", "🧭 Val Epoch Visuals", "🏁 Final Evaluation"])
+            with t1:
+                csv_path = run_full_path / "logs" / "training_history.csv"
+                plot_training_history(csv_path)
+            with t2:
+                show_sample_images(run_full_path / "samples")
+            with t3:
+                if selected_method == "Method_Transformer":
+                    st.caption("Generate and inspect per-epoch validation plots built from the saved transformer samples.")
+                    visual_script = method_path / "visual_transformer.py"
+                    task_name = "transformer_visuals"
+                    viewer_fn = show_transformer_val_visuals
+                    missing_msg = "visual_transformer.py not found in this method folder."
+                    running_msg = "🧭 Generating transformer validation visuals..."
+                else:
+                    st.caption("Generate and inspect per-epoch validation plots built from the saved GNN-CVAE samples.")
+                    visual_script = method_path / "visual_gnn_cvae.py"
+                    task_name = "gnn_cvae_visuals"
+                    viewer_fn = show_gnn_cvae_val_visuals
+                    missing_msg = "visual_gnn_cvae.py not found in this method folder."
+                    running_msg = "🧭 Generating GNN-CVAE validation visuals..."
+
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    if st.button("🧭 Generate Val Visuals", use_container_width=True, key=f"gen_val_visuals_{selected_method}_{selected_run}", disabled=st.session_state.process_manager.is_running or not visual_script.exists()):
+                        python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+                        if not python_path.exists(): python_path = "python3"
+                        command = [str(python_path), str(visual_script), "--run_dir", str(run_full_path)]
+                        st.session_state.results_logs = ""
+                        st.session_state.results_task = task_name
+                        st.session_state.process_manager.start_process(command, str(method_path))
+                        st.rerun()
+                with c2:
+                    if not visual_script.exists():
+                        st.warning(missing_msg)
+                    else:
+                        st.info("Recommended placement: keep this in View results, because it is a post-training analysis of the saved validation samples for each epoch.")
+
+                if st.session_state.process_manager.is_running and st.session_state.get("results_task") == task_name:
+                    st.info(running_msg)
+                    if "results_logs" not in st.session_state:
+                        st.session_state.results_logs = ""
+                    new_output = "".join(list(st.session_state.process_manager.get_output()))
+                    if new_output:
+                        st.session_state.results_logs += new_output
+                    st.code(st.session_state.results_logs)
+                    time.sleep(1); st.rerun()
+                else:
+                    if st.session_state.get("results_task") == task_name and st.session_state.get("results_logs"):
+                        with st.expander("Visual generation logs", expanded=False):
+                            st.code(st.session_state.results_logs)
+                    viewer_fn(run_full_path)
+            with t4:
+                show_test_evaluation(run_full_path)
+        else:
+            t1, t2, t3 = st.tabs(["📊 Loss Curves", "🖼 Training Samples", "🏁 Final Evaluation"])
+            with t1:
+                csv_path = run_full_path / "logs" / "training_history.csv"
+                plot_training_history(csv_path)
+            with t2:
+                show_sample_images(run_full_path / "samples")
+            with t3:
+                show_test_evaluation(run_full_path)
 
 # --- PAGE: HouseGAN Design Floor Plan ---
 elif navigation == "🏠 Design Floor Plan":
@@ -716,6 +1084,83 @@ elif navigation == "🧹 Data Formatter":
                         if num_parquet > 0:
                             st.success(f"📚 Successfully formatted **{num_parquet}** parquet files in `{selected_topo}/dataswarm_parquet`.")
 
+# --- PAGE: HouseGAN Format ---
+elif navigation == "🏠 HouseGAN Format":
+    st.header("🏠 HouseGAN Format")
+    st.markdown("Normalize HouseGAN simulation outputs into `Dataset_Traj_Table` case folders that match the bottleneck schema.")
+
+    source_root = PROJECT_ROOT / "Geo_scenario" / "Topo_HouseGAN"
+    output_root = PROJECT_ROOT / "Dataset_Traj_Table" / "Topo_HouseGAN"
+    formatter_script = PROJECT_ROOT / "Tool_utility" / "normalize_housegan_dataset.py"
+
+    c1, c2 = st.columns(2)
+    c1.info(f"📂 **Source:** `{source_root.relative_to(PROJECT_ROOT)}`")
+    c2.info(f"✨ **Output:** `{output_root.relative_to(PROJECT_ROOT)}`")
+
+    if not source_root.exists():
+        st.error(f"❌ Source root not found: {source_root}")
+    elif not formatter_script.exists():
+        st.error(f"❌ Formatter script not found: {formatter_script}")
+    else:
+        st.subheader("⚙️ Normalize Settings")
+        table_filter = st.text_input(
+            "SQLite Table Filter",
+            value="trajectory_data",
+            help="Only import the table whose name contains this text."
+        )
+
+        geo_count = len([d for d in (source_root / "geo").iterdir() if d.is_dir()]) if (source_root / "geo").exists() else 0
+        sim_count = len(list((source_root / "dataswarm").rglob("*.sqlite"))) if (source_root / "dataswarm").exists() else 0
+        m1, m2 = st.columns(2)
+        m1.metric("Plan Folders", geo_count)
+        m2.metric("SQLite Files", sim_count)
+
+        st.divider()
+        if st.button("🚀 Start HouseGAN Format", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+            python_path = AI_TRAIN_DIR.parent / "AI_Pedsim-env" / "bin" / "python3"
+            if not python_path.exists(): python_path = "python3"
+            command = [
+                str(python_path), str(formatter_script),
+                "--source_root", str(source_root),
+                "--output_root", str(output_root),
+                "--filter", table_filter,
+            ]
+            st.session_state.housegan_format_logs = ""
+            st.session_state.process_manager.start_process(command, str(PROJECT_ROOT))
+            st.rerun()
+
+        if st.session_state.process_manager.is_running:
+            st.info("🔥 Formatting HouseGAN dataset...")
+            log_container = st.empty()
+            if "housegan_format_logs" not in st.session_state:
+                st.session_state.housegan_format_logs = ""
+            new_output = "".join(list(st.session_state.process_manager.get_output()))
+            if new_output:
+                st.session_state.housegan_format_logs += new_output
+            log_container.code(st.session_state.housegan_format_logs)
+            time.sleep(1)
+            st.rerun()
+        else:
+            if "housegan_format_logs" in st.session_state and st.session_state.housegan_format_logs:
+                st.subheader("Formatter Output")
+                st.code(st.session_state.housegan_format_logs)
+                if st.button("🧹 Clear HouseGAN Format Logs", key="clear_housegan_format_logs"):
+                    st.session_state.housegan_format_logs = ""
+                    st.rerun()
+
+            manifest_path = output_root / "manifest_housegan_cases.csv"
+            if manifest_path.exists():
+                try:
+                    manifest_df = pd.read_csv(manifest_path)
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Normalized Cases", len(manifest_df))
+                    c2.metric("Unique Plans", manifest_df["plan_name"].nunique() if "plan_name" in manifest_df.columns else 0)
+                    c3.metric("Mean Agents", f"{manifest_df['num_agents'].mean():.1f}" if "num_agents" in manifest_df.columns and len(manifest_df) else "0.0")
+                    with st.expander("Show HouseGAN manifest", expanded=False):
+                        st.dataframe(manifest_df, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error reading manifest_housegan_cases.csv: {e}")
+
 # --- PAGE: Split Data ---
 elif navigation == "📊 Split data (Train,Test,Val)":
     st.header("📊 Split Data (Train / Test / Val)")
@@ -787,8 +1232,53 @@ elif navigation == "📊 Split data (Train,Test,Val)":
         if new_output: st.session_state.split_logs += new_output
         log_container.code(st.session_state.split_logs)
         time.sleep(1); st.rerun()
-    else:
         if "split_logs" in st.session_state and st.session_state.split_logs:
             st.subheader("Split Tool Output")
             st.code(st.session_state.split_logs)
             if st.button("🧹 Clear Split Logs"): st.session_state.split_logs = ""; st.rerun()
+
+# --- PAGE: Method Documentation ---
+elif navigation == "📚 Method Documentation":
+    st.header("📚 AI Method Documentation")
+    st.markdown("Read the official documentation for the available AI methods in the workspace.")
+
+    if not available_methods:
+        st.info("No methods found.")
+    else:
+        # Default to selected_method from the main sidebar
+        default_idx = available_methods.index(selected_method) if selected_method in available_methods else 0
+        doc_method = st.selectbox("Select Method to Read", available_methods, index=default_idx)
+
+        doc_path = AI_TRAIN_DIR / doc_method / "DOCUMENT.md"
+        st.divider()
+
+        if doc_path.exists():
+            with open(doc_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            st.markdown(content)
+        else:
+            st.warning(f"No documentation found for `{doc_method}`. (Missing DOCUMENT.md file in the method directory)")
+
+# --- PAGE: Method Concept ---
+elif navigation == "💡 Method Concept":
+    st.header("💡 AI Method Concept")
+    st.markdown("Understand the concept, architecture, and design decisions behind each AI method.")
+
+    if not available_methods:
+        st.info("No methods found.")
+    else:
+        default_idx = available_methods.index(selected_method) if selected_method in available_methods else 0
+        concept_method = st.selectbox("Select Method to Read", available_methods, index=default_idx)
+
+        concept_path = AI_TRAIN_DIR / concept_method / "CONCEPT.md"
+        st.divider()
+
+        if concept_path.exists():
+            with open(concept_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            st.markdown(content)
+        else:
+            st.warning(f"No concept file found for `{concept_method}`. (Missing CONCEPT.md file in the method directory)")
+
+
+

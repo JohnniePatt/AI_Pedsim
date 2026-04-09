@@ -11,3 +11,4 @@ pyarrow
 torchvision
 streamlit
 transformers
+accelerate

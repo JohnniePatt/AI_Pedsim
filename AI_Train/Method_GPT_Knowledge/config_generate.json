@@ -1,0 +1,13 @@
+{
+  "knowledge_dir": "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v1",
+  "input_case_dir": "../../Dataset_Traj_Table/Topo_bottleneck/test/case_100003",
+  "output_dir": "../../AI_Result/Method_GPT_Knowledge/outputs/sample_case_100003",
+  "top_k_cases": 5,
+  "retrieval_weights": {
+    "goal_distance": 1.0,
+    "goal_vector": 1.0,
+    "walkable_area": 0.05,
+    "n_agents": 1.0,
+    "duration": 0.01
+  }
+}

@@ -1,201 +1,284 @@
+"""
+dataset.py
+──────────
+PedestrianDataset — loads ALL agents from every simulation.
+
+Social context: for each ego-agent, the K nearest neighbours'
+observed trajectories (first obs_len steps) are stored alongside
+the ego's own data.  During training the model sees:
+
+  [geo+goal token]  [neighbour_1 token] … [neighbour_K token]
+  [ego obs frames]  →  predict [ego future frames]
+
+At inference time the neighbour observations are known (we observed
+them), so there is no leakage.
+
+Expected folder layout
+──────────────────────
+Dataset_Traj_Table/Topo_bottleneck/{train|test|val}/case_{id}/
+  Geo_room.json
+  Geo_corridor.json
+  Spawn_location_{id}.csv   – per-agent spawn positions (100 agents)
+  Spawn_exit_{id}.csv       – spawning_area + exit_area WKT polygons
+  *_trajectory_data.parquet – ALL agents' trajectories for this sim
+"""
+
+import glob
 import os
-import json
-import random
-import pathlib
-import torch
+
 import numpy as np
 import pandas as pd
+import torch
+from shapely import wkt as shapely_wkt
 from torch.utils.data import Dataset
-from shapely.geometry import Polygon
-from PIL import Image, ImageDraw
 from tqdm import tqdm
 
-def render_geo_mask(room_json, corridor_json, resolution=0.1, max_size=128):
+from prepare_geometry_transformer import create_occupancy_grid, world_to_grid
+
+
+class PedestrianDataset(Dataset):
     """
-    Reads Geo_room.json and Geo_corridor.json.
-    Computes a bounding box encompassing all points, renders a binary occupancy map
-    scaled to the specified max_size for CNN feeding.
-    Returns: torch tensor [1, max_size, max_size] (0 = obstacle, 1 = walkable area).
+    Full-path pedestrian trajectory prediction dataset with social context.
+
+    Parameters
+    ----------
+    data_dir       : root containing train / test / val sub-folders
+    split          : "train" | "test" | "val"
+    obs_len        : seed frames given to the model (observed steps)
+    frame_stride   : keep every N-th frame (reduces 25 fps → ~3 fps for stride=8)
+    max_seq_len    : maximum total frames after striding (obs + pred)
+    grid_size      : occupancy-grid resolution
+    geo_padding    : padding (m) added around the bounding box
+    max_neighbors  : K nearest neighbours to include as social context
+    subset_percent : use only this % of cases (useful for quick tests)
     """
-    polygons = []
-    
-    def load_polys(json_path):
-        if not json_path.exists(): return []
-        try:
-            with open(json_path, 'r') as f:
-                data = json.load(f)
-            return [Polygon(coords) for coords in data if len(coords) >= 3]
-        except:
-            return []
 
-    rooms = load_polys(room_json)
-    corr = load_polys(corridor_json)
-    polygons.extend(rooms)
-    polygons.extend(corr)
+    def __init__(
+        self,
+        data_dir: str,
+        split: str = "train",
+        obs_len: int = 5,
+        frame_stride: int = 8,
+        max_seq_len: int = 512,
+        grid_size: int = 64,
+        geo_padding: float = 1.0,
+        max_neighbors: int = 10,
+        subset_percent: float = 100.0,
+    ):
+        self.obs_len       = obs_len
+        self.frame_stride  = frame_stride
+        self.max_seq_len   = max_seq_len
+        self.grid_size     = grid_size
+        self.geo_padding   = geo_padding
+        self.max_neighbors = max_neighbors
 
-    if not polygons:
-        return torch.zeros((1, max_size, max_size))
+        split_dir = os.path.join(data_dir, split)
+        case_dirs = sorted(glob.glob(os.path.join(split_dir, "case_*")))
 
-    # Find bounds
-    try:
-        min_x = min([p.bounds[0] for p in polygons])
-        min_y = min([p.bounds[1] for p in polygons])
-        max_x = max([p.bounds[2] for p in polygons])
-        max_y = max([p.bounds[3] for p in polygons])
-    except:
-        return torch.zeros((1, max_size, max_size))
-    
-    width_m = max(1.0, max_x - min_x)
-    height_m = max(1.0, max_y - min_y)
-    
-    scale_x = max_size / width_m
-    scale_y = max_size / height_m
-    scale = min(scale_x, scale_y) # preserve aspect ratio
-    
-    img = Image.new('L', (max_size, max_size), color=0)
-    draw = ImageDraw.Draw(img)
-    
-    tx = (max_size - width_m * scale) / 2
-    ty = (max_size - height_m * scale) / 2
+        n = max(1, int(len(case_dirs) * subset_percent / 100.0))
+        case_dirs = case_dirs[:n]
 
-    for poly in polygons:
-        img_coords = []
-        try:
-            for x, y in poly.exterior.coords:
-                ix = int((x - min_x) * scale + tx)
-                iy = int((y - min_y) * scale + ty)
-                img_coords.append((ix, iy))
-            draw.polygon(img_coords, fill=255)
-        except:
-            continue
-        
-    mask = np.array(img, dtype=np.float32) / 255.0
-    return torch.from_numpy(mask).unsqueeze(0) # [1, H, W]
-
-
-class TrajectorySlidingWindowDataset(Dataset):
-    """
-    Rock-Solid Memory-Efficient Standard Dataset.
-    Stores lightweight pointers to numpy arrays instead of thousands of Duplicate Tensors.
-    Never hangs, allows full CPU multiprocessing, and uses extremely little RAM.
-    """
-    def __init__(self, data_dir, config, split="train", shuffle=True):
-        super(TrajectorySlidingWindowDataset, self).__init__()
-        
-        self.split = split
-        self.data_dir = pathlib.Path(data_dir) / split
-        
-        self.obs_len = config.get("obs_len", 8)
-        self.pred_len = config.get("pred_len", 12)
-        self.seq_len = self.obs_len + self.pred_len
-        
-        self.col_frame = config.get("col_frame", "Frame")
-        self.col_agent = config.get("col_agent", "Agent id")
-        self.col_x = config.get("col_x", "position X")
-        self.col_y = config.get("col_y", "Y")
-
-        self.samples = []
-        self.shared_trajs = [] # Stores numeric matrices
-        self._geo_cache = {}
-        
-        subset_percent = config.get("data_subset_percent", 100)
-        
-        if not self.data_dir.exists():
-            print(f"⚠️ Directory {self.data_dir} does not exist.")
+        if not case_dirs:
+            print(f"[Dataset] WARNING: no case_* folders in {split_dir}")
+            self.samples = []
             return
 
-        all_cases = sorted([d for d in self.data_dir.iterdir() if d.is_dir() and d.name.startswith("case_")])
-        if subset_percent < 100 and len(all_cases) > 0:
-            num_keep = max(1, int((subset_percent / 100.0) * len(all_cases)))
-            all_cases = random.sample(all_cases, num_keep)
-            print(f"📉 Using {subset_percent}% of data: {num_keep} out of {len(all_cases)} cases.")
-            
-        print(f"📂 Pre-scanning {self.split} cases (Lighting fast RAM-efficient mode)...")
-        
-        # We process files right away and store lightweight indices!
-        for case_dir in tqdm(all_cases):
-            self._process_case(case_dir)
-            
-        if shuffle:
-            random.shuffle(self.samples)
-            
-        print(f"✅ Ready! Found {len(self.samples)} training sequences.")
+        print(f"[Dataset] Loading [{split}] – {len(case_dirs)} cases …")
 
-    def _get_geo_mask(self, case_dir):
-        # Most of the time map is identical, use global cache key
-        cache_key = "global_scenario_mask"
+        self._geo_cache: dict = {}   # cache occupancy grids per geometry
+        self.samples: list   = []
+
+        for case_dir in tqdm(case_dirs, desc=f"Building [{split}]"):
+            try:
+                self._load_case(case_dir)
+            except Exception as exc:
+                print(f"  [skip] {os.path.basename(case_dir)}: {exc}")
+
+        print(
+            f"[Dataset] [{split}] ready — "
+            f"{len(self.samples)} agent samples "
+            f"from {len(case_dirs)} simulations."
+        )
+
+    # ── internal loader ───────────────────────────────────────────────────────
+
+    def _load_case(self, case_dir: str):
+        case_id = os.path.basename(case_dir).replace("case_", "")
+
+        # 1. Occupancy grid (cached per unique JSON content)
+        room_json     = os.path.join(case_dir, "Geo_room.json")
+        corridor_json = os.path.join(case_dir, "Geo_corridor.json")
+        cache_key     = f"{room_json}|{corridor_json}"
+
         if cache_key not in self._geo_cache:
-            room_json = case_dir / "Geo_room.json"
-            corr_json = case_dir / "Geo_corridor.json"
-            self._geo_cache[cache_key] = render_geo_mask(room_json, corr_json)
-        return self._geo_cache[cache_key]
+            grid, meta = create_occupancy_grid(
+                room_json, corridor_json,
+                grid_size=self.grid_size,
+                padding=self.geo_padding,
+            )
+            self._geo_cache[cache_key] = (grid, meta)
 
-    def _process_case(self, case_dir):
-        try:
-            geo_mask = self._get_geo_mask(case_dir)
-            
-            parquet_files = list(case_dir.glob("*.parquet"))
-            if not parquet_files: return
-            
-            df = pd.read_parquet(parquet_files[0])
-            
-            required_cols = {
-                'agent': [self.col_agent, 'Agent id', 'id', 'agent_id'],
-                'frame': [self.col_frame, 'Frame', 'frame', 'frame_id'],
-                'x': [self.col_x, 'position X', 'pos_x', 'X', 'x'],
-                'y': [self.col_y, 'Y', 'pos_y', 'Y', 'y']
-            }
-            
-            actual = {}
-            for key, candidates in required_cols.items():
-                for c in candidates:
-                    if c in df.columns:
-                        actual[key] = c
-                        break
-                if key not in actual: return
+        grid, meta = self._geo_cache[cache_key]
+        geo_mask = torch.from_numpy(grid).unsqueeze(0)          # [1, H, W]
 
-            for agent_id, group in df.groupby(actual['agent']):
-                group = group.sort_values(actual['frame'])
-                traj_np = group[[actual['x'], actual['y']]].values.astype(np.float32)
-                
-                if len(traj_np) < self.seq_len: continue
-                
-                # Store the single master array in memory
-                traj_idx = len(self.shared_trajs)
-                self.shared_trajs.append((traj_np, geo_mask))
-                
-                # Create lightweight windows pointing to start index
-                # Stride 2 to reduce redundancy
-                for i in range(0, len(traj_np) - self.seq_len + 1, 2):
-                    self.samples.append((traj_idx, i))
-                    
-        except Exception as e:
-            # Uncomment if needed, but keeping console clean
-            pass
+        # 2. Exit centroid → goal point (normalised)
+        exit_csv  = os.path.join(case_dir, f"Spawn_exit_{case_id}.csv")
+        exit_df   = pd.read_csv(exit_csv)
+        exit_row  = exit_df[exit_df["type"] == "exit_area"].iloc[0]
+        exit_poly = shapely_wkt.loads(exit_row["area"])
+        ne_x, ne_y = world_to_grid(exit_poly.centroid.x, exit_poly.centroid.y, meta)
+        end_pt = torch.tensor([ne_x, ne_y], dtype=torch.float32)
 
-    def __len__(self):
+        # 3. Spawn positions (one row per agent)
+        spawn_csv = os.path.join(case_dir, f"Spawn_location_{case_id}.csv")
+        spawn_df  = pd.read_csv(spawn_csv)
+
+        # 4. Trajectory parquet (ALL agents in this simulation)
+        parquet_files = glob.glob(os.path.join(case_dir, "*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError("no .parquet found in case folder")
+
+        traj_df = pd.read_parquet(parquet_files[0])
+
+        id_col = "id"    if "id"    in traj_df.columns else "AgentID"
+        fr_col = "frame" if "frame" in traj_df.columns else "Frame"
+        x_col  = "pos_x" if "pos_x" in traj_df.columns else "x"
+        y_col  = "pos_y" if "pos_y" in traj_df.columns else "y"
+
+        # 5. Pre-process every agent's trajectory (strided + normalised)
+        #    Stored as a lookup dict for fast neighbour retrieval.
+        all_norm: dict[int, np.ndarray] = {}   # agent_id → [T, 2] norm coords
+
+        for agent_id, grp in traj_df.groupby(id_col):
+            raw = grp.sort_values(fr_col)[[x_col, y_col]].values
+            raw = raw[:: self.frame_stride]
+            if len(raw) > self.max_seq_len:
+                raw = raw[: self.max_seq_len]
+            norm = np.stack(
+                [
+                    (raw[:, 0] - meta["min_x"]) / meta["scale"],
+                    (raw[:, 1] - meta["min_y"]) / meta["scale"],
+                ],
+                axis=1,
+            ).astype(np.float32)
+            all_norm[int(agent_id)] = norm
+
+        # 6. Build one sample per agent
+        for _, spawn_row in spawn_df.iterrows():
+            agent_id = int(spawn_row["id"])
+            if agent_id not in all_norm:
+                continue
+
+            norm = all_norm[agent_id]
+            if len(norm) <= self.obs_len:
+                continue
+
+            ns_x, ns_y = world_to_grid(spawn_row["pos_x"], spawn_row["pos_y"], meta)
+            start_pt = torch.tensor([ns_x, ns_y], dtype=torch.float32)
+
+            obs_traj  = torch.from_numpy(norm[: self.obs_len])      # [obs_len, 2]
+            pred_traj = torch.from_numpy(norm[self.obs_len :])       # [variable, 2]
+
+            # 7. Social context: K nearest neighbours (by distance at t=0)
+            neigh_trajs, neigh_mask = self._get_neighbors(
+                agent_id, norm[0], all_norm
+            )
+
+            self.samples.append(
+                {
+                    "obs_traj":      obs_traj,          # [obs_len, 2]
+                    "pred_traj":     pred_traj,          # [variable, 2]
+                    "start_pt":      start_pt,           # [2]
+                    "end_pt":        end_pt,             # [2]
+                    "geo_mask":      geo_mask,           # [1, H, W]
+                    "neighbor_trajs": neigh_trajs,       # [K, obs_len, 2]
+                    "neighbor_mask":  neigh_mask,        # [K]  bool
+                    "case_id":        case_id,
+                    "agent_id":       agent_id,
+                    "meta":           meta,
+                    "case_dir":       case_dir,
+                }
+            )
+
+    def _get_neighbors(
+        self,
+        ego_id: int,
+        ego_pos_norm: np.ndarray,       # [2]  ego position at t=0 (normalised)
+        all_norm: dict[int, np.ndarray],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Return (neighbor_trajs [K, obs_len, 2], neighbor_mask [K] bool).
+        Neighbours are the K agents closest to the ego at t=0.
+        Relative positions: neighbour pos - ego pos (translation invariant).
+        Empty slots are zero-padded, mask=False.
+        """
+        K        = self.max_neighbors
+        obs_len  = self.obs_len
+
+        dists = []
+        for aid, traj in all_norm.items():
+            if aid == ego_id:
+                continue
+            if len(traj) < obs_len:
+                continue
+            d = float(np.linalg.norm(traj[0] - ego_pos_norm))
+            dists.append((d, aid))
+
+        dists.sort(key=lambda x: x[0])
+        top_k = dists[:K]
+
+        neigh_np   = np.zeros((K, obs_len, 2), dtype=np.float32)
+        mask_np    = np.zeros(K, dtype=bool)
+
+        for i, (_, aid) in enumerate(top_k):
+            traj = all_norm[aid][:obs_len]          # [obs_len, 2]
+            # Use relative position so model is translation-invariant
+            neigh_np[i] = traj - ego_pos_norm       # relative to ego's t=0
+            mask_np[i]  = True
+
+        return (
+            torch.from_numpy(neigh_np),
+            torch.from_numpy(mask_np),
+        )
+
+    # ── Dataset interface ──────────────────────────────────────────────────────
+
+    def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx):
-        # Construct Tensor on-the-fly! This is why RAM stays low.
-        traj_idx, start_frame = self.samples[idx]
-        traj_np, geo_mask = self.shared_trajs[traj_idx]
-        
-        window = traj_np[start_frame : start_frame + self.seq_len]
-        obs = window[:self.obs_len]
-        pred = window[self.obs_len:]
-        
-        return {
-            "obs_traj": torch.from_numpy(obs).float(),
-            "pred_traj": torch.from_numpy(pred).float(),
-            "start_pt": torch.from_numpy(obs[0]).float(),
-            "end_pt": torch.from_numpy(traj_np[-1]).float(),
-            "geo_mask": geo_mask
-        }
+    def __getitem__(self, idx: int) -> dict:
+        return self.samples[idx]
 
-if __name__ == "__main__":
-    test_config = {"obs_len": 20, "pred_len": 10, "data_subset_percent": 10, "col_frame": "frame", "col_agent": "id", "col_x": "pos_x", "col_y": "pos_y"}
-    path = pathlib.Path("../../Dataset_Traj_Table/Topo_bottleneck")
-    if path.exists():
-        ds = TrajectorySlidingWindowDataset(str(path), test_config, split="train")
-        print(f"Total sequences loaded: {len(ds)}")
+
+# ─── Collate ───────────────────────────────────────────────────────────────────
+
+def collate_fn(batch: list[dict]) -> dict:
+    """
+    Stack fixed-size tensors; pad variable-length pred_traj.
+    Includes social context tensors (neighbor_trajs, neighbor_mask).
+    """
+    obs    = torch.stack([b["obs_traj"]      for b in batch])   # [B, obs_len, 2]
+    starts = torch.stack([b["start_pt"]      for b in batch])   # [B, 2]
+    ends   = torch.stack([b["end_pt"]        for b in batch])   # [B, 2]
+    geos   = torch.stack([b["geo_mask"]      for b in batch])   # [B, 1, H, W]
+    neighs = torch.stack([b["neighbor_trajs"] for b in batch])  # [B, K, obs_len, 2]
+    nmask  = torch.stack([b["neighbor_mask"]  for b in batch])  # [B, K]
+
+    preds   = [b["pred_traj"] for b in batch]
+    lengths = torch.tensor([len(p) for p in preds], dtype=torch.long)
+    max_len = int(lengths.max().item())
+    B       = len(batch)
+    padded  = torch.zeros(B, max_len, 2, dtype=torch.float32)
+    for i, p in enumerate(preds):
+        padded[i, : len(p)] = p
+
+    return {
+        "obs_traj":       obs,      # [B, obs_len, 2]
+        "pred_traj":      padded,   # [B, max_pred, 2]
+        "lengths":        lengths,  # [B]
+        "start_pt":       starts,   # [B, 2]
+        "end_pt":         ends,     # [B, 2]
+        "geo_mask":       geos,     # [B, 1, H, W]
+        "neighbor_trajs": neighs,   # [B, K, obs_len, 2]
+        "neighbor_mask":  nmask,    # [B, K]  True=real, False=padded
+    }
