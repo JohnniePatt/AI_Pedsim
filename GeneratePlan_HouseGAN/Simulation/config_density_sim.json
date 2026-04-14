@@ -1,0 +1,28 @@
+{
+  "scenario_name": "Topo_HouseGAN",
+  "plan": "plan_99_02e0",
+  "batch": false,
+  "seed": 42,
+  "grid_size": 0.5,
+  "timeout_minutes": 5,
+  "preview_only": false,
+  "spawn_policy": {
+    "sqm_per_person": 0.5,
+    "wall_offset_m": 0.25,
+    "min_agents": 1,
+    "max_agents": 250,
+    "distance_to_agents_m": 0.3,
+    "distance_to_polygon_m": 0.15
+  },
+  "agent_policy": {
+    "desired_speed_mean": 1.34,
+    "desired_speed_std": 0.05,
+    "radius_m": 0.15
+  },
+  "geometry_policy": {
+    "wall_thickness_m": 0.2,
+    "door_width_m": 1.5,
+    "door_depth_multiplier": 2.5,
+    "union_buffer_m": 0.02
+  }
+}

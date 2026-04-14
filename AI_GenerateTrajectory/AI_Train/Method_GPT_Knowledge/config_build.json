@@ -1,0 +1,9 @@
+{
+  "dataset_roots": [
+    "../../../Dataset/Data_Traj_Table/Topo_bottleneck",
+    "../../../Dataset/Data_Traj_Table/Topo_HouseGAN"
+  ],
+  "split": "train",
+  "max_cases": 0,
+  "knowledge_output_dir": "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v3"
+}

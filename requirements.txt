@@ -12,3 +12,6 @@ torchvision
 streamlit
 transformers
 accelerate
+tensorflow
+keras
+nvidia-cuda-nvcc-cu12
