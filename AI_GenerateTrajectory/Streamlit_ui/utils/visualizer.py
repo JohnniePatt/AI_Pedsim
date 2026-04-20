@@ -826,14 +826,25 @@ def show_gpt_knowledge_special_tests(method_result_dir):
         return
 
     session_dirs = []
+    compared_sessions = []
     for d in sorted([d for d in special_root.iterdir() if d.is_dir()], key=lambda x: x.name, reverse=True):
         if (d / "special_test_manifest.json").exists():
             session_dirs.append(d)
+            compare_dir = d / "compare"
+            has_compare = (
+                (compare_dir / "compare_summary.json").exists()
+                or (compare_dir / "special_evaluation_summary.json").exists()
+                or (compare_dir / "special_scene_metrics.csv").exists()
+            )
+            if has_compare:
+                compared_sessions.append(d)
     if not session_dirs:
         st.info("No completed special test sessions found yet.")
         return
 
-    selected_session = st.selectbox("Select Special Test Session", session_dirs, format_func=lambda p: p.name)
+    default_session = compared_sessions[0] if compared_sessions else session_dirs[0]
+    default_index = session_dirs.index(default_session)
+    selected_session = st.selectbox("Select Special Test Session", session_dirs, index=default_index, format_func=lambda p: p.name)
     manifest_path = selected_session / "special_test_manifest.json"
     ai_image = selected_session / "ai_prediction.png"
     generation_dir = selected_session / "generation"
@@ -886,8 +897,11 @@ def show_gpt_knowledge_special_tests(method_result_dir):
         st.image(str(ai_image), caption=ai_image.name, use_container_width=True)
 
     compare_summary = compare_dir / "compare_summary.json"
+    special_overview = compare_dir / "special_evaluation_summary.json"
+    special_scene_csv = compare_dir / "special_scene_metrics.csv"
     compare_image = compare_dir / "compare_ai_vs_gt.png"
     compare_agents = compare_dir / "compare_agent_metrics.csv"
+    special_agents = compare_dir / "special_agent_metrics.csv"
 
     if compare_summary.exists():
         summary = json.loads(compare_summary.read_text(encoding="utf-8"))
@@ -905,6 +919,99 @@ def show_gpt_knowledge_special_tests(method_result_dir):
             agent_df = pd.read_csv(compare_agents)
             with st.expander("Show compare agent metrics", expanded=False):
                 st.dataframe(agent_df, use_container_width=True)
+    elif special_overview.exists() or special_scene_csv.exists():
+        st.markdown("#### Compare AI vs GT")
+        summary_row = {}
+        if special_scene_csv.exists():
+            try:
+                scene_df = pd.read_csv(special_scene_csv)
+                if not scene_df.empty:
+                    summary_row = scene_df.iloc[0].to_dict()
+            except Exception:
+                summary_row = {}
+
+        if not summary_row and special_overview.exists():
+            overview = json.loads(special_overview.read_text(encoding="utf-8"))
+            summary_row = {
+                "path_ade_m": overview.get("mean_path_ade_m", 0.0),
+                "path_fde_m": overview.get("mean_path_fde_m", 0.0),
+                "duration_abs_error_frames": overview.get("mean_duration_abs_error_frames", 0.0),
+                "collision_rate": overview.get("mean_collision_rate", 0.0),
+                "out_of_bounds_rate": overview.get("mean_out_of_bounds_rate", 0.0),
+            }
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Path ADE", f"{float(summary_row.get('path_ade_m', 0.0)):.3f}")
+        c2.metric("Path FDE", f"{float(summary_row.get('path_fde_m', 0.0)):.3f}")
+        c3.metric("Duration Error", f"{float(summary_row.get('duration_abs_error_frames', 0.0)):.1f}")
+        c4, c5 = st.columns(2)
+        c4.metric("Collision", f"{float(summary_row.get('collision_rate', 0.0)):.4f}")
+        c5.metric("OOB", f"{float(summary_row.get('out_of_bounds_rate', 0.0)):.4f}")
+        if compare_image.exists():
+            st.image(str(compare_image), caption=compare_image.name, use_container_width=True)
+        if special_agents.exists():
+            agent_df = pd.read_csv(special_agents)
+            with st.expander("Show compare agent metrics", expanded=False):
+                st.dataframe(agent_df, use_container_width=True)
     else:
         st.info("No GT comparison uploaded for this special test yet.")
+
+
+def show_pix2pix_special_tests(method_result_dir):
+    """
+    Viewer for pix2pix / pix2pixHD single-case special test sessions.
+    """
+    import json
+
+    result_root = pathlib.Path(method_result_dir)
+    special_root = result_root / "special_tests"
+    st.markdown("### Special Test Results")
+
+    if not special_root.exists():
+        st.info("No special test sessions found yet.")
+        return
+
+    session_dirs = sorted([d for d in special_root.iterdir() if d.is_dir()], key=lambda x: x.name, reverse=True)
+    if not session_dirs:
+        st.info("No special test sessions found yet.")
+        return
+
+    selected_session = st.selectbox("Select Special Test Session", session_dirs, format_func=lambda p: p.name, key=f"pix2pix_special_{result_root.name}")
+    summary_path = selected_session / "special_summary.json"
+    metrics_path = selected_session / "special_metrics.csv"
+    input_img = selected_session / "special_input.png"
+    target_img = selected_session / "special_target.png"
+    pred_img = selected_session / "special_prediction.png"
+    compare_img = selected_session / "special_compare.png"
+
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Case", summary.get("case_id", "-"))
+            c2.metric("MAE (L1)", f"{float(summary.get('mae_l1', 0.0)):.6f}")
+            c3.metric("RMSE", f"{float(summary.get('rmse', 0.0)):.6f}")
+            with st.expander("Show special summary", expanded=False):
+                st.json(summary)
+        except Exception as e:
+            st.error(f"Failed to load special summary: {e}")
+
+    if compare_img.exists():
+        st.image(str(compare_img), caption=compare_img.name, use_container_width=True)
+    else:
+        cols = st.columns(3)
+        if input_img.exists():
+            cols[0].image(str(input_img), caption="Input", use_container_width=True)
+        if target_img.exists():
+            cols[1].image(str(target_img), caption="Target", use_container_width=True)
+        if pred_img.exists():
+            cols[2].image(str(pred_img), caption="Prediction", use_container_width=True)
+
+    if metrics_path.exists():
+        try:
+            df = pd.read_csv(metrics_path)
+            with st.expander("Show metrics table", expanded=False):
+                st.dataframe(df, use_container_width=True)
+        except Exception as e:
+            st.error(f"Failed to load metrics CSV: {e}")
 

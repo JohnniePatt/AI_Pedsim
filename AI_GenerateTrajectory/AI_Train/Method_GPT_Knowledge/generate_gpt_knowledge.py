@@ -38,6 +38,43 @@ class RetrievedCase:
     score: float
 
 
+def _project_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[3]
+
+
+def _resolve_case_dir(case_dir: str | pathlib.Path) -> pathlib.Path:
+    """
+    Resolve case directories across historical dataset layout changes.
+    Supports old: /Dataset_Traj_Table/... and current: /Dataset/Data_Traj_Table/...
+    """
+    path = pathlib.Path(case_dir).resolve()
+    if path.exists():
+        return path
+
+    raw = str(case_dir)
+    replacements = [
+        ("Dataset_Traj_Table", "Dataset/Data_Traj_Table"),
+        ("Dataset\\Data_Traj_Table", "Dataset/Data_Traj_Table"),
+        ("Dataset\\Data_Traj_Table", "Dataset/Data_Traj_Table"),
+    ]
+    for old, new in replacements:
+        if old in raw:
+            alt = pathlib.Path(raw.replace(old, new)).resolve()
+            if alt.exists():
+                return alt
+
+    # Fallback: locate by case folder name under current dataset root.
+    case_name = pathlib.Path(raw).name
+    if case_name.startswith("case_"):
+        ds_root = _project_root() / "Dataset" / "Data_Traj_Table"
+        if ds_root.exists():
+            matches = list(ds_root.glob(f"**/{case_name}"))
+            if matches:
+                return matches[0].resolve()
+
+    return path
+
+
 def load_config(config_path: str | pathlib.Path) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -79,7 +116,7 @@ def scene_distance(target: dict, candidate_row: pd.Series, weights: dict) -> flo
     )
 
 
-def retrieve_cases(target_case_dir: pathlib.Path, scene_index: pd.DataFrame, cfg: dict) -> list[RetrievedCase]:
+def retrieve_cases(target_case_dir: pathlib.Path, scene_index: pd.DataFrame, cfg: dict, limit: int | None = None) -> list[RetrievedCase]:
     target = scene_feature_row(target_case_dir, require_trajectory=False)
     weights = cfg.get("retrieval_weights", {})
     candidates = []
@@ -92,7 +129,10 @@ def retrieve_cases(target_case_dir: pathlib.Path, scene_index: pd.DataFrame, cfg
         candidates.append(RetrievedCase(case_id=str(row["case_id"]), case_dir=str(row["case_dir"]), score=float(score)))
 
     candidates.sort(key=lambda x: x.score)
-    return candidates[: int(cfg.get("top_k_cases", 5))]
+    if limit is None:
+        limit = int(cfg.get("top_k_cases", 5))
+    limit = max(int(limit), 1)
+    return candidates[:limit]
 
 
 def _retrieval_blend_weights(retrieved_cases: list[RetrievedCase], cfg: dict) -> np.ndarray:
@@ -481,6 +521,7 @@ def build_planner_prompt(target_scene: dict, retrieved_cases: list[RetrievedCase
 
 
 def _load_candidate_case_bundle(case_dir: str | pathlib.Path) -> dict[str, Any]:
+    case_dir = _resolve_case_dir(case_dir)
     scene = load_scene(case_dir)
     source_df = load_trajectory(case_dir)
     source_paths = extract_agent_paths(source_df)
@@ -584,8 +625,11 @@ def generate_case_prediction(target_case_dir: str | pathlib.Path, knowledge_dir:
     knowledge_dir = pathlib.Path(knowledge_dir).resolve()
     scene_index = load_scene_index(knowledge_dir)
     target_scene = load_scene(target_case_dir)
-    retrieved_cases = retrieve_cases(target_case_dir, scene_index, cfg)
-    if not retrieved_cases:
+    top_k = int(cfg.get("top_k_cases", 5))
+    blend_count_cfg = int(cfg.get("blend_case_count", min(max(top_k, 1), 3)))
+    retrieval_pool_size = int(cfg.get("retrieval_pool_size", max(top_k * 10, blend_count_cfg * 10, 25)))
+    retrieved_pool = retrieve_cases(target_case_dir, scene_index, cfg, limit=retrieval_pool_size)
+    if not retrieved_pool:
         raise RuntimeError("No retrieved reference cases were found.")
 
     target_spawn = target_scene["spawn_df"].sort_values("id").reset_index(drop=True)
@@ -596,24 +640,37 @@ def generate_case_prediction(target_case_dir: str | pathlib.Path, knowledge_dir:
     route_grid_step = float(cfg.get("route_grid_step_m", 0.4))
     route_skeleton = _build_route_skeleton(target_scene["walkable"], dst_spawn_center, dst_exit_center, route_grid_step)
 
-    candidate_limit = int(cfg.get("blend_case_count", min(len(retrieved_cases), 3)))
-    candidate_limit = max(1, min(candidate_limit, len(retrieved_cases)))
-    blend_cases = retrieved_cases[:candidate_limit]
-    blend_weights = _retrieval_blend_weights(blend_cases, cfg)
+    candidate_limit = max(1, min(blend_count_cfg, len(retrieved_pool)))
+    blend_weights_all = _retrieval_blend_weights(retrieved_pool, cfg)
     candidate_bundles = []
-    for idx, item in enumerate(blend_cases):
+    valid_retrieved_cases: list[RetrievedCase] = []
+    skipped_missing_trajectory = 0
+    for idx, item in enumerate(retrieved_pool):
+        if len(candidate_bundles) >= candidate_limit:
+            break
         try:
             candidate_bundles.append(
                 {
                     "meta": item,
-                    "weight": float(blend_weights[idx]),
+                    "weight": float(blend_weights_all[idx]),
                     **_load_candidate_case_bundle(item.case_dir),
                 }
             )
+            valid_retrieved_cases.append(item)
         except FileNotFoundError:
+            skipped_missing_trajectory += 1
             continue
     if not candidate_bundles:
-        raise RuntimeError("All retrieved reference cases were missing trajectory data.")
+        raise RuntimeError(
+            "All retrieved reference cases were missing trajectory data. "
+            "Please rebuild knowledge index from current dataset paths or verify trajectory parquet files exist."
+        )
+    if len(candidate_bundles) < candidate_limit:
+        print(
+            f"[Generate][Warn] Requested blend_case_count={candidate_limit}, "
+            f"but only {len(candidate_bundles)} valid retrieved cases were available "
+            f"(skipped_missing_trajectory={skipped_missing_trajectory})."
+        )
 
     common_steps = int(cfg.get("blend_steps", 80))
     common_steps = max(common_steps, 8)
@@ -667,12 +724,12 @@ def generate_case_prediction(target_case_dir: str | pathlib.Path, knowledge_dir:
     return {
         "case_id": str(target_scene["case_id"]),
         "case_dir": str(target_case_dir),
-        "retrieved_cases": [item.__dict__ for item in retrieved_cases],
+        "retrieved_cases": [item.__dict__ for item in valid_retrieved_cases],
         "blend_cases": [item["meta"].__dict__ | {"weight": item["weight"]} for item in candidate_bundles],
         "route_skeleton": route_skeleton.tolist(),
         "generation_attempts": attempt_history,
         "quality_summary": quality,
-        "planner_prompt": build_planner_prompt(target_scene, retrieved_cases),
+        "planner_prompt": build_planner_prompt(target_scene, valid_retrieved_cases),
         "predictions": predictions,
         "prediction_df": pd.DataFrame(rows),
         "out_of_bounds_rate": float(oob_rate),

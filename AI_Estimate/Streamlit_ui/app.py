@@ -455,11 +455,48 @@ def render_test_outputs(run_dir):
     if predictions_path.exists():
         df = pd.read_csv(predictions_path)
         st.subheader("Prediction preview")
-        render_prediction_scatter(df)
-        st.dataframe(df.head(80), use_container_width=True, hide_index=True)
+        groups = split_prediction_groups(df)
+        if list(groups.keys()) == ["All"]:
+            render_prediction_scatter(df)
+            st.dataframe(df.head(80), use_container_width=True, hide_index=True)
+        else:
+            tabs = st.tabs(list(groups.keys()))
+            for tab, label in zip(tabs, groups.keys()):
+                with tab:
+                    group_df = groups[label]
+                    st.caption(f"Rows: {len(group_df)}")
+                    render_prediction_scatter(group_df)
+                    st.dataframe(group_df.head(80), use_container_width=True, hide_index=True)
+
+
+def normalize_variant_label(raw_value):
+    value = str(raw_value).strip()
+    key = value.lower().replace(" ", "")
+    if "n/2" in key or "half" in key:
+        return "N/2 Agent"
+    if key.startswith("1") or "single" in key:
+        return "1 Agent"
+    if key.startswith("n") or "full" in key:
+        return "N Agent"
+    return value or "Unknown"
+
+
+def split_prediction_groups(df):
+    if "variant_label" not in df.columns:
+        return {"All": df}
+    grouped_df = df.copy()
+    grouped_df["__variant_group"] = grouped_df["variant_label"].apply(normalize_variant_label)
+    grouped = {label: chunk.drop(columns="__variant_group") for label, chunk in grouped_df.groupby("__variant_group")}
+    preferred = ["N Agent", "N/2 Agent", "1 Agent"]
+    ordered_labels = [label for label in preferred if label in grouped]
+    ordered_labels.extend(sorted(label for label in grouped if label not in preferred))
+    return {label: grouped[label] for label in ordered_labels}
 
 
 def render_prediction_scatter(df):
+    if df.empty:
+        st.caption("No prediction rows for this group.")
+        return
     pairs = [("min_agent_time_s", "Fastest"), ("mean_agent_time_s", "Average"), ("max_agent_time_s", "Slowest")]
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
     for ax, (target, title) in zip(axes, pairs):
@@ -468,13 +505,17 @@ def render_prediction_scatter(df):
         if true_col not in df or pred_col not in df:
             ax.axis("off")
             continue
-        ax.scatter(df[true_col], df[pred_col], s=18, alpha=0.65)
-        low = min(df[true_col].min(), df[pred_col].min())
-        high = max(df[true_col].max(), df[pred_col].max())
+        pair_df = df[[true_col, pred_col]].dropna()
+        if pair_df.empty:
+            ax.axis("off")
+            continue
+        ax.scatter(pair_df[true_col], pair_df[pred_col], s=18, alpha=0.65)
+        low = min(pair_df[true_col].min(), pair_df[pred_col].min())
+        high = max(pair_df[true_col].max(), pair_df[pred_col].max())
         ax.plot([low, high], [low, high], color="#ef4444", linewidth=2)
         ax.set_title(title)
-        ax.set_xlabel("True (s)")
-        ax.set_ylabel("Predicted (s)")
+        ax.set_xlabel("Ground truth (s)")
+        ax.set_ylabel("Predicted time (s)")
         ax.grid(True, alpha=0.2)
     fig.tight_layout()
     st.pyplot(fig, use_container_width=True)

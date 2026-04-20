@@ -3,13 +3,24 @@ import pathlib
 import os
 import json
 import time
+import re
 import pandas as pd
 import shutil
 
 # Import utilities
 from utils.config_loader import get_available_methods, load_config, save_config, get_method_runs
 from utils.executor import ProcessManager
-from utils.visualizer import plot_training_history, show_sample_images, show_test_evaluation, show_housegan_results, show_transformer_val_visuals, show_gnn_cvae_val_visuals, show_gpt_knowledge_results, show_gpt_knowledge_special_tests
+from utils.visualizer import (
+    plot_training_history,
+    show_sample_images,
+    show_test_evaluation,
+    show_housegan_results,
+    show_transformer_val_visuals,
+    show_gnn_cvae_val_visuals,
+    show_gpt_knowledge_results,
+    show_gpt_knowledge_special_tests,
+    show_pix2pix_special_tests,
+)
 
 # Initialization
 st.set_page_config(page_title="AI Pedsim | Dashboard", page_icon="🚀", layout="wide")
@@ -460,11 +471,43 @@ elif navigation == "🔬 Testing model":
 
         special_cfg = config_test or {}
         special_root = result_method_path / "special_tests"
-        default_case_id = "990001"
         knowledge_root = result_method_path / "knowledge"
         knowledge_builds = sorted([d for d in knowledge_root.iterdir() if d.is_dir()], key=lambda x: x.name, reverse=True) if knowledge_root.exists() else []
         configured_build_name = pathlib.Path(str(special_cfg.get("knowledge_dir", "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v1"))).name
         build_names = [d.name for d in knowledge_builds]
+
+        def parse_plan_key_from_parquet_name(file_name: str) -> str:
+            stem = pathlib.Path(file_name).stem.strip()
+            stem = re.sub(r"_trajectory_data$", "", stem, flags=re.IGNORECASE)
+            stem = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_")
+            return stem or "plan_unknown"
+
+        def next_case_id_for_plan(plan_key: str) -> int:
+            start_id = 100001
+            used_ids = []
+            if not special_root.exists():
+                return start_id
+
+            pattern = re.compile(rf"^TEST_{re.escape(plan_key)}_(\d+)$")
+            for d in [x for x in special_root.iterdir() if x.is_dir()]:
+                manifest_path = d / "special_test_manifest.json"
+                if manifest_path.exists():
+                    try:
+                        with open(manifest_path, "r", encoding="utf-8") as f:
+                            manifest = json.load(f)
+                        m_plan = str(manifest.get("plan_key", ""))
+                        m_case = str(manifest.get("case_id", ""))
+                        if m_plan == plan_key and m_case.isdigit():
+                            used_ids.append(int(m_case))
+                            continue
+                    except Exception:
+                        pass
+
+                match = pattern.match(d.name)
+                if match:
+                    used_ids.append(int(match.group(1)))
+
+            return (max(used_ids) + 1) if used_ids else start_id
         if configured_build_name in build_names:
             default_build_idx = build_names.index(configured_build_name)
         else:
@@ -498,8 +541,25 @@ elif navigation == "🔬 Testing model":
 
         with st.expander("📥 Input Scene Upload", expanded=True):
             c1, c2 = st.columns(2)
-            session_name = c1.text_input("Session Name", value=f"special_{int(time.time())}")
-            case_id_input = c2.text_input("Numeric Case ID", value=default_case_id)
+            plan_parquet_file = st.file_uploader(
+                "Plan Trajectory Parquet (for Session Name + Numeric ID)",
+                type=["parquet"],
+                key="gpt_special_plan_parquet",
+                help="Example: plan_61_58be_42_00_trajectory_data.parquet -> TEST_plan_61_58be_42_00",
+            )
+            if plan_parquet_file is not None:
+                plan_key = parse_plan_key_from_parquet_name(plan_parquet_file.name)
+                next_case_id = next_case_id_for_plan(plan_key)
+                session_name = f"TEST_{plan_key}_{next_case_id}"
+                case_id_input = str(next_case_id)
+                c1.text_input("Session Name", value=session_name, disabled=True)
+                c2.text_input("Numeric Case ID", value=case_id_input, disabled=True)
+            else:
+                plan_key = ""
+                session_name = ""
+                case_id_input = ""
+                c1.text_input("Session Name", value="Upload plan parquet to auto-generate", disabled=True)
+                c2.text_input("Numeric Case ID", value="Upload plan parquet to auto-generate", disabled=True)
             st.caption("For HouseGAN scenes, upload `Geo_door.json` too so the route respects walls and door openings.")
             geo_room_file = st.file_uploader("Geo_room.json", type=["json"], key="gpt_special_geo_room")
             geo_corridor_file = st.file_uploader("Geo_corridor.json", type=["json"], key="gpt_special_geo_corridor")
@@ -507,8 +567,15 @@ elif navigation == "🔬 Testing model":
             spawn_location_file = st.file_uploader("Spawn_location.csv", type=["csv"], key="gpt_special_spawn_location")
             spawn_exit_file = st.file_uploader("Spawn_exit.csv", type=["csv"], key="gpt_special_spawn_exit")
 
-            if st.button("🚀 Generate Path", use_container_width=True, key="gpt_special_generate", disabled=st.session_state.process_manager.is_running or not scene_index_path.exists()):
-                if not all([geo_room_file, geo_corridor_file, spawn_location_file, spawn_exit_file]):
+            if not scene_index_path.exists():
+                st.warning("Knowledge index (`scene_index.parquet`) not found for the selected build. Please build knowledge first.")
+
+            if st.button("🚀 Generate Path", use_container_width=True, key="gpt_special_generate", disabled=st.session_state.process_manager.is_running):
+                if not scene_index_path.exists():
+                    st.error("Cannot generate yet: selected knowledge build has no `scene_index.parquet`.")
+                elif plan_parquet_file is None:
+                    st.error("Please upload the plan trajectory parquet first to auto-create Session Name and Numeric Case ID.")
+                elif not all([geo_room_file, geo_corridor_file, spawn_location_file, spawn_exit_file]):
                     st.error("Please upload Geo_room, Geo_corridor, Spawn_location, and Spawn_exit before generating.")
                 elif not case_id_input.isdigit():
                     st.error("Case ID must be numeric.")
@@ -523,6 +590,7 @@ elif navigation == "🔬 Testing model":
                         save_uploaded_file(geo_door_file, case_dir / "Geo_door.json")
                     save_uploaded_file(spawn_location_file, case_dir / f"Spawn_location_{case_id_input}.csv")
                     save_uploaded_file(spawn_exit_file, case_dir / f"Spawn_exit_{case_id_input}.csv")
+                    save_uploaded_file(plan_parquet_file, case_dir / f"{plan_key}_trajectory_data.parquet")
 
                     python_path = pathlib.Path(get_python_executable())
                     if not python_path.exists(): python_path = "python3"
@@ -533,12 +601,12 @@ elif navigation == "🔬 Testing model":
                         "--config", "config_test.json",
                         "--input_case_dir", str(case_dir),
                         "--output_dir", str(session_dir),
+                        "--plan_key", str(plan_key),
                     ]
                     st.session_state.test_logs = ""
                     st.session_state.test_task = "gpt_special_generate"
                     st.session_state.process_manager.start_process(command, str(method_path))
                     st.rerun()
-
         with st.expander("🎯 Upload GT Answer And Compare", expanded=False):
             ready_sessions = []
             if special_root.exists():
@@ -599,6 +667,97 @@ elif navigation == "🔬 Testing model":
 
         show_gpt_knowledge_special_tests(result_method_path)
         st.stop()
+
+    if selected_method in ["Method_Unet-pix2pix", "Method_pix2pixHD"]:
+        st.subheader("🧪 Special Blind Test")
+        st.caption("Upload one plan parquet, auto-resolve its case folder, then run single-case inference with the selected trained run.")
+
+        special_root = result_method_path / "special_tests"
+        special_root.mkdir(parents=True, exist_ok=True)
+
+        def parse_plan_key_from_parquet_name(file_name: str) -> str:
+            stem = pathlib.Path(file_name).stem.strip()
+            stem = re.sub(r"_trajectory_data$", "", stem, flags=re.IGNORECASE)
+            stem = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_")
+            return stem or "plan_unknown"
+
+        def next_case_id_for_plan(plan_key: str) -> int:
+            start_id = 100001
+            used_ids = []
+            pattern = re.compile(rf"^TEST_{re.escape(plan_key)}_(\d+)$")
+            for d in [x for x in special_root.iterdir() if x.is_dir()]:
+                m = pattern.match(d.name)
+                if m:
+                    used_ids.append(int(m.group(1)))
+            return (max(used_ids) + 1) if used_ids else start_id
+
+        available_runs_for_special = get_method_runs(result_method_path)
+        if not available_runs_for_special:
+            st.warning("No trained run found in outputs/. Please train first.")
+        else:
+            selected_special_run = st.selectbox("Run For Special Test", available_runs_for_special, key=f"pix2pix_special_run_{selected_method}")
+            run_path_for_special = result_method_path / selected_special_run
+
+            with st.expander("📥 Input Parquet", expanded=True):
+                p1, p2 = st.columns(2)
+                plan_parquet_file = st.file_uploader(
+                    "Plan Trajectory Parquet",
+                    type=["parquet"],
+                    key=f"pix2pix_special_plan_parquet_{selected_method}",
+                    help="Example: plan_61_58be_42_00_trajectory_data.parquet",
+                )
+                if plan_parquet_file is not None:
+                    plan_key = parse_plan_key_from_parquet_name(plan_parquet_file.name)
+                    case_name = f"case_{plan_key}"
+                    dataset_root = PROJECT_ROOT / "Dataset" / "Data_Traj_Table"
+                    matches = list(dataset_root.glob(f"**/{case_name}")) if dataset_root.exists() else []
+                    case_dir = matches[0].resolve() if matches else None
+                    next_case_id = next_case_id_for_plan(plan_key)
+                    session_name = f"TEST_{plan_key}_{next_case_id}"
+                    p1.text_input("Session Name", value=session_name, disabled=True, key=f"pix2pix_special_session_{selected_method}")
+                    p2.text_input("Numeric Case ID", value=str(next_case_id), disabled=True, key=f"pix2pix_special_caseid_{selected_method}")
+                    if case_dir is not None:
+                        st.success(f"Resolved case dir: `{case_dir}`")
+                    else:
+                        st.error(f"Cannot find `{case_name}` under Dataset/Data_Traj_Table.")
+                else:
+                    plan_key = ""
+                    case_dir = None
+                    session_name = ""
+                    p1.text_input("Session Name", value="Upload parquet to auto-generate", disabled=True, key=f"pix2pix_special_session_empty_{selected_method}")
+                    p2.text_input("Numeric Case ID", value="Upload parquet to auto-generate", disabled=True, key=f"pix2pix_special_caseid_empty_{selected_method}")
+
+                if st.button("🚀 Run Special Test", use_container_width=True, key=f"pix2pix_special_generate_{selected_method}", disabled=st.session_state.process_manager.is_running):
+                    if plan_parquet_file is None:
+                        st.error("Please upload plan trajectory parquet first.")
+                    elif case_dir is None:
+                        st.error("Case folder could not be auto-resolved from parquet name.")
+                    else:
+                        session_dir = special_root / session_name
+                        if session_dir.exists():
+                            shutil.rmtree(session_dir)
+                        session_dir.mkdir(parents=True, exist_ok=True)
+
+                        script_name = "special_test_pix2pixHD_trajectory.py" if selected_method == "Method_pix2pixHD" else "special_test_pix2pix_trajectory.py"
+                        special_script = method_path / script_name
+                        python_path = pathlib.Path(get_python_executable())
+                        if not python_path.exists():
+                            python_path = "python3"
+                        command = [
+                            str(python_path),
+                            str(special_script),
+                            "--run_path", str(run_path_for_special),
+                            "--input_case_dir", str(case_dir),
+                            "--output_dir", str(session_dir),
+                            "--plan_key", str(plan_key),
+                        ]
+                        st.session_state.test_logs = ""
+                        st.session_state.test_task = "pix2pix_special_generate"
+                        st.session_state.process_manager.start_process(command, str(method_path))
+                        st.rerun()
+
+            show_pix2pix_special_tests(result_method_path)
+            st.divider()
 
     # 🔬 2. Manual Evaluation
     st.subheader("🔬 Manual Evaluation")

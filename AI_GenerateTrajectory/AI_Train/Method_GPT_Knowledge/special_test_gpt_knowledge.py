@@ -15,7 +15,14 @@ import shutil
 import pandas as pd
 
 from generate_gpt_knowledge import generate_case_prediction, load_config as load_generate_config, resolve_from_config, save_generation
-from prepare_geometry_gpt_knowledge import extract_agent_paths, infer_case_id, load_scene, point_is_inside_walkable, resample_path
+from prepare_geometry_gpt_knowledge import (
+    extract_agent_paths,
+    infer_case_id,
+    load_scene,
+    load_trajectory,
+    point_is_inside_walkable,
+    resample_path,
+)
 from validate_gpt_knowledge import compute_collision_rate
 from visual_gpt_knowledge import build_agent_colors, compute_metrics, plot_agent_trajectories, plot_polygon
 
@@ -91,9 +98,19 @@ def plot_special_visual(case_dir: pathlib.Path, pred_df: pd.DataFrame, out_path:
     plt.close(fig)
 
 
-def compare_with_gt(case_dir: pathlib.Path, pred_df: pd.DataFrame, gt_parquet: pathlib.Path, output_dir: pathlib.Path, cfg: dict):
-    gt_df = pd.read_parquet(gt_parquet).sort_values(["id", "frame"]).reset_index(drop=True)
-    shutil.copy2(gt_parquet, output_dir / "GT_uploaded.parquet")
+def compare_with_gt(
+    case_dir: pathlib.Path,
+    pred_df: pd.DataFrame,
+    output_dir: pathlib.Path,
+    cfg: dict,
+    gt_df: pd.DataFrame,
+    gt_parquet: pathlib.Path | None = None,
+    retrieved_case_id: str | None = None,
+    retrieval_score: float | None = None,
+):
+    gt_df = gt_df.sort_values(["id", "frame"]).reset_index(drop=True)
+    if gt_parquet is not None:
+        shutil.copy2(gt_parquet, output_dir / "GT_uploaded.parquet")
 
     gt_paths = extract_agent_paths(gt_df)
     pred_paths = {int(k): {"points": g[["pos_x", "pos_y"]].to_numpy(dtype=np.float64)} for k, g in pred_df.groupby("id")}
@@ -130,17 +147,33 @@ def compare_with_gt(case_dir: pathlib.Path, pred_df: pd.DataFrame, gt_parquet: p
     per_agent = pd.DataFrame(rows)
     summary = {
         "case_id": str(infer_case_id(case_dir)),
+        "case_dir": str(case_dir),
         "n_agents_eval": int(len(per_agent)),
         "path_ade_m": float(per_agent["ade_m"].mean()) if len(per_agent) else float(ade_m),
         "path_fde_m": float(per_agent["fde_m"].mean()) if len(per_agent) else float(fde_m),
         "duration_abs_error_frames": float(per_agent["duration_abs_error_frames"].mean()) if len(per_agent) else 0.0,
         "collision_rate": float(collision_rate),
         "out_of_bounds_rate": float(oob_rate),
+        "retrieved_case_id": str(retrieved_case_id) if retrieved_case_id is not None else "",
+        "retrieval_score": float(retrieval_score) if retrieval_score is not None else 0.0,
     }
 
     per_agent.to_csv(output_dir / "compare_agent_metrics.csv", index=False)
     with open(output_dir / "compare_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+    per_agent.to_csv(output_dir / "special_agent_metrics.csv", index=False)
+    pd.DataFrame([summary]).to_csv(output_dir / "special_scene_metrics.csv", index=False)
+    overview = {
+        "split": "special_test",
+        "num_cases": 1,
+        "mean_path_ade_m": float(summary["path_ade_m"]),
+        "mean_path_fde_m": float(summary["path_fde_m"]),
+        "mean_duration_abs_error_frames": float(summary["duration_abs_error_frames"]),
+        "mean_collision_rate": float(summary["collision_rate"]),
+        "mean_out_of_bounds_rate": float(summary["out_of_bounds_rate"]),
+    }
+    with open(output_dir / "special_evaluation_summary.json", "w", encoding="utf-8") as f:
+        json.dump(overview, f, indent=2)
 
     plot_special_visual(
         case_dir,
@@ -151,7 +184,7 @@ def compare_with_gt(case_dir: pathlib.Path, pred_df: pd.DataFrame, gt_parquet: p
     )
 
 
-def main(config_path: str, input_case_dir: str, output_dir: str, gt_parquet: str | None = None):
+def main(config_path: str, input_case_dir: str, output_dir: str, gt_parquet: str | None = None, plan_key: str | None = None):
     cfg = load_generate_config(config_path)
     input_case_dir = pathlib.Path(input_case_dir).resolve()
     output_dir = pathlib.Path(output_dir).resolve()
@@ -167,6 +200,7 @@ def main(config_path: str, input_case_dir: str, output_dir: str, gt_parquet: str
     case_id = result["case_id"]
     manifest = {
         "case_id": case_id,
+        "plan_key": str(plan_key) if plan_key else "",
         "input_case_dir": str(input_case_dir),
         "knowledge_dir": str(knowledge_dir),
         "output_dir": str(output_dir),
@@ -188,11 +222,33 @@ def main(config_path: str, input_case_dir: str, output_dir: str, gt_parquet: str
     print(f"[SpecialTest] Retrieved top case: {result['retrieved_cases'][0]['case_id']} score={result['retrieved_cases'][0]['score']:.4f}")
     print(f"[SpecialTest] Blend cases used: {len(result.get('blend_cases', []))}")
 
+    gt_df: pd.DataFrame | None = None
+    gt_parquet_path: pathlib.Path | None = None
     if gt_parquet:
         gt_parquet_path = pathlib.Path(gt_parquet).resolve()
+        gt_df = pd.read_parquet(gt_parquet_path).sort_values(["id", "frame"]).reset_index(drop=True)
+    else:
+        try:
+            gt_df = load_trajectory(input_case_dir)
+            print(f"[SpecialTest] Auto-detected GT trajectory from case folder: {input_case_dir}")
+        except FileNotFoundError:
+            gt_df = None
+
+    if gt_df is not None:
         compare_dir.mkdir(parents=True, exist_ok=True)
-        compare_with_gt(input_case_dir, result["prediction_df"], gt_parquet_path, compare_dir, cfg)
-        print(f"[SpecialTest] Compared AI vs GT using {gt_parquet_path}")
+        compare_with_gt(
+            input_case_dir,
+            result["prediction_df"],
+            compare_dir,
+            cfg,
+            gt_df=gt_df,
+            gt_parquet=gt_parquet_path,
+            retrieved_case_id=str(result["retrieved_cases"][0]["case_id"]),
+            retrieval_score=float(result["retrieved_cases"][0]["score"]),
+        )
+        print(f"[SpecialTest] Metrics saved to {compare_dir}")
+    else:
+        print("[SpecialTest] No GT trajectory found. Skipped ADE/FDE metric computation.")
 
 
 if __name__ == "__main__":
@@ -201,5 +257,6 @@ if __name__ == "__main__":
     parser.add_argument("--input_case_dir", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--gt_parquet", type=str, default=None)
+    parser.add_argument("--plan_key", type=str, default=None)
     args = parser.parse_args()
-    main(args.config, args.input_case_dir, args.output_dir, args.gt_parquet)
+    main(args.config, args.input_case_dir, args.output_dir, args.gt_parquet, args.plan_key)
