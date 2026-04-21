@@ -24,9 +24,11 @@
 - รีโครงสร้าง `AI_Estimate/AI_Train` เป็น method-based แล้ว
   - `Method_MLP_PyTorch` (ของเดิมที่แยกแล้ว)
   - `Method_MLP_Keras` (ของใหม่ที่เพิ่ม)
+  - `Method_GNN` (ของกราฟ - ก้าวข้ามข้อจำกัด MLP)
 - รีโครงสร้าง output เป็น `Method_<วิธี>` แล้ว
   - `AI_Estimate/AI_result/Method_MLP_PyTorch/outputs/<run_name>`
   - `AI_Estimate/AI_result/Method_MLP_Keras/outputs/<run_name>`
+  - `AI_Estimate/AI_result/Method_GNN/outputs/<run_name>`
 - ปรับ Streamlit ของ `AI_Estimate` ให้เลือก method ได้จาก sidebar
 - ตัดการใช้ `observed_agents` ออก และใช้ `computed_agents` อย่างเดียวใน pipeline หลัก
 
@@ -91,9 +93,16 @@ AI_Pedsim/
    │  │  ├─ train_time_estimator.py
    │  │  ├─ test_time_estimator.py
    │  │  └─ visual_time_estimator.py
-   │  └─ Method_MLP_Keras/
+   │  ├─ Method_MLP_Keras/
+   │  │  ├─ config_train.json
+   │  │  ├─ dataset_keras.py
+   │  │  ├─ train_time_estimator.py
+   │  │  ├─ test_time_estimator.py
+   │  │  └─ visual_time_estimator.py
+   │  └─ Method_GNN/
    │     ├─ config_train.json
-   │     ├─ dataset_keras.py
+   │     ├─ dataset_gnn.py
+   │     ├─ model.py
    │     ├─ train_time_estimator.py
    │     ├─ test_time_estimator.py
    │     └─ visual_time_estimator.py
@@ -103,7 +112,8 @@ AI_Pedsim/
    │  └─ app.py
    └─ AI_result/
       ├─ Method_MLP_PyTorch/outputs/
-      └─ Method_MLP_Keras/outputs/
+      ├─ Method_MLP_Keras/outputs/
+      └─ Method_GNN/outputs/
 ```
 
 ## 5) Workflow แนะนำ (ทำงานต่อ)
@@ -133,6 +143,7 @@ python AI_Estimate/AI_Train/Method_MLP_Keras/test_time_estimator.py --config AI_
 ```bash
 python AI_Estimate/AI_Train/Method_MLP_PyTorch/visual_time_estimator.py --run-dir AI_Estimate/AI_result/Method_MLP_PyTorch/outputs/<run_name>
 python AI_Estimate/AI_Train/Method_MLP_Keras/visual_time_estimator.py --run-dir AI_Estimate/AI_result/Method_MLP_Keras/outputs/<run_name>
+python AI_Estimate/AI_Train/Method_GNN/visual_time_estimator.py --run-dir AI_Estimate/AI_result/Method_GNN/outputs/<run_name>
 ```
 
 ### F) Streamlit

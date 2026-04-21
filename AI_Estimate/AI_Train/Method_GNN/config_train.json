@@ -1,0 +1,59 @@
+{
+  "data": {
+    "time_summary_csv": "../../../Geo_scenario/Topo_HouseGAN/time_summary/all_route_time_summary.csv",
+    "route_information_csv": "../../../Geo_scenario/Topo_HouseGAN/route_information/all_route_information.csv",
+    "data_estimate_root": "../../../Dataset/Data_Estimate",
+    "geo_root": "../../../Geo_scenario/Topo_HouseGAN/geo",
+    "use_formatted_data": true,
+    "filter_status": "success",
+    "train_percent": 70,
+    "val_percent": 15,
+    "test_percent": 15,
+    "random_seed": 42
+  },
+  "features": {
+    "numeric": [
+      "computed_agents",
+      "topology_hop_distance",
+      "topology_centerline_distance_m",
+      "straight_distance_m",
+      "detour_ratio",
+      "distance_gap_m",
+      "number_of_rooms_between_A_B",
+      "door_count_between_A_B",
+      "min_door_width_between_A_B",
+      "walkable_area_near_path",
+      "bottleneck_score",
+      "agent_density_near_path",
+      "area_per_agent",
+      "door_pressure_per_agent"
+    ],
+    "categorical": [
+      "variant_id"
+    ],
+    "target": [
+      "min_agent_time_s",
+      "mean_agent_time_s",
+      "max_agent_time_s"
+    ]
+  },
+  "model": {
+    "hidden_dims": [
+      64,
+      32
+    ],
+    "dropout": 0.1
+  },
+  "train": {
+    "epochs": 300,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "save_every_epoch": true,
+    "device": "auto"
+  },
+  "output": {
+    "root": "../../AI_result/Method_GNN/outputs",
+    "run_name": "auto"
+  }
+}

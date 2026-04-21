@@ -30,6 +30,12 @@ METHODS = {
         "result_root": MODULE_ROOT / "AI_result" / "Method_MLP_Keras" / "outputs",
         "checkpoint_name": "best_result.keras",
     },
+    "Method_GNN": {
+        "name": "Graph Neural Network",
+        "train_dir": TRAIN_ROOT / "Method_GNN",
+        "result_root": MODULE_ROOT / "AI_result" / "Method_GNN" / "outputs",
+        "checkpoint_name": "best_result.pth",
+    },
 }
 
 st.set_page_config(page_title="AI_Estimate", layout="wide")
@@ -58,6 +64,23 @@ def render_process_output(manager, key):
     st.code(st.session_state[output_key] or "waiting for output...", language="text")
 
 
+def format_command_for_display(command):
+    """Format a command list into a copy-pasteable string for the terminal."""
+    display_cmd = []
+    for part in command:
+        part_str = str(part)
+        if part_str == sys.executable:
+            display_cmd.append("python")
+        else:
+            try:
+                # Try to make path relative to PROJECT_ROOT for cleaner terminal use
+                rel_path = Path(part_str).relative_to(PROJECT_ROOT)
+                display_cmd.append(str(rel_path))
+            except ValueError:
+                display_cmd.append(part_str)
+    return " ".join(display_cmd)
+
+
 def run_button_row(manager, start_label, stop_label, command, output_key):
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -69,6 +92,12 @@ def run_button_row(manager, start_label, stop_label, command, output_key):
     with col2:
         if st.button(stop_label, use_container_width=True, disabled=not manager.is_running):
             manager.stop_process()
+    
+    # Premium Manual Command Box
+    with st.expander("📝 Manual Terminal Command", expanded=False):
+        st.caption("Copy and run this in your terminal (make sure env is activated):")
+        st.code(format_command_for_display(command), language="bash")
+
     render_process_output(manager, output_key)
 
 
