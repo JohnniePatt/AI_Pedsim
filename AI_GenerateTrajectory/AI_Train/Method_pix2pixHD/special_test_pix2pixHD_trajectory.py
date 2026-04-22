@@ -50,13 +50,23 @@ def _draw_geom(draw: ImageDraw.ImageDraw, geom, fill_rgb: tuple[int, int, int], 
             draw.polygon(hole, fill=(0, 0, 0))
 
 
-def render_input_target(case_dir: pathlib.Path, grid_size: float = 0.5) -> tuple[Image.Image, Image.Image]:
+def render_input_target(case_dir: pathlib.Path, target_width: int = 2000) -> tuple[Image.Image, Image.Image]:
     scene = load_scene(case_dir)
     gt_df = load_trajectory(case_dir)
     walkable = scene["walkable"]
     minx, miny, maxx, maxy = walkable.bounds
-    width = max(8, int(np.ceil((maxx - minx) / grid_size)) + 1)
-    height = max(8, int(np.ceil((maxy - miny) / grid_size)) + 1)
+    
+    width_world = maxx - minx
+    height_world = maxy - miny
+    
+    # Dynamically calculate grid_size to reach target_width
+    # We want (maxx - minx) / grid_size + 1 = target_width
+    grid_size = width_world / (target_width - 1) if width_world > 0 else 0.5
+    
+    width = target_width
+    height = max(8, int(np.ceil(height_world / grid_size)) + 1)
+
+    print(f"[Render] Scene bounds: {width_world:.2f}x{height_world:.2f} m -> Resolution: {width}x{height} (grid_size={grid_size:.4f})")
 
     input_img = Image.new("RGB", (width, height), (0, 0, 0))
     input_draw = ImageDraw.Draw(input_img)
@@ -69,10 +79,14 @@ def render_input_target(case_dir: pathlib.Path, grid_size: float = 0.5) -> tuple
     _draw_geom(target_draw, walkable, (220, 220, 220), minx, miny, height, grid_size)
 
     line_color = (255, 150, 180)
+    # Scale line width with resolution to keep it visible
+    # Base width 1 at 512px -> width ~4 at 2000px
+    lw = max(1, int(round(width / 512.0)))
+    
     for _, g in gt_df.groupby("id"):
         pts = [_world_to_px(float(r.pos_x), float(r.pos_y), minx, miny, height, grid_size) for r in g.itertuples(index=False)]
         if len(pts) >= 2:
-            target_draw.line(pts, fill=line_color, width=1)
+            target_draw.line(pts, fill=line_color, width=lw)
 
     return input_img, target_img
 

@@ -631,6 +631,13 @@ def show_gnn_cvae_val_visuals(run_dir):
     show_epoch_visuals(run_dir, title="Val Epoch Visuals", key_prefix="gnn_cvae_epoch_visual")
 
 
+def show_gnn_cvae2_val_visuals(run_dir):
+    """
+    Viewer for GNN-CVAE2 per-epoch validation visuals.
+    """
+    show_epoch_visuals(run_dir, title="Val Epoch Visuals", key_prefix="gnn_cvae2_epoch_visual")
+
+
 def show_gpt_knowledge_results(method_result_dir):
     """
     Viewer for Method_GPT_Knowledge outputs.

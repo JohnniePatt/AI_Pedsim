@@ -17,6 +17,7 @@ from utils.visualizer import (
     show_housegan_results,
     show_transformer_val_visuals,
     show_gnn_cvae_val_visuals,
+    show_gnn_cvae2_val_visuals,
     show_gpt_knowledge_results,
     show_gpt_knowledge_special_tests,
     show_pix2pix_special_tests,
@@ -841,7 +842,7 @@ elif navigation == "📈 View results":
         selected_run = st.selectbox("Select Run", available_runs)
         run_full_path = result_method_path / selected_run
         
-        if selected_method in ["Method_Transformer", "Method_GNN_CVAE"]:
+        if selected_method in ["Method_Transformer", "Method_GNN_CVAE", "Method_GNN_CVAE2"]:
             t1, t2, t3, t4 = st.tabs(["📊 Loss Curves", "🖼 Training Samples", "🧭 Val Epoch Visuals", "🏁 Final Evaluation"])
             with t1:
                 csv_path = run_full_path / "logs" / "training_history.csv"
@@ -856,6 +857,15 @@ elif navigation == "📈 View results":
                     viewer_fn = show_transformer_val_visuals
                     missing_msg = "visual_transformer.py not found in this method folder."
                     running_msg = "🧭 Generating transformer validation visuals..."
+                    run_path_arg = "--run_dir"
+                elif selected_method == "Method_GNN_CVAE2":
+                    st.caption("Generate and inspect per-epoch validation plots built from the saved GNN-CVAE2 samples.")
+                    visual_script = method_path / "visual_gnn_cvae2.py"
+                    task_name = "gnn_cvae2_visuals"
+                    viewer_fn = show_gnn_cvae2_val_visuals
+                    missing_msg = "visual_gnn_cvae2.py not found in this method folder."
+                    running_msg = "🧭 Generating GNN-CVAE2 validation visuals..."
+                    run_path_arg = "--run_path"
                 else:
                     st.caption("Generate and inspect per-epoch validation plots built from the saved GNN-CVAE samples.")
                     visual_script = method_path / "visual_gnn_cvae.py"
@@ -863,13 +873,14 @@ elif navigation == "📈 View results":
                     viewer_fn = show_gnn_cvae_val_visuals
                     missing_msg = "visual_gnn_cvae.py not found in this method folder."
                     running_msg = "🧭 Generating GNN-CVAE validation visuals..."
+                    run_path_arg = "--run_dir"
 
                 c1, c2 = st.columns([1, 2])
                 with c1:
                     if st.button("🧭 Generate Val Visuals", use_container_width=True, key=f"gen_val_visuals_{selected_method}_{selected_run}", disabled=st.session_state.process_manager.is_running or not visual_script.exists()):
                         python_path = pathlib.Path(get_python_executable())
                         if not python_path.exists(): python_path = "python3"
-                        command = [str(python_path), str(visual_script), "--run_dir", str(run_full_path)]
+                        command = [str(python_path), str(visual_script), run_path_arg, str(run_full_path)]
                         st.session_state.results_logs = ""
                         st.session_state.results_task = task_name
                         st.session_state.process_manager.start_process(command, str(method_path))

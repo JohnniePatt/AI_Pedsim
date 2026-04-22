@@ -1,0 +1,262 @@
+"""
+test_gnn_cvae2.py
+-----------------
+Evaluate GNNCVAE2 on the test split.
+
+Usage:
+  # Auto-find best_model.pth from a run directory
+  python3 test_gnn_cvae2.py --config config_test.json --run_path ../../AI_Result/Method_GNN_CVAE2/outputs/run_2
+
+  # Or specify checkpoint directly
+  python3 test_gnn_cvae2.py --config config_test.json --model_path ../../AI_Result/Method_GNN_CVAE2/outputs/run_2/weights/best_model.pth
+
+Results are saved to <run_dir>/test_eval/
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import shutil
+
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from dataset import SimulationTrajectoryDataset, collate_fn
+from model import GNNCVAE2
+from prepare_geometry_gnn_cvae2 import grid_to_world, point_is_inside_walkable
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def denorm_positions(norm: np.ndarray, meta: dict) -> np.ndarray:
+    world = np.zeros_like(norm)
+    for a in range(norm.shape[0]):
+        for t in range(norm.shape[1]):
+            world[a, t] = grid_to_world(norm[a, t, 0], norm[a, t, 1], meta)
+    return world
+
+
+def compute_metrics(pred_world, gt_world, mask, walkable, collision_threshold_m, exit_centroid_world=None):
+    dists, finals = [], []
+    outside = points = collisions = pairs = 0
+
+    for a in range(mask.shape[0]):
+        vi = np.where(mask[a, 1:])[0]
+        if len(vi) == 0:
+            continue
+        d = np.linalg.norm(pred_world[a, 1:][vi] - gt_world[a, 1:][vi], axis=1)
+        dists.extend(d.tolist())
+        last_pred = pred_world[a, 1:][vi[-1]]
+        finals.append(
+            float(np.linalg.norm(last_pred - exit_centroid_world)) if exit_centroid_world is not None
+            else float(d[-1])
+        )
+        for t in vi.tolist():
+            x, y = pred_world[a, 1:][t]
+            outside += 0 if point_is_inside_walkable(x, y, walkable) else 1
+            points  += 1
+
+    for t in range(1, mask.shape[1]):
+        act = np.where(mask[:, t])[0]
+        for i in range(len(act)):
+            for j in range(i + 1, len(act)):
+                pairs += 1
+                if np.linalg.norm(pred_world[act[i], t] - pred_world[act[j], t]) < collision_threshold_m:
+                    collisions += 1
+
+    return {
+        "ADE_m":             float(np.mean(dists))   if dists   else 0.0,
+        "FDE_m":             float(np.mean(finals))  if finals  else 0.0,
+        "collision_rate":    float(collisions / max(pairs,  1)),
+        "out_of_bounds_rate":float(outside   / max(points, 1)),
+    }
+
+
+def export_parquet(path, positions_world, mask, agent_ids, frames):
+    rows = []
+    for a, aid in enumerate(agent_ids.tolist()):
+        if aid < 0:
+            continue
+        for t, frame in enumerate(frames.tolist()):
+            if t >= mask.shape[1] or not mask[a, t]:
+                continue
+            rows.append({"frame": int(frame), "id": int(aid),
+                         "pos_x": float(positions_world[a, t, 0]),
+                         "pos_y": float(positions_world[a, t, 1])})
+    pd.DataFrame(rows).to_parquet(path)
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def main(config_path: str, model_path: str | None = None, run_path: str | None = None):
+    cfg_file = pathlib.Path(config_path).resolve()
+    with open(cfg_file) as f:
+        cfg = json.load(f)
+
+    # Dataset path
+    dp = cfg["dataset_path"]
+    dataset_path = dp if os.path.isabs(dp) else str((cfg_file.parent / dp).resolve())
+
+    # Resolve model checkpoint
+    if run_path:
+        candidate = pathlib.Path(run_path) / "weights" / "best_model.pth"
+        if candidate.exists():
+            model_path = str(candidate)
+
+    if model_path is None:
+        model_path = cfg.get("model_checkpoint", "")
+    model_ckpt = pathlib.Path(model_path) if model_path else None
+
+    # Output directory lives beside the run that owns the checkpoint
+    if model_ckpt and model_ckpt.exists():
+        run_dir = model_ckpt.parents[1]
+    elif run_path:
+        run_dir = pathlib.Path(run_path)
+    else:
+        run_dir = cfg_file.parent / "test_results_manual"
+
+    out_dir = run_dir / "test_eval"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    samples_dir = out_dir / "samples"
+    samples_dir.mkdir(exist_ok=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[Test] Device: {device}")
+    print(f"[Test] Output: {out_dir}")
+
+    # Dataset
+    test_ds = SimulationTrajectoryDataset(
+        dataset_path, split="test",
+        obs_len=cfg.get("obs_len", 1),
+        frame_stride=cfg.get("frame_stride", 8),
+        max_seq_len=cfg.get("max_seq_len", 160),
+        grid_size=cfg.get("grid_size", 64),
+        geo_padding=cfg.get("geo_padding", 1.0),
+        max_agents=cfg.get("max_agents", 64),
+        subset_percent=cfg.get("subset_percent", 100.0),
+        data_percent=cfg.get("data_percent"),
+    )
+    if len(test_ds) == 0:
+        print("[Test] Empty test set — check dataset_path.")
+        return
+
+    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False,
+                             num_workers=cfg.get("num_workers", 0), collate_fn=collate_fn)
+
+    # Model
+    model = GNNCVAE2(
+        hidden_dim=cfg.get("hidden_dim", 128),
+        latent_dim=cfg.get("latent_dim", 32),
+        node_feat_dim=cfg.get("node_feat_dim", 8),
+        node_embed_dim=cfg.get("node_embed_dim", 64),
+        spatial_gnn_layers=cfg.get("spatial_gnn_layers", 2),
+        agent_gnn_layers=cfg.get("agent_gnn_layers", 3),
+        neighbor_radius=cfg.get("neighbor_radius", 0.08),
+        dropout=0.0,
+        max_residual=cfg.get("max_residual", 0.25),
+        segment_samples=cfg.get("segment_samples", 5),
+    ).to(device)
+
+    if model_ckpt and model_ckpt.exists():
+        model.load_state_dict(torch.load(model_ckpt, map_location=device))
+        print(f"[Test] Loaded: {model_ckpt}")
+    else:
+        print("[Test] WARNING: no weights loaded — using random init.")
+
+    model.eval()
+    rows = []
+    col_thresh = cfg.get("collision_threshold_m", 0.4)
+    export_pq = cfg.get("export_parquet", True)
+
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="[Test] Evaluating"):
+            i = 0
+            positions  = batch["positions"][i:i+1].to(device)
+            agent_mask = batch["agent_mask"][i:i+1].to(device)
+            start_pt   = batch["start_pt"][i:i+1].to(device)
+            goal_pt    = batch["goal_pt"][i:i+1].to(device)
+            geo_mask   = batch["geo_mask"][i:i+1].to(device)
+            nf = batch["node_features_list"][i].to(device)
+            ei = batch["edge_index_list"][i].to(device)
+            et = batch["edge_type_list"][i].to(device)
+            ni = batch["agent_node_ids_list"][i].unsqueeze(0).to(device)
+
+            na = ni.shape[1]
+            max_a = positions.shape[1]
+            if na < max_a:
+                ni_pad = torch.zeros(1, max_a, dtype=torch.long, device=device)
+                ni_pad[0, :na] = ni[0]
+                ni = ni_pad
+
+            out = model(
+                positions, agent_mask, start_pt, goal_pt, geo_mask,
+                nf, ei, et, ni,
+                teacher_forcing=False, sample_latent=False,
+                goal_weight=0.0, kl_weight=0.0, oob_weight=0.0, segment_oob_weight=0.0,
+            )
+
+            pred_norm = out["positions"][0].cpu().numpy()
+            gt_norm   = batch["positions"][0].cpu().numpy()
+            mask_np   = batch["agent_mask"][0].cpu().numpy()
+            meta      = batch["metas"][0]
+            walkable  = batch["walkables"][0]
+            case_id   = batch["case_ids"][0]
+            agent_ids = batch["agent_ids"][0].numpy()
+            frames    = batch["frames"][0].numpy()
+
+            pred_world = denorm_positions(pred_norm, meta)
+            gt_world   = denorm_positions(gt_norm,   meta)
+
+            # FDE vs exit centroid
+            goal_n = batch["goal_pt"][0, 0].numpy()
+            exit_c = np.array(grid_to_world(float(goal_n[0]), float(goal_n[1]), meta), dtype=np.float32)
+
+            metrics = compute_metrics(pred_world, gt_world, mask_np, walkable, col_thresh, exit_c)
+            metrics["case_id"] = case_id
+            rows.append(metrics)
+
+            if export_pq:
+                case_dir = out_dir / "samples" / f"case_{case_id}"
+                case_dir.mkdir(parents=True, exist_ok=True)
+                export_parquet(case_dir / f"AI_pred_{case_id}.parquet", pred_world, mask_np, agent_ids, frames)
+                export_parquet(case_dir / f"GT_real_{case_id}.parquet", gt_world,   mask_np, agent_ids, frames)
+                src = pathlib.Path(batch["case_dirs"][0])
+                for fname in ["Geo_room.json", "Geo_corridor.json",
+                              f"Spawn_location_{case_id}.csv", f"Spawn_exit_{case_id}.csv"]:
+                    if (src / fname).exists():
+                        shutil.copy(src / fname, case_dir / fname)
+
+    # Summary
+    df = pd.DataFrame(rows)
+    summary = pd.DataFrame([
+        {"metric": "ADE_m",             "mean": float(df["ADE_m"].mean()),             "std": float(df["ADE_m"].std())},
+        {"metric": "FDE_m",             "mean": float(df["FDE_m"].mean()),             "std": float(df["FDE_m"].std())},
+        {"metric": "collision_rate",    "mean": float(df["collision_rate"].mean()),    "std": float(df["collision_rate"].std())},
+        {"metric": "out_of_bounds_rate","mean": float(df["out_of_bounds_rate"].mean()),"std": float(df["out_of_bounds_rate"].std())},
+        {"metric": "n_cases",           "mean": float(len(df)),                        "std": 0.0},
+    ])
+
+    df.to_csv(out_dir / "test_case_metrics.csv", index=False)
+    summary.to_csv(out_dir / "test_summary.csv", index=False)
+
+    print(f"\n[Test] Results over {len(df)} cases:")
+    print(f"  ADE  = {float(df['ADE_m'].mean()):.4f} m  ± {float(df['ADE_m'].std()):.4f}")
+    print(f"  FDE  = {float(df['FDE_m'].mean()):.4f} m  ± {float(df['FDE_m'].std()):.4f}")
+    print(f"  Coll = {float(df['collision_rate'].mean()):.4f}")
+    print(f"  OOB  = {float(df['out_of_bounds_rate'].mean()):.4f}")
+    print(f"\n[Test] Saved → {out_dir}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config",     default="config_test.json")
+    parser.add_argument("--model_path", default=None, help="Path to .pth checkpoint")
+    parser.add_argument("--run_path",   default=None, help="Path to run_N dir (auto-finds best_model.pth)")
+    args = parser.parse_args()
+    main(args.config, args.model_path, args.run_path)

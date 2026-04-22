@@ -115,12 +115,23 @@ def build_routes_for_plan(geo_dir: pathlib.Path) -> tuple[list[tuple[str, str]],
     return routes_to_sim, node_polys
 
 
-def parse_sqlite_name(sqlite_path: pathlib.Path) -> tuple[str, str]:
-    # plan_sim_42_00.sqlite -> seed='42', suffix='00'
+def parse_sqlite_name(sqlite_path: pathlib.Path) -> tuple[str, str, str | None]:
+    # handles:
+    # 1. plan_sim_42_00.sqlite -> seed='42', route_idx='00', variant=None
+    # 2. plan_sim_42_00_full.sqlite -> seed='42', route_idx='00', variant='full'
     parts = sqlite_path.stem.split("_")
     if len(parts) < 4:
         raise ValueError(f"Unexpected sqlite filename: {sqlite_path.name}")
-    return parts[-2], parts[-1]
+    
+    variants = ["full", "half", "single"]
+    if parts[-1].lower() in variants:
+        # Format: plan_sim_{seed}_{route}_{variant}
+        # e.g. ['plan', 'sim', '42', '00', 'full']
+        return parts[-3], parts[-2], parts[-1]
+    else:
+        # Format: plan_sim_{seed}_{route}
+        # e.g. ['plan', 'sim', '42', '00']
+        return parts[-2], parts[-1], None
 
 
 def normalize_housegan(source_root: pathlib.Path, output_root: pathlib.Path, table_filter: str = "trajectory_data"):
@@ -150,15 +161,26 @@ def normalize_housegan(source_root: pathlib.Path, output_root: pathlib.Path, tab
         sqlite_files = sorted(plan_dir.glob("*.sqlite"), key=lambda p: p.name)
         route_map = {}
         for sqlite_path in sqlite_files:
-            _, suffix = parse_sqlite_name(sqlite_path)
-            route_idx = int(suffix)
-            if route_idx >= len(routes_to_sim):
-                print(f"[HouseGAN] Skip {sqlite_path.name}: route index {route_idx} out of range")
+            try:
+                _, route_idx_str, _ = parse_sqlite_name(sqlite_path)
+                route_idx = int(route_idx_str)
+                if route_idx >= len(routes_to_sim):
+                    print(f"[HouseGAN] Skip {sqlite_path.name}: route index {route_idx} out of range")
+                    continue
+                route_map[sqlite_path] = routes_to_sim[route_idx]
+            except Exception as e:
+                print(f"[HouseGAN] Skip {sqlite_path.name}: parsing failed -> {e}")
                 continue
-            route_map[sqlite_path] = routes_to_sim[route_idx]
 
         for sqlite_path, (start_nid, end_nid) in route_map.items():
-            seed_str, suffix = parse_sqlite_name(sqlite_path)
+            seed_str, route_idx_str, variant_str = parse_sqlite_name(sqlite_path)
+            
+            # Incorporate variant into case_id if present
+            if variant_str:
+                suffix = f"{route_idx_str}_{variant_str}"
+            else:
+                suffix = route_idx_str
+                
             case_id = f"{plan_dir.name}_{seed_str}_{suffix}"
             case_dir = output_root / f"case_{case_id}"
             case_dir.mkdir(parents=True, exist_ok=True)
@@ -191,7 +213,8 @@ def normalize_housegan(source_root: pathlib.Path, output_root: pathlib.Path, tab
                     "case_id": case_id,
                     "plan_name": plan_dir.name,
                     "seed": int(seed_str),
-                    "route_suffix": suffix,
+                    "route_suffix": route_idx_str,
+                    "variant": variant_str or "none",
                     "start_node": start_nid,
                     "end_node": end_nid,
                     "sqlite_path": str(sqlite_path),
@@ -204,6 +227,7 @@ def normalize_housegan(source_root: pathlib.Path, output_root: pathlib.Path, tab
 
     manifest_df = pd.DataFrame(manifest_rows)
     manifest_df.to_csv(output_root / "manifest_housegan_cases.csv", index=False)
+
     print(f"[HouseGAN] Done. Cases={len(manifest_df)} -> {output_root}")
 
 
