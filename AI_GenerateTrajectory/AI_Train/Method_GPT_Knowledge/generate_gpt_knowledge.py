@@ -519,6 +519,11 @@ def build_planner_prompt(target_scene: dict, retrieved_cases: list[RetrievedCase
     )
     return "\n".join(lines)
 
+# ทำเส้นทางการเดิน
+# - มี agent 400คน
+# - มีผังรูปแบบนี้
+
+# Path area x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x, and y,y,y,y,y,y,y,y,y,y,y,y,y,y,y,y,y เป็น Walkable area
 
 def _load_candidate_case_bundle(case_dir: str | pathlib.Path) -> dict[str, Any]:
     case_dir = _resolve_case_dir(case_dir)
