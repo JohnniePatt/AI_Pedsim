@@ -5,7 +5,19 @@
   "seed": 42,
   "grid_size": 0.5,
   "timeout_minutes": 5,
+  "resume_mode": true,
   "preview_only": false,
+  "memory_guard": {
+    "enabled": true,
+    "max_ram_percent": 80.0,
+    "check_interval_seconds": 5.0,
+    "cool_down_seconds": 15.0,
+    "terminate_wait_seconds": 10.0,
+    "max_retries_per_plan": 30
+  },
+  "resume_policy": {
+    "max_attempts_per_variant": 2
+  },
   "spawn_policy": {
     "sqm_per_person": 0.5,
     "wall_offset_m": 0.25,

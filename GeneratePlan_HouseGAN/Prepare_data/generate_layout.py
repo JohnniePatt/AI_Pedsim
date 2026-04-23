@@ -11,6 +11,21 @@ import numpy as np
 from shapely.geometry import box
 from shapely.ops import unary_union
 
+AREA_PROFILES = {
+    "default": {
+        "room_size_range": (2.5, 7.0),
+        "corridor_first_length_range": (6.0, 12.0),
+        "corridor_attached_length_range": (5.0, 10.0),
+        "corridor_width_range": (2.5, 4.0),
+    },
+    "big": {
+        "room_size_range": (10.0, 25.0),
+        "corridor_first_length_range": (12.0, 25.0),
+        "corridor_attached_length_range": (10.0, 22.0),
+        "corridor_width_range": (3.0, 6.0),
+    },
+}
+
 
 class Room:
     def __init__(self, x, y, w, h, name="Room", type="room"):
@@ -38,7 +53,7 @@ def can_place_attached_room(new_room, existing_rooms, target_idx, max_target_ove
     return True
 
 
-def generate_procedural_layout(total_rooms_range, max_corridors, door_width, seed):
+def generate_procedural_layout(total_rooms_range, max_corridors, door_width, seed, size_profile):
     random.seed(seed)
     np.random.seed(seed)
 
@@ -51,7 +66,8 @@ def generate_procedural_layout(total_rooms_range, max_corridors, door_width, see
         placed = False
         for _ in range(100):
             if not rooms:
-                w, h = random.uniform(6, 12), random.uniform(2.5, 4.0)
+                w = random.uniform(*size_profile["corridor_first_length_range"])
+                h = random.uniform(*size_profile["corridor_width_range"])
                 if random.random() > 0.5:
                     w, h = h, w
                 rooms.append(Room(0, 0, w, h, name="Cor-0", type="corridor"))
@@ -62,7 +78,8 @@ def generate_procedural_layout(total_rooms_range, max_corridors, door_width, see
             target_idx = random.choice(corridors_only) if corridors_only else random.randrange(len(rooms))
             target_room = rooms[target_idx]
             side = random.choice(["N", "S", "E", "W"])
-            w, h = random.uniform(5, 10), random.uniform(2.5, 4.0)
+            w = random.uniform(*size_profile["corridor_attached_length_range"])
+            h = random.uniform(*size_profile["corridor_width_range"])
             if side in ["E", "W"]:
                 w, h = h, w
 
@@ -96,7 +113,8 @@ def generate_procedural_layout(total_rooms_range, max_corridors, door_width, see
             target_idx = random.randrange(len(rooms))
             target_room = rooms[target_idx]
             side = random.choice(["N", "S", "E", "W"])
-            w, h = random.uniform(2.5, 7.0), random.uniform(2.5, 7.0)
+            w = random.uniform(*size_profile["room_size_range"])
+            h = random.uniform(*size_profile["room_size_range"])
 
             overlap = 0.05
             if side == "N":
@@ -224,6 +242,13 @@ def complexity_to_range(complexity):
     return (5, 8)
 
 
+def resolve_size_profile(config):
+    requested_mode = str(config.get("room_area_mode", "default")).strip().lower()
+    mode = requested_mode if requested_mode in AREA_PROFILES else "default"
+    profile = AREA_PROFILES[mode].copy()
+    return mode, profile
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(Path(__file__).with_name("config_housegan.json")))
@@ -235,6 +260,7 @@ def main():
         "random_seed": 42,
         "door_width": 1.5,
         "complexity": "Medium (5-8 Rooms)",
+        "room_area_mode": "default",
         "output_scenario": "Topo_HouseGAN",
     }
     config_path = Path(args.config)
@@ -247,9 +273,17 @@ def main():
     output_root.mkdir(parents=True, exist_ok=True)
 
     room_range = complexity_to_range(config["complexity"])
+    room_area_mode, size_profile = resolve_size_profile(config)
+    config["room_area_mode"] = room_area_mode
     for i in range(int(config["num_scenarios"])):
         current_seed = int(config["random_seed"]) + i
-        rooms, edges, doors = generate_procedural_layout(room_range, int(config["num_corridors"]), float(config["door_width"]), current_seed)
+        rooms, edges, doors = generate_procedural_layout(
+            room_range,
+            int(config["num_corridors"]),
+            float(config["door_width"]),
+            current_seed,
+            size_profile,
+        )
 
         run_name = f"plan_{current_seed}_{uuid.uuid4().hex[:4]}"
         run_dir = output_root / run_name
