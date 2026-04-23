@@ -926,27 +926,84 @@ def page_utilities():
 
 def page_generate():
     st.header("Generate HouseGAN Plans")
-    cfg = read_json(GEN_CONFIG, {})
+    cfg = read_json(GEN_CONFIG, {}) or {}
+    complexity_options = ["Small (3-5 Rooms)", "Medium (5-8 Rooms)", "Large (8-15 Rooms)", "XL (15-20 Rooms)", "XXL (20-30 Rooms)"]
+    complexity_default = cfg.get("complexity", "Large (8-15 Rooms)")
+    complexity_index = complexity_options.index(complexity_default) if complexity_default in complexity_options else 2
 
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        cfg["num_scenarios"] = st.number_input("Number of plans", min_value=1, max_value=1000, value=int(cfg.get("num_scenarios", 20)))
-        cfg["random_seed"] = st.number_input("Start seed", min_value=0, value=int(cfg.get("random_seed", 42)))
-    with col_b:
-        cfg["num_corridors"] = st.number_input("Max corridors", min_value=1, max_value=20, value=int(cfg.get("num_corridors", 3)))
-        cfg["door_width"] = st.number_input("Door width (m)", min_value=0.4, max_value=5.0, value=float(cfg.get("door_width", 1.5)), step=0.1)
-    with col_c:
-        cfg["complexity"] = st.selectbox(
-            "Complexity",
-            ["Small (3-5 Rooms)", "Medium (5-8 Rooms)", "Large (8-15 Rooms)", "XL (15-20 Rooms)", "XXL (20-30 Rooms)"],
-            index=max(0, ["Small (3-5 Rooms)", "Medium (5-8 Rooms)", "Large (8-15 Rooms)", "XL (15-20 Rooms)", "XXL (20-30 Rooms)"].index(cfg.get("complexity", "Large (8-15 Rooms)")) if cfg.get("complexity", "Large (8-15 Rooms)") in ["Small (3-5 Rooms)", "Medium (5-8 Rooms)", "Large (8-15 Rooms)", "XL (15-20 Rooms)", "XXL (20-30 Rooms)"] else 2),
-        )
-        cfg["output_scenario"] = "Topo_HouseGAN"
+    def render_area_tab(tab_mode, key_prefix):
+        tab_cfg = dict(cfg)
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            tab_cfg["num_scenarios"] = st.number_input(
+                "Number of plans",
+                min_value=1,
+                max_value=1000,
+                value=int(cfg.get("num_scenarios", 20)),
+                key=f"{key_prefix}_num_scenarios",
+            )
+            tab_cfg["random_seed"] = st.number_input(
+                "Start seed",
+                min_value=0,
+                value=int(cfg.get("random_seed", 42)),
+                key=f"{key_prefix}_random_seed",
+            )
+        with col_b:
+            tab_cfg["num_corridors"] = st.number_input(
+                "Max corridors",
+                min_value=1,
+                max_value=20,
+                value=int(cfg.get("num_corridors", 3)),
+                key=f"{key_prefix}_num_corridors",
+            )
+            tab_cfg["door_width"] = st.number_input(
+                "Door width (m)",
+                min_value=0.4,
+                max_value=5.0,
+                value=float(cfg.get("door_width", 1.5)),
+                step=0.1,
+                key=f"{key_prefix}_door_width",
+            )
+        with col_c:
+            tab_cfg["complexity"] = st.selectbox(
+                "Complexity",
+                complexity_options,
+                index=complexity_index,
+                key=f"{key_prefix}_complexity",
+            )
+            tab_cfg["output_scenario"] = "Topo_HouseGAN"
+
+        if tab_mode == "big":
+            tab_cfg["room_area_mode"] = "big"
+            st.info(
+                "Big room area mode: room size is fixed to 10.00-25.00 m and corridor profile is scaled "
+                "to length 10.00-22.00 m (attached) / 12.00-25.00 m (first) with width 3.00-6.00 m."
+            )
+        else:
+            tab_cfg["room_area_mode"] = "default"
+            st.caption("Default room area mode uses room size 2.50-7.00 m and original corridor profile.")
+
+        return tab_cfg
+
+    default_tab, big_tab = st.tabs(["Default room area", "Big room area"])
+    with default_tab:
+        cfg_default = render_area_tab("default", "default_area")
+        trigger_default = st.button("Generate Plans", type="primary", disabled=ensure_manager("generate_manager").is_running, key="generate_default_area")
+    with big_tab:
+        cfg_big = render_area_tab("big", "big_area")
+        trigger_big = st.button("Generate Plans", type="primary", disabled=ensure_manager("generate_manager").is_running, key="generate_big_area")
 
     st.caption(f"Output: `{SCENARIO_ROOT / 'geo'}`")
     manager = ensure_manager("generate_manager")
-    if st.button("Generate Plans", type="primary", disabled=manager.is_running):
-        write_json(GEN_CONFIG, cfg)
+    if trigger_default:
+        write_json(GEN_CONFIG, cfg_default)
+        st.session_state["generate_manager_logs"] = []
+        command = [sys.executable, str(MODULE_ROOT / "Prepare_data" / "generate_layout.py"), "--config", str(GEN_CONFIG)]
+        manager.start_process(command, str(PROJECT_ROOT))
+        st.rerun()
+
+    if trigger_big:
+        write_json(GEN_CONFIG, cfg_big)
         st.session_state["generate_manager_logs"] = []
         command = [sys.executable, str(MODULE_ROOT / "Prepare_data" / "generate_layout.py"), "--config", str(GEN_CONFIG)]
         manager.start_process(command, str(PROJECT_ROOT))

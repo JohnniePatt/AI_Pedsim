@@ -1,8 +1,9 @@
 {
   "num_scenarios": 100,
-  "num_corridors": 2,
-  "random_seed": 42,
+  "num_corridors": 3,
+  "random_seed": 300,
   "door_width": 1.5,
-  "complexity": "Medium (5-8 Rooms)",
+  "complexity": "Large (8-15 Rooms)",
+  "room_area_mode": "big",
   "output_scenario": "Topo_HouseGAN"
 }

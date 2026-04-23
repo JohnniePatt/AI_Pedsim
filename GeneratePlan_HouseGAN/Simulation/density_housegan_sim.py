@@ -4,7 +4,9 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -37,12 +39,168 @@ def write_json(path, data):
         json.dump(data, f, indent=2)
 
 
+def simulation_summary_path(scenario_name, plan_name):
+    return PROJECT_ROOT / "Geo_scenario" / scenario_name / "metadata" / plan_name / "simulation_summary.json"
+
+
+def route_meta_path(output_dirs, route_idx):
+    return output_dirs["metadata"] / f"route_{route_idx:02d}.json"
+
+
+def variant_is_usable(variant):
+    status = variant.get("status")
+    if status not in {"success", "preview_only", "failed_final"}:
+        return False
+    if status == "preview_only":
+        return True
+    if status == "failed_final":
+        return True
+    trajectory_file = variant.get("trajectory_file", "")
+    return bool(trajectory_file) and Path(trajectory_file).exists()
+
+
+def route_is_complete(route):
+    variants = route.get("variants", [])
+    if not variants:
+        return False
+    return all(variant_is_usable(variant) for variant in variants)
+
+
+def plan_is_complete_for_batch(scenario_name, plan_name):
+    summary_file = simulation_summary_path(scenario_name, plan_name)
+    if not summary_file.exists():
+        return False
+    try:
+        summary = read_json(summary_file)
+    except Exception:
+        return False
+    routes = summary.get("routes", [])
+    if not routes:
+        return False
+    return all(route_is_complete(route) for route in routes)
+
+
+def memory_percent():
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.exists():
+        return 0.0
+    values = {}
+    with open(meminfo, "r", encoding="utf-8") as f:
+        for line in f:
+            if ":" not in line:
+                continue
+            key, rest = line.split(":", 1)
+            token = rest.strip().split(" ")[0]
+            try:
+                values[key] = float(token)
+            except ValueError:
+                continue
+    total = values.get("MemTotal", 0.0)
+    available = values.get("MemAvailable", values.get("MemFree", 0.0))
+    if total <= 0:
+        return 0.0
+    used = max(0.0, total - available)
+    return (used / total) * 100.0
+
+
+def build_worker_config(cfg, plan_name):
+    worker_cfg = json.loads(json.dumps(cfg))
+    worker_cfg["plan"] = plan_name
+    worker_cfg["batch"] = False
+    return worker_cfg
+
+
+def run_worker_with_memory_guard(worker_cmd, guard_cfg):
+    threshold = float(guard_cfg.get("max_ram_percent", 80.0))
+    check_interval = max(1.0, float(guard_cfg.get("check_interval_seconds", 5.0)))
+    cool_down = max(1.0, float(guard_cfg.get("cool_down_seconds", 15.0)))
+    terminate_wait = max(1.0, float(guard_cfg.get("terminate_wait_seconds", 10.0)))
+
+    process = subprocess.Popen(worker_cmd, cwd=str(PROJECT_ROOT))
+    killed_by_guard = False
+    while process.poll() is None:
+        ram = memory_percent()
+        if ram >= threshold:
+            print(f"[Sim][guard] RAM {ram:.1f}% >= {threshold:.1f}% -> stopping worker to protect system.")
+            killed_by_guard = True
+            process.terminate()
+            try:
+                process.wait(timeout=terminate_wait)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            plt.close("all")
+            gc.collect()
+            print(f"[Sim][guard] Cooling down for {cool_down:.0f}s before resume...")
+            time.sleep(cool_down)
+            return process.returncode or 0, killed_by_guard
+        time.sleep(check_interval)
+
+    return process.returncode or 0, killed_by_guard
+
+
+def run_with_memory_guard(selected_plans, cfg):
+    scenario_name = cfg.get("scenario_name", "Topo_HouseGAN")
+    guard_cfg = cfg.get("memory_guard", {})
+    max_retries = int(guard_cfg.get("max_retries_per_plan", 30))
+    if max_retries < 1:
+        max_retries = 1
+
+    completed = 0
+    for plan_name in selected_plans:
+        if plan_is_complete_for_batch(scenario_name, plan_name):
+            print(f"[Sim][guard] Skip complete plan: {plan_name}")
+            completed += 1
+            continue
+
+        retries = 0
+        while retries < max_retries:
+            retries += 1
+            worker_cfg = build_worker_config(cfg, plan_name)
+            with tempfile.NamedTemporaryFile("w", suffix=".json", prefix="density_worker_", delete=False, encoding="utf-8") as tf:
+                json.dump(worker_cfg, tf, indent=2)
+                worker_cfg_path = tf.name
+            worker_cmd = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--config",
+                worker_cfg_path,
+                "--plan",
+                plan_name,
+                "--worker-run",
+            ]
+            print(f"[Sim][guard] plan={plan_name} attempt={retries}/{max_retries}")
+            try:
+                exit_code, killed_by_guard = run_worker_with_memory_guard(worker_cmd, guard_cfg)
+            finally:
+                try:
+                    os.remove(worker_cfg_path)
+                except OSError:
+                    pass
+
+            if plan_is_complete_for_batch(scenario_name, plan_name):
+                completed += 1
+                print(f"[Sim][guard] plan completed: {plan_name}")
+                break
+
+            if exit_code == 0 and not killed_by_guard:
+                print(f"[Sim][guard] plan={plan_name} ended without full completion, retrying resume...")
+            else:
+                print(f"[Sim][guard] plan={plan_name} interrupted (exit={exit_code}), retrying resume...")
+        else:
+            print(f"[Sim][guard] plan={plan_name} reached max retries ({max_retries}) and is still incomplete.")
+
+    print(f"[Sim][guard] Completed {completed}/{len(selected_plans)} plan(s)")
+
+
 def load_config(config_path):
     cfg = read_json(config_path)
     cfg.setdefault("scenario_name", "Topo_HouseGAN")
     cfg.setdefault("spawn_policy", {})
     cfg.setdefault("agent_policy", {})
     cfg.setdefault("geometry_policy", {})
+    cfg.setdefault("memory_guard", {})
+    cfg.setdefault("resume_policy", {})
     return cfg
 
 
@@ -224,8 +382,10 @@ def run_density_simulation(seed, num_agents, walkable_area, trajectory_file, saf
 
     start_time = time.time()
     last_change_time = time.time()
+    last_heartbeat_time = time.time()
     max_duration_seconds = timeout_minutes * 60
     no_progress_timeout = 60
+    heartbeat_seconds = 15
 
     with tqdm(total=num_agents, desc=f"Simulating {seed}") as pbar:
         last_count = num_agents
@@ -243,11 +403,19 @@ def run_density_simulation(seed, num_agents, walkable_area, trajectory_file, saf
                 pbar.update(last_count - current_count)
                 last_count = current_count
                 last_change_time = now
+                last_heartbeat_time = now
             elif now - last_change_time > no_progress_timeout:
                 simulation._writer.close()
                 if Path(trajectory_file).exists():
                     os.remove(trajectory_file)
                 return False, positions, f"deadlock: no progress for {no_progress_timeout}s"
+            elif now - last_heartbeat_time >= heartbeat_seconds:
+                elapsed = now - start_time
+                print(
+                    f"[Sim] heartbeat seed={seed} elapsed={elapsed:.0f}s "
+                    f"agents_left={current_count}/{num_agents}"
+                )
+                last_heartbeat_time = now
 
     simulation._writer.close()
     return True, positions, ""
@@ -363,10 +531,13 @@ def run_plan(plan_name, cfg):
         "metadata": topo_root / "metadata" / plan_name,
         "previews": topo_root / "previews" / plan_name,
     }
+    resume_mode = bool(cfg.get("resume_mode", True))
     if not cfg.get("preview_only", False):
-        for key, output_dir in output_dirs.items():
-            if output_dir.exists() and key in {"dataswarm", "density", "speed", "trajectory", "spawn_exit", "offset_area", "metadata", "previews"}:
-                shutil.rmtree(output_dir)
+        if not resume_mode:
+            for key, output_dir in output_dirs.items():
+                if output_dir.exists() and key in {"dataswarm", "density", "speed", "trajectory", "spawn_exit", "offset_area", "metadata", "previews"}:
+                    shutil.rmtree(output_dir)
+        for output_dir in output_dirs.values():
             output_dir.mkdir(parents=True, exist_ok=True)
 
     seed = int(cfg.get("seed", 42))
@@ -375,6 +546,10 @@ def run_plan(plan_name, cfg):
     requested_offset = float(spawn_policy.get("wall_offset_m", 1.0))
     grid_size = float(cfg.get("grid_size", 0.5))
     timeout_minutes = int(cfg.get("timeout_minutes", 5))
+    resume_policy = cfg.get("resume_policy", {})
+    max_attempts_per_variant = int(resume_policy.get("max_attempts_per_variant", 2))
+    if max_attempts_per_variant < 1:
+        max_attempts_per_variant = 1
 
     summary = {
         "plan_name": plan_name,
@@ -395,6 +570,10 @@ def run_plan(plan_name, cfg):
         exit_area = node_polys[end_nid]
         clipped_spawn, safe_spawn, used_offset = choose_safe_spawn_area(raw_spawn, walkable_area, requested_offset)
         agent_count = compute_agent_count(float(safe_spawn.area), spawn_policy)
+
+        route_meta_file = route_meta_path(output_dirs, route_idx)
+        existing_route_meta = read_json(route_meta_file) if resume_mode and route_meta_file.exists() else {}
+        existing_variants = {v.get("variant_id"): v for v in existing_route_meta.get("variants", [])}
 
         route_meta = {
             "route_index": route_idx,
@@ -425,6 +604,31 @@ def run_plan(plan_name, cfg):
             variant_seed = route_seed + (variant_idx * 100000)
             variant_suffix = f"{variant_seed}_{route_idx:02d}_{variant['id']}"
             trajectory_file = output_dirs["dataswarm"] / f"plan_sim_{variant_suffix}.sqlite"
+            existing_variant = existing_variants.get(variant["id"], {})
+            existing_trajectory_path = Path(existing_variant.get("trajectory_file", "")) if existing_variant.get("trajectory_file") else None
+            previous_attempts = int(existing_variant.get("attempt_count", 0))
+            if resume_mode and existing_variant and variant_is_usable(existing_variant):
+                print(
+                    f"[Sim] skip route={route_idx:02d} {start_nid}->{end_nid} variant={variant['id']} "
+                    f"(already completed)"
+                )
+                if existing_trajectory_path and existing_trajectory_path.exists():
+                    existing_variant["trajectory_file"] = str(existing_trajectory_path)
+                route_meta["variants"].append(existing_variant)
+                continue
+            if (
+                resume_mode
+                and existing_variant
+                and existing_variant.get("status") in {"failed", "failed_final"}
+                and previous_attempts >= max_attempts_per_variant
+            ):
+                existing_variant["status"] = "failed_final"
+                print(
+                    f"[Sim] skip route={route_idx:02d} {start_nid}->{end_nid} variant={variant['id']} "
+                    f"(reached max attempts={max_attempts_per_variant})"
+                )
+                route_meta["variants"].append(existing_variant)
+                continue
 
             print(
                 f"[Sim] route={route_idx:02d} {start_nid}->{end_nid} variant={variant['id']} "
@@ -456,7 +660,10 @@ def run_plan(plan_name, cfg):
                 "raw_spawn_geojson": mapping(raw_spawn) if not raw_spawn.is_empty else None,
                 "clipped_spawn_geojson": mapping(clipped_spawn) if not clipped_spawn.is_empty else None,
                 "safe_spawn_geojson": mapping(safe_spawn) if not safe_spawn.is_empty else None,
+                "attempt_count": previous_attempts + 1,
             }
+            if (not ok) and variant_meta["attempt_count"] >= max_attempts_per_variant:
+                variant_meta["status"] = "failed_final"
             route_meta["variants"].append(variant_meta)
 
             plot_offset_area(
@@ -499,15 +706,11 @@ def run_plan(plan_name, cfg):
                 "safe_spawn_geojson": mapping(safe_spawn) if not safe_spawn.is_empty else None,
             }
         )
-        write_json(output_dirs["metadata"] / f"route_{route_idx:02d}.json", route_meta)
+        write_json(route_meta_file, route_meta)
         summary["routes"].append(route_meta)
 
     write_json(output_dirs["metadata"] / "simulation_summary.json", summary)
-    return any(
-        variant.get("status") in {"success", "preview_only"}
-        for route in summary["routes"]
-        for variant in route.get("variants", [{"status": route.get("status")}])
-    )
+    return all(route_is_complete(route) for route in summary["routes"])
 
 
 def plans_to_run(cfg, cli_plan, batch):
@@ -516,14 +719,11 @@ def plans_to_run(cfg, cli_plan, batch):
     if batch:
         if not geo_root.exists():
             return []
-        topo_root = PROJECT_ROOT / "Geo_scenario" / scenario_name
-        swarm_root = topo_root / "dataswarm"
         plans = []
         for plan_dir in sorted(geo_root.iterdir()):
             if not plan_dir.is_dir():
                 continue
-            plan_swarm = swarm_root / plan_dir.name
-            if not plan_swarm.exists() or not any(plan_swarm.glob("*.sqlite")):
+            if not plan_is_complete_for_batch(scenario_name, plan_dir.name):
                 plans.append(plan_dir.name)
         return plans
     plan = cli_plan or cfg.get("plan", "")
@@ -541,6 +741,7 @@ def main():
     parser.add_argument("--max-agents", type=int, default=None)
     parser.add_argument("--timeout", type=int, default=None)
     parser.add_argument("--preview", action="store_true")
+    parser.add_argument("--worker-run", action="store_true")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -560,6 +761,12 @@ def main():
     selected_plans = plans_to_run(cfg, args.plan, args.batch or bool(cfg.get("batch", False)))
     if not selected_plans:
         print("[Sim] No plan selected. Use --plan <plan_name> or --batch.")
+        return
+
+    guard_cfg = cfg.get("memory_guard", {})
+    guard_enabled = bool(guard_cfg.get("enabled", True))
+    if guard_enabled and not args.worker_run:
+        run_with_memory_guard(selected_plans, cfg)
         return
 
     ok_count = 0
