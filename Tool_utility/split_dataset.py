@@ -4,10 +4,32 @@ import random
 import argparse
 import pathlib
 
+def get_group_key(folder_name):
+    """
+    Heuristic to extract a grouping key from case folder names.
+    Goal: Group different variants/seeds of the same plan to avoid data leakage.
+    For HouseGAN: case_plan_100_8ec0_42_00_full -> plan_100_8ec0
+    """
+    if not folder_name.startswith("case_"):
+        return folder_name
+    
+    name = folder_name[5:] # remove 'case_'
+    
+    # HouseGAN pattern: plan_{id}_{hash}_{seed}_{route}_{variant}
+    if name.startswith("plan_"):
+        parts = name.split("_")
+        # plan_100_8ec0 -> parts=['plan', '100', '8ec0']
+        if len(parts) >= 3:
+            return "_".join(parts[:3])
+            
+    return folder_name
+
+
 def split_dataset(source_dir, train_ratio, test_ratio, val_ratio, seed=42):
     """
     Split case_ folders within a dataset directory into train, test, and val subfolders.
     Supports re-splitting by collecting cases from existing split folders.
+    Groups cases by plan name to prevent data leakage.
     """
     source_path = pathlib.Path(source_dir)
     if not source_path.exists():
@@ -15,16 +37,13 @@ def split_dataset(source_dir, train_ratio, test_ratio, val_ratio, seed=42):
         return
 
     # 1. Collect all case directories
-    # We look in the root, and in existing train/test/val folders
-    # Note: Use standard 'val' instead of 'validation' as per user request
     potential_locations = [source_path] + [source_path / s for s in ["train", "test", "val", "validation"]]
     
     all_cases = []
-    case_names = set() # To avoid duplicates if same named folder exists twice (shouldn't)
+    case_names = set()
     
     for loc in potential_locations:
         if loc.exists() and loc.is_dir():
-            # Find all directories that start with 'case_'
             for d in loc.iterdir():
                 if d.is_dir() and d.name.startswith("case_") and d.name not in case_names:
                     all_cases.append(d)
@@ -34,23 +53,42 @@ def split_dataset(source_dir, train_ratio, test_ratio, val_ratio, seed=42):
         print(f"No case_ directories found in {source_dir} or its subfolders.")
         return
 
-    print(f"Found {len(all_cases)} cases in total. Preparing to split...")
+    print(f"Found {len(all_cases)} cases in total.")
 
-    # 2. Shuffle
+    # 2. Group cases by plan to avoid leakage
+    groups = {}
+    for case_path in all_cases:
+        key = get_group_key(case_path.name)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(case_path)
+    
+    group_keys = list(groups.keys())
+    print(f"Grouped into {len(group_keys)} unique plans/groups.")
+
+    # 3. Shuffle and split GROUPS
     random.seed(seed)
-    random.shuffle(all_cases)
+    random.shuffle(group_keys)
 
-    # 3. Calculate splits
-    total_count = len(all_cases)
-    train_count = int(total_count * train_ratio)
-    test_count = int(total_count * test_ratio)
-    val_count = total_count - train_count - test_count
+    total_groups = len(group_keys)
+    train_count = int(total_groups * train_ratio)
+    test_count = int(total_groups * test_ratio)
+    # Ensure at least some in each if enough groups exist
+    if train_count == 0 and total_groups > 0: train_count = 1
+    
+    train_keys = group_keys[:train_count]
+    test_keys = group_keys[train_count:train_count + test_count]
+    val_keys = group_keys[train_count + test_count:]
+
+    def flatten_groups(keys):
+        return [case for k in keys for case in groups[k]]
 
     splits = {
-        "train": all_cases[:train_count],
-        "test": all_cases[train_count:train_count + test_count],
-        "val": all_cases[train_count + test_count:]
+        "train": flatten_groups(train_keys),
+        "test": flatten_groups(test_keys),
+        "val": flatten_groups(val_keys)
     }
+
 
     # 4. Create target folders and move
     for split_name, cases in splits.items():
@@ -82,10 +120,12 @@ def split_dataset(source_dir, train_ratio, test_ratio, val_ratio, seed=42):
             print("Removed empty 'validation' folder.")
 
     print("\n--- Split Summary ---")
-    print(f"Total: {total_count}")
-    print(f"Train: {train_count} ({train_ratio*100:.1f}%)")
-    print(f"Test:  {test_count} ({test_ratio*100:.1f}%)")
-    print(f"Val:   {val_count} ({val_ratio*100:.1f}%)")
+    total_all = len(all_cases)
+    print(f"Total Cases:  {total_all}")
+    print(f"Total Groups: {len(group_keys)}")
+    print(f"Train: {len(splits['train'])} cases ({len(train_keys)} groups)")
+    print(f"Test:  {len(splits['test'])} cases ({len(test_keys)} groups)")
+    print(f"Val:   {len(splits['val'])} cases ({len(val_keys)} groups)")
     print("Done!")
 
 if __name__ == "__main__":
