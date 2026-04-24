@@ -116,6 +116,13 @@ def save_uploaded_file(uploaded_file, target_path):
     with open(target, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
+
+def render_manual_terminal_command(command_parts, key_suffix: str):
+    cmd_text = " ".join(str(x) for x in command_parts)
+    with st.expander("📝 Manual Terminal Command", expanded=False):
+        st.caption("Copy and run this in your terminal (activate your venv first).")
+        st.code(cmd_text, language="bash")
+
 if "process_manager" not in st.session_state:
     st.session_state.process_manager = ProcessManager()
 
@@ -228,6 +235,15 @@ if st.sidebar.button(
     st.rerun()
 
 if st.sidebar.button(
+    "🧰 Prepare Data for UNet",
+    key="btn_prepare_unet",
+    use_container_width=True,
+    help="Organize/copy UNet image dataset into Dataset/Data_ImageUNet"
+):
+    st.session_state.current_nav = "🧰 Prepare Data for UNet"
+    st.rerun()
+
+if st.sidebar.button(
     "🏠 HouseGAN Format",
     key="btn_housegan_format",
     use_container_width=True,
@@ -315,6 +331,12 @@ if navigation == "🚀 Training model":
         st.divider()
         st.subheader("🧠 Execute Feed Knowledge")
         c1, c2 = st.columns(2)
+        manual_feed_cmd = [
+            "python",
+            "AI_GenerateTrajectory/AI_Train/Method_GPT_Knowledge/build_knowledge.py",
+            "--config",
+            "AI_GenerateTrajectory/AI_Train/Method_GPT_Knowledge/config_build.json",
+        ]
         if c1.button("🚀 Start Feed Knowledge", use_container_width=True, disabled=st.session_state.process_manager.is_running):
             if not selected_datasets:
                 st.error("Please select at least one dataset.")
@@ -341,6 +363,7 @@ if navigation == "🚀 Training model":
         if c2.button("🛑 Stop Feed Knowledge", use_container_width=True, disabled=not st.session_state.process_manager.is_running):
             st.session_state.process_manager.stop_process()
             st.rerun()
+        render_manual_terminal_command(manual_feed_cmd, "gpt_feed_knowledge")
 
         if st.session_state.process_manager.is_running and st.session_state.get("training_task") == "gpt_feed_knowledge":
             st.info("🔥 Feeding knowledge in progress...")
@@ -406,18 +429,26 @@ if navigation == "🚀 Training model":
     else:
         selected_script = st.selectbox("Select Script", [s.name for s in train_scripts])
         script_full_path = method_path / selected_script
-        
+        script_text = script_full_path.read_text(encoding="utf-8", errors="ignore")
+        supports_config = "--config" in script_text
+        python_path = pathlib.Path(get_python_executable())
+        if not python_path.exists():
+            python_path = "python3"
+        manual_train_cmd = [str(python_path), str(script_full_path)]
+        if supports_config:
+            manual_train_cmd += ["--config", "config_train.json"]
+
         c1, c2 = st.columns(2)
         if c1.button("🚀 Start Training", use_container_width=True, disabled=st.session_state.process_manager.is_running):
-            python_path = pathlib.Path(get_python_executable())
-            if not python_path.exists(): python_path = "python3"
-            command = [str(python_path), str(script_full_path), "--config", "config_train.json"]
+            command = list(manual_train_cmd)
             st.session_state.process_manager.start_process(command, str(method_path))
             st.rerun()
 
         if c2.button("🛑 Stop Training", use_container_width=True, disabled=not st.session_state.process_manager.is_running):
             st.session_state.process_manager.stop_process()
             st.rerun()
+
+        render_manual_terminal_command(manual_train_cmd, f"train_{selected_method}_{selected_script}")
 
         # Monitoring
         if st.session_state.process_manager.is_running:
@@ -775,13 +806,24 @@ elif navigation == "🔬 Testing model":
         else:
             selected_script = st.selectbox("Select Script", [s.name for s in test_scripts])
             test_script_path = method_path / selected_script
+            test_script_text = test_script_path.read_text(encoding="utf-8", errors="ignore")
+            supports_config = "--config" in test_script_text
+            supports_run_path = "--run_path" in test_script_text
+            python_path = pathlib.Path(get_python_executable())
+            if not python_path.exists():
+                python_path = "python3"
+            manual_test_cmd = [str(python_path), str(test_script_path)]
+            if supports_config:
+                manual_test_cmd += ["--config", "config_test.json"]
+            if supports_run_path:
+                manual_test_cmd += ["--run_path", str(run_full_path)]
             
             if st.button("🧪 Run Test Evaluation", use_container_width=True, disabled=st.session_state.process_manager.is_running):
-                python_path = pathlib.Path(get_python_executable())
-                if not python_path.exists(): python_path = "python3"
-                command = [str(python_path), str(test_script_path), "--config", "config_test.json", "--run_path", str(run_full_path)]
+                command = list(manual_test_cmd)
                 st.session_state.process_manager.start_process(command, str(method_path))
                 st.rerun()
+
+            render_manual_terminal_command(manual_test_cmd, f"test_{selected_method}_{selected_script}")
 
         # Monitoring
         if st.session_state.process_manager.is_running:
@@ -1269,6 +1311,129 @@ elif navigation == "🧹 Data Formatter":
                         num_parquet = len(list(output_parquet_dir.rglob("*.parquet")))
                         if num_parquet > 0:
                             st.success(f"📚 Successfully formatted **{num_parquet}** parquet files in `{selected_topo}/dataswarm_parquet`.")
+
+# --- PAGE: Prepare Data for UNet ---
+elif navigation == "🧰 Prepare Data for UNet":
+    st.header("🧰 Prepare Data for UNet")
+    st.markdown("Organize image-pair dataset format (`A/B + train/test/validation`) into `Dataset/Data_ImageUNet/Trajectory_line_dataset/<Topology>`.")
+
+    source_root = PROJECT_ROOT / "Geo_scenario"
+    output_root = PROJECT_ROOT / "Dataset" / "Data_ImageUNet"
+    prepare_script = PROJECT_ROOT / "Tool_utility" / "prepare_unet_image_dataset.py"
+    dataset_subpath = st.text_input("Dataset Relative Path", value="trajectory_line_dataset/Cleandata_1")
+    output_group = st.text_input("Output Group Folder", value="Trajectory_line_dataset")
+
+    c1, c2 = st.columns(2)
+    c1.info(f"📂 **Source Root:** `{source_root.relative_to(PROJECT_ROOT)}`")
+    c2.info(f"✨ **Output Root:** `{output_root.relative_to(PROJECT_ROOT)}`")
+
+    if not source_root.exists():
+        st.error(f"❌ Source root not found: {source_root}")
+    elif not prepare_script.exists():
+        st.error(f"❌ Utility script not found: {prepare_script}")
+    else:
+        all_topologies = sorted([d.name for d in source_root.iterdir() if d.is_dir()])
+        default_topologies = [t for t in all_topologies if (source_root / t / pathlib.Path(dataset_subpath)).exists()]
+        if not default_topologies and all_topologies:
+            default_topologies = [all_topologies[0]]
+
+        selected_topologies = st.multiselect(
+            "Select Topologies",
+            options=all_topologies,
+            default=default_topologies,
+        )
+        overwrite_output = st.checkbox("Overwrite Existing Output", value=False)
+
+        # Advanced options (HouseGAN render parameters)
+        with st.expander("⚙️ Advanced Options (HouseGAN render)", expanded=False):
+            adv_col1, adv_col2, adv_col3 = st.columns(3)
+            target_size    = adv_col1.number_input("Target Size (px)", min_value=128, max_value=1024, value=512, step=128,
+                                                    help="Square canvas size for A/B images.")
+            canvas_padding = adv_col2.number_input("Canvas Padding (m)", min_value=0.0, max_value=5.0, value=1.0, step=0.5,
+                                                    help="Padding around walkable area in metres.")
+            line_width     = adv_col3.number_input("Trajectory Line Width (px)", min_value=1, max_value=10, value=2, step=1,
+                                                    help="Pixel width of drawn trajectory lines.")
+
+        if selected_topologies:
+            preview_rows = []
+            housegan_hint = False
+            for topo in selected_topologies:
+                src_dataset = source_root / topo / pathlib.Path(dataset_subpath)
+                dst_dataset = output_root / output_group / topo
+                if not src_dataset.exists() and topo == "Topo_HouseGAN" and dataset_subpath != "trajectory_line":
+                    housegan_hint = True
+                preview_rows.append(
+                    {
+                        "topology": topo,
+                        "source_exists": src_dataset.exists(),
+                        "source_dataset": str(src_dataset.relative_to(PROJECT_ROOT)) if src_dataset.exists() else str(src_dataset),
+                        "output_dataset": str(dst_dataset.relative_to(PROJECT_ROOT)),
+                    }
+                )
+            with st.expander("📋 Prepare Preview", expanded=False):
+                st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
+            if housegan_hint:
+                st.warning("For `Topo_HouseGAN`, use `Dataset Relative Path = trajectory_line` to build A/B pairs from `spawn_exit` + `trajectory_line`.")
+
+        st.divider()
+        st.subheader("🚀 Execute Prepare")
+        python_path = pathlib.Path(get_python_executable())
+        if not python_path.exists():
+            python_path = "python3"
+        manual_prepare_cmd = [
+            str(python_path),
+            str(prepare_script),
+            "--source_root", str(source_root),
+            "--output_root", str(output_root),
+            "--dataset_subpath", dataset_subpath,
+            "--output_group", output_group,
+            "--topologies", *selected_topologies,
+            "--target_size",    str(int(target_size)),
+            "--canvas_padding", str(float(canvas_padding)),
+            "--line_width",     str(int(line_width)),
+        ]
+        if overwrite_output:
+            manual_prepare_cmd.append("--overwrite")
+
+        if st.button("🚀 Start Prepare Data for UNet", use_container_width=True, disabled=st.session_state.process_manager.is_running):
+            if not selected_topologies:
+                st.error("Please select at least one topology.")
+            else:
+                st.session_state.unet_prepare_logs = ""
+                st.session_state.process_manager.start_process(list(manual_prepare_cmd), str(PROJECT_ROOT))
+                st.rerun()
+
+        # Manual terminal command — always visible below the button
+        st.caption("💻 Manual Terminal Command")
+        st.code(" ".join(str(x) for x in manual_prepare_cmd), language="bash")
+
+        if st.session_state.process_manager.is_running:
+            st.info("🔥 Preparing Data_ImageUNet...")
+            log_container = st.empty()
+            if "unet_prepare_logs" not in st.session_state:
+                st.session_state.unet_prepare_logs = ""
+            new_output = "".join(list(st.session_state.process_manager.get_output()))
+            if new_output:
+                st.session_state.unet_prepare_logs += new_output
+            log_container.code(st.session_state.unet_prepare_logs)
+            time.sleep(1)
+            st.rerun()
+        else:
+            if "unet_prepare_logs" in st.session_state and st.session_state.unet_prepare_logs:
+                st.subheader("Prepare Output")
+                st.code(st.session_state.unet_prepare_logs)
+                if st.button("🧹 Clear Prepare Logs", key="clear_prepare_unet_logs"):
+                    st.session_state.unet_prepare_logs = ""
+                    st.rerun()
+
+            manifest_path = output_root / "manifest_unet_image_dataset.csv"
+            if manifest_path.exists():
+                try:
+                    manifest_df = pd.read_csv(manifest_path)
+                    st.subheader("📊 Prepared Dataset Summary")
+                    st.dataframe(manifest_df, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error reading manifest_unet_image_dataset.csv: {e}")
 
 # --- PAGE: HouseGAN Format ---
 elif navigation == "🏠 HouseGAN Format":

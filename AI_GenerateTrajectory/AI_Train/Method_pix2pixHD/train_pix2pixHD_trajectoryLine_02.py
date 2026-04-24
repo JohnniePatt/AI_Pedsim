@@ -31,9 +31,9 @@ class TrainingConfiguration:
     lambda_gp = 10.0 # Gradient Penalty weight
     
     # 3. GAN Options
-    num_discriminators = 2 
+    num_discriminators = 2
     use_label_smoothing = False # Not needed for WGAN
-    d_train_freq = 1 # Train D every N steps (default 1)
+    n_critic = 5 # Train D N times per 1 G step (WGAN standard is 5)
     
     # 4. Resume
     resume_checkpoint_path = "-"
@@ -43,7 +43,10 @@ class TrainingConfiguration:
     input_channels = 3
     output_channels = 3
     
-    # 6. Run Organization
+    # 6. Dataset (override via config_train.json "dataset_root")
+    dataset_root = ""  # set in config_train.json; empty = use default below
+
+    # 7. Run Organization
     BASE_DIR = pathlib.Path(__file__).parent.resolve()
     PROJECT_ROOT = BASE_DIR.parent.parent
     DATASET_ROOT = PROJECT_ROOT / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1"
@@ -70,7 +73,16 @@ def load_config_from_json(json_path):
     for key, value in data.items():
         if hasattr(config, key):
             setattr(config, key, value)
+
+    # Resolve dataset_root string → DATASET_ROOT Path
+    if config.dataset_root:
+        p = pathlib.Path(config.dataset_root)
+        if not p.is_absolute():
+            p = config.PROJECT_ROOT / p
+        config.DATASET_ROOT = p
+
     print(f"📂 [CONFIG] Loaded parameters from {json_path}")
+    print(f"📂 [CONFIG] DATASET_ROOT = {config.DATASET_ROOT}")
 
 def write_progress(epoch, total_epochs, loss, val_l1):
     progress_file = config.CURRENT_RUN_DIR / "progress.json"
@@ -141,10 +153,12 @@ class SingleDiscriminator(nn.Module):
     def __init__(self, in_channels=6):
         super().__init__()
         # Return list of feature maps for Feature Matching
+        # WGAN-GP: must NOT use BatchNorm in critic (breaks gradient penalty)
+        # Use InstanceNorm2d instead (normalizes per-sample, no cross-sample dependency)
         self.layer1 = nn.Sequential(nn.Conv2d(in_channels, 64, 4, 2, 1), nn.LeakyReLU(0.2, True))
-        self.layer2 = nn.Sequential(nn.Conv2d(64, 128, 4, 2, 1), nn.BatchNorm2d(128), nn.LeakyReLU(0.2, True))
-        self.layer3 = nn.Sequential(nn.Conv2d(128, 256, 4, 2, 1), nn.BatchNorm2d(256), nn.LeakyReLU(0.2, True))
-        self.layer4 = nn.Sequential(nn.Conv2d(256, 512, 4, 1, 1), nn.BatchNorm2d(512), nn.LeakyReLU(0.2, True))
+        self.layer2 = nn.Sequential(nn.Conv2d(64, 128, 4, 2, 1), nn.InstanceNorm2d(128, affine=True), nn.LeakyReLU(0.2, True))
+        self.layer3 = nn.Sequential(nn.Conv2d(128, 256, 4, 2, 1), nn.InstanceNorm2d(256, affine=True), nn.LeakyReLU(0.2, True))
+        self.layer4 = nn.Sequential(nn.Conv2d(256, 512, 4, 1, 1), nn.InstanceNorm2d(512, affine=True), nn.LeakyReLU(0.2, True))
         self.layer5 = nn.Conv2d(512, 1, 4, 1, 1)
 
     def forward(self, x):
@@ -294,48 +308,51 @@ def execute_training():
         for real_a, real_b in pbar:
             global_step += 1
             real_a, real_b = real_a.to(device), real_b.to(device)
-            fake_b = generator(real_a)
 
-            joint_real = torch.cat([real_a, real_b], 1)
-            joint_fake = torch.cat([real_a, fake_b.detach()], 1)
-            
-            # --- Train Critic (Discriminator) ---
+            # --- Train Critic n_critic times before updating Generator ---
             loss_d_val = 0
-            if global_step % config.d_train_freq == 0:
+            for _ in range(config.n_critic):
+                fake_b_d = generator(real_a).detach()
+                joint_real = torch.cat([real_a, real_b], 1)
+                joint_fake = torch.cat([real_a, fake_b_d], 1)
+
                 discriminator_optimizer.zero_grad()
-                
                 real_outputs = discriminator(joint_real)
                 fake_outputs = discriminator(joint_fake)
-                
+
                 loss_d = 0
                 for i in range(config.num_discriminators):
-                    # WGAN Loss: mean(Critic(Fake)) - mean(Critic(Real))
+                    # WGAN Loss: minimize E[fake] - E[real]  (critic wants real > fake)
                     loss_d += (fake_outputs[i][-1].mean() - real_outputs[i][-1].mean())
-                
-                # Add Gradient Penalty
+
+                # Gradient Penalty
                 gp = compute_gradient_penalty(discriminator, joint_real, joint_fake, device)
                 loss_total_d = loss_d + config.lambda_gp * gp
-                
-                loss_total_d.backward(); discriminator_optimizer.step()
+                loss_total_d.backward()
+                discriminator_optimizer.step()
                 loss_d_val = loss_total_d.item()
 
-            # --- Train Generator ---
-            generator_optimizer.zero_grad()
+            # --- Train Generator (1 step) ---
+            fake_b = generator(real_a)
+            joint_real = torch.cat([real_a, real_b], 1)
             joint_fake_g = torch.cat([real_a, fake_b], 1)
-            fake_outputs_g = discriminator(joint_fake_g); real_outputs_g = discriminator(joint_real)
-            
+
+            generator_optimizer.zero_grad()
+            fake_outputs_g = discriminator(joint_fake_g)
+            real_outputs_g = discriminator(joint_real)
+
             loss_g_adv = 0; loss_fm = 0
             for i in range(config.num_discriminators):
                 # WGAN Adversarial Loss for Generator: -mean(Critic(Fake))
                 loss_g_adv += -fake_outputs_g[i][-1].mean()
-                # Feature Matching Loss (compare layers 0 to N-1)
+                # Feature Matching Loss (compare intermediate layers)
                 for j in range(len(fake_outputs_g[i]) - 1):
                     loss_fm += fm_loss_criterion(fake_outputs_g[i][j], real_outputs_g[i][j].detach())
-            
+
             loss_g_l1 = pixel_loss_criterion(fake_b, real_b)
             loss_total = loss_g_adv + (loss_fm * config.feature_matching_weight) + (loss_g_l1 * config.l1_loss_weight)
-            
-            loss_total.backward(); generator_optimizer.step()
+            loss_total.backward()
+            generator_optimizer.step()
 
             epoch_metrics["d"] += loss_d_val; epoch_metrics["g_adv"] += loss_g_adv.item()
             epoch_metrics["fm"] += loss_fm.item(); epoch_metrics["l1"] += loss_g_l1.item()

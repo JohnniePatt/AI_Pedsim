@@ -24,6 +24,7 @@ class TestConfig:
         self.CHECKPOINT_DIR = None
         
         # 1. Load from external config file (e.g. config_test.json)
+        project_root = self.SCRIPT_DIR.parent.parent  # AI_GenerateTrajectory
         if config_file:
             cf_path = pathlib.Path(config_file)
             if not cf_path.is_absolute() and not cf_path.exists():
@@ -31,8 +32,10 @@ class TestConfig:
             if cf_path.exists() and cf_path.is_file():
                 with open(cf_path, "r") as f:
                     data = json.load(f)
-                    for k, v in data.items(): 
-                        if k == "DATASET_ROOT": v = pathlib.Path(v)
+                    for k, v in data.items():
+                        if k == "DATASET_ROOT":
+                            p = pathlib.Path(v)
+                            v = p if p.is_absolute() else (project_root / p).resolve()
                         if k == "checkpoints": self.CHECKPOINT_DIR = pathlib.Path(v)
                         setattr(self, k, v)
                 print(f"📖 [CONFIG] Loaded test parameters from {cf_path}")
@@ -132,11 +135,11 @@ class ResNetBlock(nn.Module):
         self.block = nn.Sequential(
             nn.ReflectionPad2d(1),
             nn.Conv2d(channels, channels, 3, 1, 0),
-            nn.BatchNorm2d(channels),
+            nn.InstanceNorm2d(channels, affine=True),
             nn.ReLU(True),
             nn.ReflectionPad2d(1),
             nn.Conv2d(channels, channels, 3, 1, 0),
-            nn.BatchNorm2d(channels)
+            nn.InstanceNorm2d(channels, affine=True)
         )
     def forward(self, x):
         return x + self.block(x)
@@ -147,20 +150,20 @@ class GeneratorNetwork(nn.Module):
         model = [
             nn.ReflectionPad2d(3),
             nn.Conv2d(in_channels, 64, 7, 1, 0),
-            nn.BatchNorm2d(64),
+            nn.InstanceNorm2d(64, affine=True),
             nn.ReLU(True)
         ]
         model += [
-            nn.Conv2d(64, 128, 3, 2, 1), nn.BatchNorm2d(128), nn.ReLU(True),
-            nn.Conv2d(128, 256, 3, 2, 1), nn.BatchNorm2d(256), nn.ReLU(True),
-            nn.Conv2d(256, 512, 3, 2, 1), nn.BatchNorm2d(512), nn.ReLU(True)
+            nn.Conv2d(64, 128, 3, 2, 1), nn.InstanceNorm2d(128, affine=True), nn.ReLU(True),
+            nn.Conv2d(128, 256, 3, 2, 1), nn.InstanceNorm2d(256, affine=True), nn.ReLU(True),
+            nn.Conv2d(256, 512, 3, 2, 1), nn.InstanceNorm2d(512, affine=True), nn.ReLU(True)
         ]
         for _ in range(n_blocks):
             model += [ResNetBlock(512)]
         model += [
-            nn.ConvTranspose2d(512, 256, 3, 2, 1, output_padding=1), nn.BatchNorm2d(256), nn.ReLU(True),
-            nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1), nn.BatchNorm2d(128), nn.ReLU(True),
-            nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1), nn.BatchNorm2d(64), nn.ReLU(True)
+            nn.ConvTranspose2d(512, 256, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(256, affine=True), nn.ReLU(True),
+            nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(128, affine=True), nn.ReLU(True),
+            nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(64, affine=True), nn.ReLU(True)
         ]
         model += [
             nn.ReflectionPad2d(3),
@@ -172,12 +175,16 @@ class GeneratorNetwork(nn.Module):
     def forward(self, x): return self.model(x)
 
 class Pix2PixTrajectoryDataset(Dataset):
-    def __init__(self, root_directory, subset="test", image_size=512):
+    def __init__(self, root_directory, subset="test", image_size=256):
         self.directory_A = pathlib.Path(root_directory) / "A" / subset
         self.directory_B = pathlib.Path(root_directory) / "B" / subset
         self.file_list = sorted([f.name for f in self.directory_A.glob("*.png")])
-        self.image_size = image_size
+        # Snap to multiple of 32 — must match training resize
+        target = ((image_size + 31) // 32) * 32
+        self.target_w = target
+        self.target_h = target
         self.transforms = transforms.Compose([
+            transforms.Resize((self.target_h, self.target_w), transforms.InterpolationMode.BICUBIC),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
@@ -187,17 +194,8 @@ class Pix2PixTrajectoryDataset(Dataset):
         name = self.file_list[idx]
         img_a_raw = Image.open(self.directory_A / name).convert("RGB")
         img_b_raw = Image.open(self.directory_B / name).convert("RGB")
-        
         orig_w, orig_h = img_a_raw.size
-        # Dynamic calculation for this specific image
-        target_w = ((orig_w + 31) // 32) * 32
-        target_h = ((orig_h + 31) // 32) * 32
-        
-        # Resize to multiple of 32 for model stability
-        img_a = img_a_raw.resize((target_w, target_h), Image.BICUBIC)
-        img_b = img_b_raw.resize((target_w, target_h), Image.BICUBIC)
-        
-        return self.transforms(img_a), self.transforms(img_b), torch.tensor([orig_w, orig_h])
+        return self.transforms(img_a_raw), self.transforms(img_b_raw), torch.tensor([orig_w, orig_h])
 
 def run_evaluation(run_path, config_file=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
