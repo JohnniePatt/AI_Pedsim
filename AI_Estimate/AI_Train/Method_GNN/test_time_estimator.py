@@ -54,7 +54,7 @@ _bootstrap_cuda_ld_library_path()
 # ---------------------------------------------------------------------------
 
 from dataset_gnn import build_gnn_data_bundle
-from model import build_model
+from model import build_model, choose_device
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,6 +80,19 @@ def collate_graphs(batch):
         batch_y.append(item['y'])
     return {"x": torch.stack(batch_x), "adj": torch.stack(batch_adj), "y": torch.stack(batch_y)}
 
+
+def compute_metrics(pred_s, true_s, target_columns):
+    error = pred_s - true_s
+    metrics = {
+        "rows": int(len(pred_s)),
+        "mae_overall_s": float(np.mean(np.abs(error))),
+        "rmse_overall_s": float(np.sqrt(np.mean(error**2))),
+    }
+    for idx, name in enumerate(target_columns):
+        metrics[f"mae_{name}"] = float(np.mean(np.abs(error[:, idx])))
+        metrics[f"rmse_{name}"] = float(np.sqrt(np.mean(error[:, idx] ** 2)))
+    return metrics
+
 # ---------------------------------------------------------------------------
 # Testing Logic
 # ---------------------------------------------------------------------------
@@ -89,7 +102,7 @@ def test(config_path, checkpoint_path=None, output_dir=None):
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = choose_device(config)
     
     if checkpoint_path:
         checkpoint_path = Path(checkpoint_path).resolve()
@@ -139,30 +152,33 @@ def test(config_path, checkpoint_path=None, output_dir=None):
             all_rows.append(row_meta)
 
     all_preds, all_targets = np.vstack(all_preds), np.vstack(all_targets)
-    mae = np.mean(np.abs(all_preds - all_targets), axis=0)
-    rmse = np.sqrt(np.mean((all_preds - all_targets)**2, axis=0))
-    
-    metrics = {
+    target_columns = config["features"]["target"]
+    test_metrics = compute_metrics(all_preds, all_targets, target_columns)
+
+    run_metrics = {
         "final_test": {
-            "mae_overall_s": float(np.mean(mae)),
-            "rmse_overall_s": float(np.mean(rmse)),
+            "mae_overall_s": test_metrics["mae_overall_s"],
+            "rmse_overall_s": test_metrics["rmse_overall_s"],
         },
         "all_metrics": {
-            "mae": mae.tolist(),
-            "rmse": rmse.tolist()
+            "mae": [test_metrics[f"mae_{target}"] for target in target_columns],
+            "rmse": [test_metrics[f"rmse_{target}"] for target in target_columns],
         },
-        "targets": config["features"]["target"]
+        "targets": target_columns,
     }
     with open(run_dir / "metrics.json", "w") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(run_metrics, f, indent=2)
 
-    # Save detailed predictions
+    # Save detailed predictions and UI-compatible metrics.
     eval_dir = Path(output_dir).resolve() if output_dir else run_dir / "test_eval"
     eval_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(all_rows).to_csv(eval_dir / "predictions.csv", index=False)
+    with open(eval_dir / "test_metrics.json", "w") as f:
+        json.dump(test_metrics, f, indent=2)
 
-    print(f"[AI_Estimate][GNN][Test] MAE: {mae}")
+    print(json.dumps(test_metrics, indent=2))
     print(f"[AI_Estimate][GNN][Test] Results saved to: {eval_dir}")
+    return eval_dir
 
 # ---------------------------------------------------------------------------
 # Entry Point

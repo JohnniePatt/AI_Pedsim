@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -472,8 +473,11 @@ def render_metrics(run_dir):
 def render_test_outputs(run_dir):
     metrics_path = run_dir / "test_eval" / "test_metrics.json"
     predictions_path = run_dir / "test_eval" / "predictions.csv"
-    if metrics_path.exists():
-        metrics = read_json(metrics_path, {})
+    metrics = read_json(metrics_path, {}) if metrics_path.exists() else {}
+    df = pd.read_csv(predictions_path) if predictions_path.exists() else None
+    if not metrics and df is not None:
+        metrics = compute_prediction_metrics(df)
+    if metrics:
         st.subheader("Test metrics")
         c1, c2, c3 = st.columns(3)
         c1.metric("Rows", metrics.get("rows", 0))
@@ -481,8 +485,7 @@ def render_test_outputs(run_dir):
         c3.metric("RMSE overall", f"{metrics.get('rmse_overall_s', 0):.2f}s")
         with st.expander("Raw test metrics"):
             st.json(metrics)
-    if predictions_path.exists():
-        df = pd.read_csv(predictions_path)
+    if df is not None:
         st.subheader("Prediction preview")
         groups = split_prediction_groups(df)
         if list(groups.keys()) == ["All"]:
@@ -496,6 +499,33 @@ def render_test_outputs(run_dir):
                     st.caption(f"Rows: {len(group_df)}")
                     render_prediction_scatter(group_df)
                     st.dataframe(group_df.head(80), use_container_width=True, hide_index=True)
+
+
+def compute_prediction_metrics(df):
+    target_columns = []
+    for column in df.columns:
+        if not column.startswith("true_"):
+            continue
+        target = column.removeprefix("true_")
+        if f"pred_{target}" in df.columns:
+            target_columns.append(target)
+    if not target_columns:
+        return {}
+
+    true = df[[f"true_{target}" for target in target_columns]].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    pred = df[[f"pred_{target}" for target in target_columns]].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    valid = ~np.isnan(true) & ~np.isnan(pred)
+    error = np.where(valid, pred - true, np.nan)
+    metrics = {
+        "rows": int(len(df)),
+        "mae_overall_s": float(np.nanmean(np.abs(error))),
+        "rmse_overall_s": float(np.sqrt(np.nanmean(error**2))),
+    }
+    for idx, target in enumerate(target_columns):
+        target_error = error[:, idx]
+        metrics[f"mae_{target}"] = float(np.nanmean(np.abs(target_error)))
+        metrics[f"rmse_{target}"] = float(np.sqrt(np.nanmean(target_error**2)))
+    return metrics
 
 
 def normalize_variant_label(raw_value):

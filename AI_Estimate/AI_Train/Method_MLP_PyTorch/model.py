@@ -35,10 +35,21 @@ def build_model(input_dim, config):
     )
 
 
+def is_mps_available():
+    mps_backend = getattr(torch.backends, "mps", None)
+    return bool(mps_backend and mps_backend.is_available())
+
+
 def choose_device(config):
     requested = str(config.get("train", {}).get("device", "auto")).lower()
     if requested == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if is_mps_available():
+            return torch.device("mps")
+        return torch.device("cpu")
     if requested == "cuda" and not torch.cuda.is_available():
+        return torch.device("cpu")
+    if requested == "mps" and not is_mps_available():
         return torch.device("cpu")
     return torch.device(requested)

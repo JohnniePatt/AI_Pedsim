@@ -105,7 +105,7 @@ _bootstrap_cuda_ld_library_path()
 # ---------------------------------------------------------------------------
 
 from dataset_gnn import build_gnn_data_bundle
-from model import build_model
+from model import build_model, choose_device
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -153,7 +153,7 @@ def train(config_path):
         config = json.load(f)
 
     # Setup Device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = choose_device(config)
     print(f"[AI_Estimate][GNN][Train] Using device: {device}")
 
     # Load Data
