@@ -107,6 +107,19 @@ _bootstrap_cuda_ld_library_path()
 from dataset_gnn import build_gnn_data_bundle
 from model import build_model, choose_device
 
+
+def print_system_status(device_type, model_type="Graph Neural Network (GNN)"):
+    import platform
+    import psutil
+    print("-" * 60)
+    print(f"🚀 [AI_Estimate] Hardware & Model Status")
+    print(f"   • Model Type: {model_type}")
+    print(f"   • Processor : {platform.processor()}")
+    print(f"   • CPUs      : {psutil.cpu_count(logical=True)} logical cores")
+    print(f"   • RAM       : {psutil.virtual_memory().total / (1024 ** 3):.1f} GB")
+    print(f"   • Device    : {device_type}")
+    print("-" * 60)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -154,7 +167,7 @@ def train(config_path):
 
     # Setup Device
     device = choose_device(config)
-    print(f"[AI_Estimate][GNN][Train] Using device: {device}")
+    print_system_status(device)
 
     # Load Data
     train_ds, val_ds, _, scaler = build_gnn_data_bundle(config, str(config_path))
@@ -197,19 +210,22 @@ def train(config_path):
     best_val_loss = float("inf")
 
     print(f"[AI_Estimate][GNN][Train] Starting: {run_name}")
-    def train_epoch(model, loader, optimizer, device):
+    print(f" - Train batches: {len(train_loader)}")
+    print(f" - Val batches: {len(val_loader)}")
+    print("-" * 30, flush=True)
+
+    def train_epoch(model, loader, optimizer, device, epoch, total_epochs):
         model.train()
         total_loss = 0
-        for batch in loader:
+        pbar = tqdm(loader, desc=f"Epoch {epoch+1:03d}/{total_epochs} [Train]", leave=True)
+        for batch in pbar:
             x, adj, y = batch["x"].float().to(device), batch["adj"].float().to(device), batch["y"].float().to(device)
             optimizer.zero_grad()
             output = model(x, adj)
             
-            # Weighted MSE: Give more importance to larger targets (especially Slowest)
+            # Weighted MSE
             weights = torch.ones_like(y)
-            # Moderate boost for samples above average
             weights = weights + torch.relu(y) * 0.5
-            # Slight extra boost for Slowest column
             weights[:, 2] *= 1.2 
             
             loss = (weights * (output - y)**2).mean()
@@ -217,14 +233,16 @@ def train(config_path):
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+            pbar.set_postfix({"loss": f"{loss.item():.5f}"})
         return total_loss / len(loader)
 
 
-    def validate_epoch(model, loader, device):
+    def validate_epoch(model, loader, device, epoch, total_epochs):
         model.eval()
         total_loss = 0
+        pbar = tqdm(loader, desc=f"Epoch {epoch+1:03d}/{total_epochs} [Val]", leave=True)
         with torch.no_grad():
-            for batch in loader:
+            for batch in pbar:
                 x, adj, y = batch["x"].float().to(device), batch["adj"].float().to(device), batch["y"].float().to(device)
                 output = model(x, adj)
                 
@@ -234,11 +252,13 @@ def train(config_path):
                 
                 loss = (weights * (output - y)**2).mean()
                 total_loss += loss.item()
+                pbar.set_postfix({"loss": f"{loss.item():.5f}"})
         return total_loss / len(loader)
 
-    for epoch in range(config["train"]["epochs"]):
-        avg_train = train_epoch(model, train_loader, optimizer, device)
-        avg_val = validate_epoch(model, val_loader, device)
+    total_epochs = config["train"]["epochs"]
+    for epoch in range(total_epochs):
+        avg_train = train_epoch(model, train_loader, optimizer, device, epoch, total_epochs)
+        avg_val = validate_epoch(model, val_loader, device, epoch, total_epochs)
         
         history["train_loss"].append(avg_train)
         history["val_loss"].append(avg_val)

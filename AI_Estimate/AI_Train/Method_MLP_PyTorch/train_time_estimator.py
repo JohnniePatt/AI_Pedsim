@@ -8,9 +8,36 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from dataset import build_data_bundle, inverse_target_transform, read_json, write_json
 from model import build_model, choose_device
+
+
+def print_system_status(device_type, model_type="MLP (PyTorch)"):
+    import platform
+    import psutil
+    print("-" * 60)
+    print(f"🚀 [AI_Estimate] Hardware & Model Status")
+    print(f"   • Model Type: {model_type}")
+    print(f"   • Processor : {platform.processor()}")
+    print(f"   • CPUs      : {psutil.cpu_count(logical=True)} logical cores")
+    print(f"   • RAM       : {psutil.virtual_memory().total / (1024 ** 3):.1f} GB")
+    print(f"   • Device    : {device_type}")
+    print("-" * 60)
+
+
+def progress_bar(iterable, desc):
+    """A simple progress bar that works with Streamlit's line-based output capture."""
+    total = len(iterable)
+    last_percent = -1
+    for i, item in enumerate(iterable):
+        yield item
+        percent = int(100 * (i + 1) / total)
+        if percent % 10 == 0 and percent != last_percent:
+            bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
+            print(f"{desc}: {bar} {percent}%")
+            last_percent = percent
 
 
 def resolve_output_root(config, config_path):
@@ -48,11 +75,12 @@ def batch_to_device(batch, device):
     return x.to(device), y.to(device)
 
 
-def run_epoch(model, loader, criterion, optimizer, device):
+def run_epoch(model, loader, criterion, optimizer, device, epoch, epochs):
     model.train()
     total_loss = 0.0
     total_rows = 0
-    for batch in loader:
+    pbar = tqdm(loader, desc=f"Epoch {epoch:03d}/{epochs} [Train]", leave=True)
+    for batch in pbar:
         x, y = batch_to_device(batch, device)
         optimizer.zero_grad(set_to_none=True)
         pred = model(x)
@@ -61,16 +89,18 @@ def run_epoch(model, loader, criterion, optimizer, device):
         optimizer.step()
         total_loss += float(loss.item()) * len(x)
         total_rows += len(x)
+        pbar.set_postfix({"loss": f"{loss.item():.5f}"})
     return total_loss / max(total_rows, 1)
 
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, device, scaler, target_columns):
+def evaluate(model, loader, criterion, device, scaler, target_columns, desc="Eval"):
     model.eval()
     losses = []
     preds = []
     truths = []
-    for batch in loader:
+    pbar = tqdm(loader, desc=desc, leave=True)
+    for batch in pbar:
         x, y = batch_to_device(batch, device)
         pred = model(x)
         loss = criterion(pred, y)
@@ -118,6 +148,7 @@ def train(config_path):
     run_dir = make_run_dir(config, config_path)
     bundle = build_data_bundle(config, config_path)
     device = choose_device(config)
+    print_system_status(device)
 
     train_cfg = config.get("train", {})
     batch_size = int(train_cfg.get("batch_size", 64))
@@ -158,17 +189,20 @@ def train(config_path):
     best_metrics = {}
 
     print(f"[AI_Estimate][Train] run={run_dir}")
-    print(f"[AI_Estimate][Train] device={device} rows={len(bundle.dataframe)} train={len(bundle.train)} val={len(bundle.val)} test={len(bundle.test)}")
+    print(f" - Train batches: {len(train_loader)}")
+    print(f" - Val batches: {len(val_loader)}")
+    print(f" - Rows: {len(bundle.dataframe)} (Train: {len(bundle.train)}, Val: {len(bundle.val)}, Test: {len(bundle.test)})")
+    print("-" * 30, flush=True)
 
     for epoch in range(1, epochs + 1):
-        train_loss = run_epoch(model, train_loader, criterion, optimizer, device)
-        train_metrics = evaluate(model, train_loader, criterion, device, bundle.scaler, bundle.target_columns)
-        val_metrics = evaluate(model, val_loader, criterion, device, bundle.scaler, bundle.target_columns)
+        train_loss = run_epoch(model, train_loader, criterion, optimizer, device, epoch, epochs)
+        # train_metrics = evaluate(model, train_loader, criterion, device, bundle.scaler, bundle.target_columns) # Expensive!
+        val_metrics = evaluate(model, val_loader, criterion, device, bundle.scaler, bundle.target_columns, desc=f"Epoch {epoch:03d}/{epochs} [Val]")
         row = {
             "epoch": epoch,
             "train_loss": train_loss,
             "val_loss": val_metrics.get("loss", 0.0),
-            "train_mae_overall_s": train_metrics.get("mae_overall_s", 0.0),
+            "train_mae_overall_s": 0.0, # Not computed for speed
             "val_mae_overall_s": val_metrics.get("mae_overall_s", 0.0),
             "val_rmse_overall_s": val_metrics.get("rmse_overall_s", 0.0),
         }

@@ -13,6 +13,8 @@ def read_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+from tqdm import tqdm
+
 # ---------------------------------------------------------------------------
 # Dataset Class
 # ---------------------------------------------------------------------------
@@ -27,7 +29,7 @@ class GNNDataset(Dataset):
         # Pre-load graphs
         self.plans_data = {}
         unique_plans = self.df["plan"].unique()
-        for plan in unique_plans:
+        for plan in tqdm(unique_plans, desc="Pre-loading graphs"):
             self.plans_data[plan] = self._load_plan_graph(plan)
             
         # Targets

@@ -1,0 +1,21 @@
+tensorflow-macos==2.16.1
+tensorflow-metal==1.2.0
+numpy
+pandas
+matplotlib
+shapely
+tqdm
+jupedsim
+pedpy>=1.0.0
+psutil
+torch
+pyarrow
+torchvision
+streamlit
+transformers
+accelerate
+keras==3.3.3
+# Removed nvidia-cuda-nvcc-cu12 (Windows/Linux CUDA only)
+
+# For Apple Silicon (M1/M2/M3) GPU acceleration:
+# tensorflow-metal

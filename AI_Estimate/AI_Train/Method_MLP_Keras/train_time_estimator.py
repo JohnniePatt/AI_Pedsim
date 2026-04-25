@@ -128,6 +128,24 @@ from dataset_keras import (
 from model import build_model
 
 
+def print_system_status(model_type="MLP (Keras)"):
+    import platform
+    import psutil
+    import tensorflow as tf
+    
+    gpus = tf.config.list_physical_devices('GPU')
+    device_type = f"GPU ({len(gpus)})" if gpus else "CPU"
+    
+    print("-" * 60)
+    print(f"🚀 [AI_Estimate] Hardware & Model Status")
+    print(f"   • Model Type: {model_type}")
+    print(f"   • Processor : {platform.processor()}")
+    print(f"   • CPUs      : {psutil.cpu_count(logical=True)} logical cores")
+    print(f"   • RAM       : {psutil.virtual_memory().total / (1024 ** 3):.1f} GB")
+    print(f"   • Device    : {device_type}")
+    print("-" * 60)
+
+
 # ---------------------------------------------------------------------------
 # Output directory helpers
 # ---------------------------------------------------------------------------
@@ -187,16 +205,14 @@ class RealSecondsMAECallback(keras.callbacks.Callback):
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
-        for prefix, x, y in [
-            ("train", self._x_train, self._y_train),
-            ("val",   self._x_val,   self._y_val),
-        ]:
-            pred = self.model.predict(x, verbose=0)
-            pred_s = ordered_time_predictions(inverse_target_transform(pred, self._scaler))
-            true_s = inverse_target_transform(y, self._scaler)
-            error = pred_s - true_s
-            logs[f"{prefix}_mae_overall_s"]  = float(np.mean(np.abs(error)))
-            logs[f"{prefix}_rmse_overall_s"] = float(np.sqrt(np.mean(error ** 2)))
+        # Only evaluate on validation set for speed
+        pred = self.model.predict(self._x_val, verbose=0)
+        pred_s = ordered_time_predictions(inverse_target_transform(pred, self._scaler))
+        true_s = inverse_target_transform(self._y_val, self._scaler)
+        error = pred_s - true_s
+        logs["val_mae_overall_s"]  = float(np.mean(np.abs(error)))
+        logs["val_rmse_overall_s"] = float(np.sqrt(np.mean(error ** 2)))
+        logs["train_mae_overall_s"] = 0.0 # Placeholder for history CSV consistency
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +232,8 @@ def train(config_path):
 
     run_dir = _make_run_dir(config, config_path)
     bundle  = build_data_bundle(config, config_path, batch_size=batch_size)
+    
+    print_system_status()
 
     # Build model
     model = build_model(len(bundle.feature_columns), config)
@@ -256,10 +274,10 @@ def train(config_path):
     ]
 
     print(f"[AI_Estimate][Keras][Train] run={run_dir}")
-    print(
-        f"[AI_Estimate][Keras][Train] "
-        f"train={len(bundle.train_df)} val={len(bundle.val_df)} test={len(bundle.test_df)}"
-    )
+    print(f" - Train samples: {len(bundle.train_df)}")
+    print(f" - Val samples: {len(bundle.val_df)}")
+    print(f" - Test samples: {len(bundle.test_df)}")
+    print("-" * 30, flush=True)
 
     history = model.fit(
         bundle.train_ds,
