@@ -52,15 +52,15 @@ except ImportError:
 
 def count_split_images(dataset_root: pathlib.Path) -> dict:
     summary = {
-        "A_train": 0, "A_test": 0, "A_validation": 0,
-        "B_train": 0, "B_test": 0, "B_validation": 0,
-        "total_png": 0, "dataset_layout": "ab_split",
+        "A_total": 0,
+        "B_total": 0,
+        "total_png": 0,
+        "dataset_layout": "ab_flat",
     }
     for side in ("A", "B"):
-        for split in ("train", "test", "validation"):
-            n = len(list((dataset_root / side / split).glob("*.png")))
-            summary[f"{side}_{split}"] = n
-            summary["total_png"] += n
+        n = len(list((dataset_root / side).glob("*.png")))
+        summary[f"{side}_total"] = n
+        summary["total_png"] += n
     return summary
 
 
@@ -71,16 +71,6 @@ def ensure_clean_output(output_dir: pathlib.Path, overwrite: bool) -> None:
         print(f"[CLEAN] Removing existing output: {output_dir}")
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-
-def split_bucket(index: int, n: int) -> str:
-    if n == 0:
-        return "train"
-    if index < int(0.8 * n):
-        return "train"
-    if index < int(0.9 * n):
-        return "validation"
-    return "test"
 
 
 def save_rgb(arr: np.ndarray, path: pathlib.Path) -> None:
@@ -691,8 +681,6 @@ def _render_and_save_pair_task(task: dict) -> dict:
     start_idx = task["start_idx"]
     end_idx = task["end_idx"]
     spawn_points = task.get("spawn_points", [])
-    split_name = task["split_name"]
-
     try:
         walkable = _load_walkable_from_sqlite(sqlite_path)
         if walkable is None or walkable.is_empty:
@@ -735,8 +723,8 @@ def _render_and_save_pair_task(task: dict) -> dict:
             turbo_blur_iters=int(task["turbo_blur_iters"]),
         )
 
-        save_rgb(a_img, output_dir / "A" / split_name / pair_name)
-        save_rgb(b_img, output_dir / "B" / split_name / pair_name)
+        save_rgb(a_img, output_dir / "A" / pair_name)
+        save_rgb(b_img, output_dir / "B" / pair_name)
         return {"status": "ok", "pair_name": pair_name}
     except Exception as exc:
         return {"status": "skip", "pair_name": pair_name, "reason": f"Render failed for {sqlite_path.name}: {exc}"}
@@ -793,12 +781,11 @@ def build_densitymap_dataset(
         pairs = pairs[:max_pairs]
 
     for side in ("A", "B"):
-        for split in ("train", "test", "validation"):
-            (output_dir / side / split).mkdir(parents=True, exist_ok=True)
+        (output_dir / side).mkdir(parents=True, exist_ok=True)
 
     ok = skip = 0
     tasks = []
-    for i, pair in enumerate(pairs):
+    for pair in pairs:
         tasks.append(
             {
                 "topo_root": str(topo_root),
@@ -817,7 +804,6 @@ def build_densitymap_dataset(
                 "force_gpu": force_gpu,
                 "speed_mode": speed_mode,
                 "turbo_blur_iters": turbo_blur_iters,
-                "split_name": split_bucket(i, len(pairs)),
                 **pair,
             }
         )
@@ -999,8 +985,7 @@ def main() -> None:
 
     manifest_path = output_root / "manifest_densitymap_dataset.csv"
     fieldnames = ["topology", "output_dataset", "status",
-                  "A_train", "A_test", "A_validation",
-                  "B_train", "B_test", "B_validation",
+                  "A_total", "B_total",
                   "total_png", "dataset_layout", "updated_at"]
     with open(manifest_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")

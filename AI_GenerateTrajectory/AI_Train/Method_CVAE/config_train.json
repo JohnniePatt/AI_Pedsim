@@ -1,0 +1,19 @@
+{
+  "epochs": 40,
+  "batch_size": 6,
+  "learning_rate": 0.0002,
+  "image_size": 512,
+  "latent_dim": 32,
+  "base_filters": 40,
+  "kl_weight": 0.015,
+  "kl_anneal_epochs": 10,
+  "l1_loss_weight": 8.0,
+  "mask_bce_loss_weight": 1.0,
+  "mask_dice_loss_weight": 1.2,
+  "edge_loss_weight": 3.0,
+  "mask_threshold": 0.08,
+  "checkpoint_every_epochs": 10,
+  "sample_every_epochs": 1,
+  "resume_checkpoint_dir": "-",
+  "dataset_root": "../Dataset/Data_ImageUNet/Trajectory_line_dataset/Topo_HouseGAN"
+}

@@ -1,0 +1,6 @@
+{
+  "image_size": 512,
+  "latent_dim": 32,
+  "base_filters": 40,
+  "DATASET_ROOT": "../Dataset/Data_ImageUNet/Trajectory_line_dataset/Topo_HouseGAN"
+}

@@ -31,6 +31,11 @@ import numpy as np
 import shapely.wkt
 from PIL import Image, ImageDraw
 from shapely.geometry import Polygon, MultiPolygon, shape as shapely_shape
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    def tqdm(iterable=None, total=None, desc=None, unit=None, **kwargs):
+        return iterable if iterable is not None else range(total or 0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -39,31 +44,45 @@ from shapely.geometry import Polygon, MultiPolygon, shape as shapely_shape
 
 def count_split_images(dataset_root: pathlib.Path) -> dict:
     summary = {
-        "A_train": 0, "A_test": 0, "A_validation": 0,
-        "B_train": 0, "B_test": 0, "B_validation": 0,
-        "total_png": 0, "dataset_layout": "ab_split",
+        "A_total": 0,
+        "B_total": 0,
+        "total_png": 0,
+        "dataset_layout": "ab_flat",
     }
     for side in ("A", "B"):
-        for split in ("train", "test", "validation"):
-            n = len(list((dataset_root / side / split).glob("*.png")))
-            summary[f"{side}_{split}"] = n
-            summary["total_png"] += n
+        n = len(list((dataset_root / side).glob("*.png")))
+        summary[f"{side}_total"] = n
+        summary["total_png"] += n
     return summary
 
 
 def copy_dataset(source_dir: pathlib.Path, output_dir: pathlib.Path, overwrite: bool) -> int:
-    if output_dir.exists():
-        if not overwrite:
-            print(f"[SKIP] Output exists (use --overwrite to replace): {output_dir}")
-            return 0
-        print(f"[CLEAN] Removing existing output: {output_dir}")
-        shutil.rmtree(output_dir)
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[COPY] {source_dir} -> {output_dir}")
-    shutil.copytree(source_dir, output_dir)
-    n = len(list(output_dir.rglob("*")))
-    print(f"[DONE] Copied {n} entries.")
-    return n
+    ensure_clean_output(output_dir, overwrite=overwrite)
+    for side in ("A", "B"):
+        (output_dir / side).mkdir(parents=True, exist_ok=True)
+
+    copied = 0
+    for side in ("A", "B"):
+        src_side = source_dir / side
+        if not src_side.exists():
+            continue
+        side_files = sorted(src_side.rglob("*.png"))
+        for src_png in tqdm(
+            side_files,
+            total=len(side_files),
+            desc=f"[COPY:{side}] flatten",
+            unit="img",
+            dynamic_ncols=True,
+        ):
+            dst_png = output_dir / side / src_png.name
+            if dst_png.exists():
+                raise FileExistsError(f"Duplicate filename while flattening: {dst_png}")
+            shutil.copy2(src_png, dst_png)
+            copied += 1
+
+    print(f"[COPY] {source_dir} -> {output_dir} (flattened A/B)")
+    print(f"[DONE] Copied {copied} png files.")
+    return copied
 
 
 def ensure_clean_output(output_dir: pathlib.Path, overwrite: bool) -> None:
@@ -78,21 +97,12 @@ def ensure_clean_output(output_dir: pathlib.Path, overwrite: bool) -> None:
 def detect_layout(source_dir: pathlib.Path, topo_root: pathlib.Path) -> str:
     has_ab = all((source_dir / s).exists() for s in ("A", "B"))
     has_split = all((source_dir / "A" / s).exists() for s in ("train", "test", "validation"))
-    if has_ab and has_split:
+    has_ab_png = has_ab and any((source_dir / "A").rglob("*.png")) and any((source_dir / "B").rglob("*.png"))
+    if has_ab and (has_split or has_ab_png):
         return "ab_ready"
     if source_dir.name == "trajectory_line" and (topo_root / "spawn_exit").exists():
         return "trajectory_plus_spawn_exit"
     return "unsupported"
-
-
-def split_bucket(index: int, n: int) -> str:
-    if n == 0:
-        return "train"
-    if index < int(0.8 * n):
-        return "train"
-    if index < int(0.9 * n):
-        return "validation"
-    return "test"
 
 
 def save_rgb(arr: np.ndarray, path: pathlib.Path) -> None:
@@ -456,12 +466,18 @@ def build_ab_dataset_from_housegan(
         pairs = pairs[:max_pairs]
 
     for side in ("A", "B"):
-        for split in ("train", "test", "validation"):
-            (output_dir / side / split).mkdir(parents=True, exist_ok=True)
+        (output_dir / side).mkdir(parents=True, exist_ok=True)
 
     ok = skip = 0
+    pair_iter = tqdm(
+        pairs,
+        total=len(pairs),
+        desc=f"[{topo_root.name}] Render A/B",
+        unit="pair",
+        dynamic_ncols=True,
+    )
 
-    for i, pair in enumerate(pairs):
+    for pair in pair_iter:
         plan_dir    = pair["plan_dir"]
         pair_name   = pair["pair_name"]
         sqlite_path: pathlib.Path = pair["sqlite_path"]
@@ -474,6 +490,8 @@ def build_ab_dataset_from_housegan(
         if walkable is None or walkable.is_empty:
             print(f"  [SKIP] No walkable geometry in {sqlite_path.name}")
             skip += 1
+            if hasattr(pair_iter, "set_postfix"):
+                pair_iter.set_postfix(rendered=ok, skipped=skip, refresh=False)
             continue
 
         bounds = _canvas_bounds(walkable, padding=canvas_padding_m)
@@ -487,14 +505,14 @@ def build_ab_dataset_from_housegan(
         paths = _load_trajectories_from_sqlite(sqlite_path)
 
         # ── Render ─────────────────────────────────────────────────────────
-        split_name = split_bucket(i, len(pairs))
-
         a_img = _render_a_image(walkable, bounds, spawn_zone, exit_zone, spawn_points, target_size_wh)
         b_img = _render_b_image(walkable, bounds, paths, target_size_wh, line_width=line_width)
 
-        save_rgb(a_img, output_dir / "A" / split_name / pair_name)
-        save_rgb(b_img, output_dir / "B" / split_name / pair_name)
+        save_rgb(a_img, output_dir / "A" / pair_name)
+        save_rgb(b_img, output_dir / "B" / pair_name)
         ok += 1
+        if hasattr(pair_iter, "set_postfix"):
+            pair_iter.set_postfix(rendered=ok, skipped=skip, refresh=False)
 
     print(f"[BUILD] {ok} pairs rendered, {skip} skipped  →  {output_dir}")
 
@@ -551,8 +569,7 @@ def main() -> None:
             print(f"[MISS] Source not found for '{topo}': {src_dataset}")
             rows.append({"topology": topo, "status": "missing_source",
                          "source_dataset": str(src_dataset), "output_dataset": str(dst_dataset),
-                         "A_train": 0, "A_test": 0, "A_validation": 0,
-                         "B_train": 0, "B_test": 0, "B_validation": 0,
+                         "A_total": 0, "B_total": 0,
                          "total_png": 0, "dataset_layout": "missing_source",
                          "updated_at": datetime.now().isoformat(timespec="seconds")})
             continue
@@ -579,8 +596,7 @@ def main() -> None:
             print(f"[MISS] Unsupported layout for '{topo}': {src_dataset}")
             rows.append({"topology": topo, "status": "unsupported_layout",
                          "source_dataset": str(src_dataset), "output_dataset": str(dst_dataset),
-                         "A_train": 0, "A_test": 0, "A_validation": 0,
-                         "B_train": 0, "B_test": 0, "B_validation": 0,
+                         "A_total": 0, "B_total": 0,
                          "total_png": 0, "dataset_layout": "unsupported_layout",
                          "updated_at": datetime.now().isoformat(timespec="seconds")})
             continue
@@ -594,8 +610,7 @@ def main() -> None:
 
     manifest_path = output_root / "manifest_unet_image_dataset.csv"
     fieldnames = ["topology", "source_dataset", "output_dataset", "status",
-                  "A_train", "A_test", "A_validation",
-                  "B_train", "B_test", "B_validation",
+                  "A_total", "B_total",
                   "total_png", "dataset_layout", "updated_at"]
     with open(manifest_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")

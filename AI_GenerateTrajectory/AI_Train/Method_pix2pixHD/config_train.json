@@ -10,5 +10,5 @@
     "n_critic": 1,
     "image_size": 256,
     "resume_checkpoint_path": "-",
-    "dataset_root": "../Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN"
+    "dataset_root": "../Dataset/Data_ImageUNet/Trajectory_line_dataset/Topo_HouseGAN"
 }

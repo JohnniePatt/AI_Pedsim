@@ -17,17 +17,38 @@ def plot_training_history(csv_path):
             st.info("Log file is empty.")
             return
 
-        # Sidebar to select which columns to plot
-        cols = [c for c in df.columns if any(w in c.lower() for w in ['loss', 'mae', 'l1', 'g_adv', 'fm', 'm'])]
-        if not cols:
-            cols = [c for c in df.columns if c != 'epoch']
+        # Keep only numeric metric columns (excluding epoch)
+        numeric_cols = []
+        for c in df.columns:
+            if c == "epoch":
+                continue
+            if pd.api.types.is_numeric_dtype(df[c]):
+                numeric_cols.append(c)
+
+        if not numeric_cols:
+            st.info("No numeric metrics found in training history.")
+            return
+
+        # Better defaults for old/new training_history formats
+        preferred_order = [
+            "d_loss", "g_adv", "fm", "l1", "bce", "dice",
+            "val_l1_raw", "val_l1", "val_bce", "val_dice", "val_total"
+        ]
+        cols = [c for c in preferred_order if c in numeric_cols] + [c for c in numeric_cols if c not in preferred_order]
             
         # Input fields for custom labels
         col_x, col_y = st.columns(2)
         x_label = col_x.text_input("X-Axis Label", value="Epoch")
         y_label = col_y.text_input("Y-Axis Label", value="Loss / Metric Value")
         
-        selected_cols = st.multiselect("Select Metrics to Plot", options=cols, default=cols)
+        default_plot = [c for c in ["val_total", "val_l1", "d_loss", "g_adv"] if c in cols]
+        if not default_plot:
+            default_plot = cols
+
+        selected_cols = st.multiselect("Select Metrics to Plot", options=cols, default=default_plot)
+
+        if "val_total" in df.columns and "val_l1" in df.columns:
+            st.caption("`val_total` is the weighted objective used for model selection. `val_l1` is only one component.")
         
         if selected_cols:
             st.line_chart(
@@ -1021,4 +1042,3 @@ def show_pix2pix_special_tests(method_result_dir):
                 st.dataframe(df, use_container_width=True)
         except Exception as e:
             st.error(f"Failed to load metrics CSV: {e}")
-
