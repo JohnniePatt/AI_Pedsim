@@ -1,7 +1,59 @@
 import streamlit as st
 import pandas as pd
 import pathlib
+import json
+import re
 from PIL import Image
+
+
+def _get_density_jet_map_for_run(run_path):
+    """
+    Build index -> PedPy color-jet heatmap path for this run.
+    target_{idx}.png order follows sorted DATASET_ROOT/A/test/*.png order.
+    """
+    run_path = pathlib.Path(run_path)
+    snapshot_path = run_path / "run_config_snapshot.json"
+    if not snapshot_path.exists():
+        return {}
+
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+    except Exception:
+        return {}
+
+    dataset_root_raw = snapshot.get("DATASET_ROOT", "")
+    if not dataset_root_raw:
+        return {}
+
+    dataset_root = pathlib.Path(dataset_root_raw)
+    if not dataset_root.is_absolute():
+        project_root = pathlib.Path(__file__).resolve().parents[3]
+        dataset_root = (project_root / dataset_root).resolve()
+
+    test_a_dir = dataset_root / "A" / "test"
+    if not test_a_dir.exists():
+        return {}
+
+    test_names = sorted([p.name for p in test_a_dir.glob("*.png")])
+    if not test_names:
+        return {}
+
+    project_root = pathlib.Path(__file__).resolve().parents[3]
+    heatmap_root = project_root / "Geo_scenario" / "Topo_HouseGAN" / "heatmap_density"
+    if not heatmap_root.exists():
+        return {}
+
+    jet_map = {}
+    for idx, file_name in enumerate(test_names):
+        stem = pathlib.Path(file_name).stem
+        if "__" not in stem:
+            continue
+        plan_name, density_suffix = stem.split("__", 1)
+        jet_path = heatmap_root / plan_name / f"heatmap_density{density_suffix}.png"
+        if jet_path.exists():
+            jet_map[idx] = jet_path
+    return jet_map
 
 def plot_training_history(csv_path):
     """
@@ -126,7 +178,6 @@ def show_test_evaluation(run_dir):
                 content = f.read()
             st.code(content, language="markdown")
             # Proactively try to parse some metrics for the cards if possible
-            import re
             metrics = re.findall(r"(ADE|FDE|Average Displacement Error|Final Displacement Error):\s+([\d\.]+)", content, re.IGNORECASE)
             if metrics:
                 m_cols = st.columns(len(metrics))
@@ -149,24 +200,52 @@ def show_test_evaluation(run_dir):
     if pred_dir.exists() and input_dir.exists() and target_dir.exists():
         st.subheader("🖼 Result Comparison")
         pred_images = sorted(list(pred_dir.glob("*.png")), key=lambda x: x.name)
+        jet_map = _get_density_jet_map_for_run(run_path)
         if pred_images:
-            # ... (Rest of existing image grid logic)
-            max_samples = 50 
+            max_samples = 50
             samples_to_show = pred_images[:max_samples]
             with st.container():
-                h_col1, h_col2, h_col3 = st.columns(3)
+                h_col1, h_col2, h_col3, h_col4 = st.columns(4)
                 h_col1.caption("⬅️ INPUT (Scenario)")
                 h_col2.caption("🤖 PREDICTION (AI)")
                 h_col3.caption("🎯 TARGET (Reality)")
+                h_col4.caption("TARGET (Reality color jet)")
                 for p_path in samples_to_show:
-                    stem = p_path.name.split('_')[-1]
-                    i_path = input_dir / f"input_{stem}"
-                    t_path = target_dir / f"target_{stem}"
+                    # Prefer new naming (original filename), fallback to old indexed naming.
+                    i_path = input_dir / p_path.name
+                    t_path = target_dir / p_path.name
+                    jet_path = None
+
+                    if i_path.exists() and "__" in pathlib.Path(p_path.name).stem:
+                        stem_name = pathlib.Path(p_path.name).stem
+                        plan_name, density_suffix = stem_name.split("__", 1)
+                        project_root = pathlib.Path(__file__).resolve().parents[3]
+                        jet_candidate = (
+                            project_root
+                            / "Geo_scenario"
+                            / "Topo_HouseGAN"
+                            / "heatmap_density"
+                            / plan_name
+                            / f"heatmap_density{density_suffix}.png"
+                        )
+                        if jet_candidate.exists():
+                            jet_path = jet_candidate
+                    else:
+                        stem = p_path.name.split('_')[-1]
+                        i_path = input_dir / f"input_{stem}"
+                        t_path = target_dir / f"target_{stem}"
+                        idx_match = re.search(r"(\d+)", pathlib.Path(stem).stem)
+                        jet_path = jet_map.get(int(idx_match.group(1))) if idx_match else None
+
                     if i_path.exists() and t_path.exists():
-                        r_col1, r_col2, r_col3 = st.columns(3)
+                        r_col1, r_col2, r_col3, r_col4 = st.columns(4)
                         r_col1.image(str(i_path), use_container_width=True)
                         r_col2.image(str(p_path), use_container_width=True)
                         r_col3.image(str(t_path), use_container_width=True)
+                        if jet_path and jet_path.exists():
+                            r_col4.image(str(jet_path), use_container_width=True)
+                        else:
+                            r_col4.caption("No matched heatmap_density")
                         st.divider()
         else:
             st.info("No prediction images found in subdirectory.")
@@ -1042,3 +1121,5 @@ def show_pix2pix_special_tests(method_result_dir):
                 st.dataframe(df, use_container_width=True)
         except Exception as e:
             st.error(f"Failed to load metrics CSV: {e}")
+
+

@@ -195,7 +195,7 @@ class Pix2PixTrajectoryDataset(Dataset):
         img_a_raw = Image.open(self.directory_A / name).convert("RGB")
         img_b_raw = Image.open(self.directory_B / name).convert("RGB")
         orig_w, orig_h = img_a_raw.size
-        return self.transforms(img_a_raw), self.transforms(img_b_raw), torch.tensor([orig_w, orig_h])
+        return self.transforms(img_a_raw), self.transforms(img_b_raw), torch.tensor([orig_w, orig_h]), name
 
 def run_evaluation(run_path, config_file=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -259,7 +259,7 @@ def run_evaluation(run_path, config_file=None):
     for d in [pred_dir, input_dir, target_dir]: d.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():
-        for i, (ta, tb, orig_size) in enumerate(test_loader):
+        for i, (ta, tb, orig_size, file_name_batch) in enumerate(test_loader):
             ta, tb = ta.to(device), tb.to(device)
             tfb = generator(ta)
             
@@ -269,6 +269,7 @@ def run_evaluation(run_path, config_file=None):
             # Save periodic samples (first 50)
             if i < 50:
                 ow, oh = orig_size[0].tolist()
+                file_name = str(file_name_batch[0])
                 def denorm_and_finalize(x):
                     # Use high-quality LANCZOS for better final presentation
                     arr = ((x.cpu().numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
@@ -280,9 +281,10 @@ def run_evaluation(run_path, config_file=None):
                 res_f = denorm_and_finalize(tfb[0])
                 
                 # 🖼️ Save files individually for better quality and UX
-                res_f.save(pred_dir / f"result_{i}.png")
-                res_a.save(input_dir / f"input_{i}.png")
-                res_b.save(target_dir / f"target_{i}.png")
+                # Keep original dataset filename for stable downstream matching (UI/jet lookup).
+                res_f.save(pred_dir / file_name)
+                res_a.save(input_dir / file_name)
+                res_b.save(target_dir / file_name)
 
     # Scoring
     n_test = len(test_loader)

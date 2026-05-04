@@ -35,15 +35,17 @@ from itertools import groupby
 import numpy as np
 import shapely.wkt
 from PIL import Image, ImageDraw
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, Point
 from tqdm.auto import tqdm
 
 try:
     import torch
     HAS_TORCH = True
-except ImportError:
+    TORCH_IMPORT_ERROR = ""
+except ImportError as exc:
     torch = None
     HAS_TORCH = False
+    TORCH_IMPORT_ERROR = f"PyTorch import failed: {exc}"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -84,8 +86,8 @@ def _resolve_torch_device(device_preference: str, force_gpu: bool = False):
 
     if not HAS_TORCH:
         if pref == "cuda" or force_gpu:
-            raise RuntimeError("PyTorch is not installed, cannot run CUDA mode.")
-        return None, "cpu (torch-unavailable)"
+            raise RuntimeError(f"{TORCH_IMPORT_ERROR}, cannot run CUDA mode.")
+        return None, f"cpu (torch-unavailable: {TORCH_IMPORT_ERROR})"
 
     if pref == "cpu":
         return torch.device("cpu"), "cpu"
@@ -300,6 +302,70 @@ def _fast_blur2d(arr: np.ndarray, iters: int = 1) -> np.ndarray:
     return out
 
 
+def _setup_gpu_profile_grid(
+    walkable_polygon: Polygon,
+    grid_size_m: float,
+    torch_device,
+) -> tuple:
+    """Build a top-indexed profile grid matching the dataset renderer."""
+    min_x, min_y, max_x, max_y = walkable_polygon.bounds
+    nx = max(1, int(np.ceil((max_x - min_x) / grid_size_m)))
+    ny = max(1, int(np.ceil((max_y - min_y) / grid_size_m)))
+
+    x_coords = min_x + (np.arange(nx, dtype=np.float32) + 0.5) * grid_size_m
+    y_coords = max_y - (np.arange(ny, dtype=np.float32) + 0.5) * grid_size_m
+    xx, yy = np.meshgrid(x_coords, y_coords)
+    grid_points = np.column_stack([xx.reshape(-1), yy.reshape(-1)]).astype(np.float32, copy=False)
+
+    try:
+        import shapely
+        mask = shapely.contains(walkable_polygon, shapely.points(grid_points))
+    except Exception:
+        mask = np.array([walkable_polygon.contains(Point(float(x), float(y))) for x, y in grid_points])
+
+    grid_coords_t = torch.as_tensor(grid_points, dtype=torch.float32, device=torch_device)
+    mask_t = torch.as_tensor(mask, dtype=torch.bool, device=torch_device)
+    return grid_coords_t, mask_t, nx, ny, min_x, max_y
+
+
+def _compute_gpu_voronoi_density_profile(
+    ped_x: np.ndarray,
+    ped_y: np.ndarray,
+    grid_coords_t,
+    mask_t,
+    grid_size_m: float,
+    ny: int,
+    nx: int,
+    torch_device,
+    chunk_size: int = 65536,
+) -> np.ndarray:
+    """GPU grid-Voronoi density approximation used by main_script_heatmap.py."""
+    if ped_x.size == 0:
+        return np.zeros((ny, nx), dtype=np.float32)
+
+    with torch.no_grad():
+        ped_coords_t = torch.as_tensor(
+            np.column_stack([ped_x, ped_y]).astype(np.float32, copy=False),
+            dtype=torch.float32,
+            device=torch_device,
+        )
+        nearest_chunks = []
+        for start in range(0, grid_coords_t.shape[0], int(chunk_size)):
+            stop = min(start + int(chunk_size), grid_coords_t.shape[0])
+            dist_t = torch.cdist(grid_coords_t[start:stop], ped_coords_t)
+            nearest_chunks.append(dist_t.argmin(dim=1))
+        nearest_t = torch.cat(nearest_chunks, dim=0)
+
+        valid_nearest_t = nearest_t[mask_t]
+        bincounts_t = torch.bincount(valid_nearest_t, minlength=ped_coords_t.shape[0]).to(torch.float32)
+        ped_areas_t = torch.clamp(bincounts_t * float(grid_size_m ** 2), min=1e-5)
+        ped_density_t = 1.0 / ped_areas_t
+
+        density_t = ped_density_t[nearest_t]
+        density_t[~mask_t] = 0.0
+        return density_t.reshape(ny, nx).detach().cpu().numpy().astype(np.float32, copy=False)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Geo JSON helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -409,9 +475,9 @@ def _render_b_densitymap(
     preserve_aspect: bool = True,
     density_scale_mode: str = "fixed",
     density_percentile: float = 99.0,
-    density_gamma: float = 0.35,
+    density_gamma: float = 1.0,
     frame_step: int = 60,
-    walkable_zero_gray: int = 8,
+    walkable_zero_gray: int = 0,
     torch_device=None,
     speed_mode: str = "accurate",
     turbo_blur_iters: int = 2,
@@ -422,17 +488,17 @@ def _render_b_densitymap(
     GPU is used for grid mapping and tone-mapping when `torch_device` is CUDA.
     """
     speed_mode = str(speed_mode).strip().lower()
-    if speed_mode not in {"accurate", "turbo"}:
-        raise ValueError("speed_mode must be one of: accurate, turbo")
+    if speed_mode not in {"accurate", "pedpy_gpu", "turbo"}:
+        raise ValueError("speed_mode must be one of: accurate, pedpy_gpu, turbo")
 
     W, H = size_wh
     transform = _build_canvas_transform(bounds, size_wh, preserve_aspect=preserve_aspect)
 
-    if speed_mode == "accurate":
+    if speed_mode in {"accurate", "pedpy_gpu"}:
         import pedpy
         import pandas as pd
 
-        # Same as reference heatmap generation.
+        # Same input preparation as the reference heatmap generation.
         trajectory_data = pedpy.load_trajectory_from_jupedsim_sqlite(trajectory_file=sqlite_path)
         loaded_walkable_area = pedpy.load_walkable_area_from_jupedsim_sqlite(trajectory_file=sqlite_path)
 
@@ -441,33 +507,69 @@ def _render_b_densitymap(
             frame_step=5,
             speed_calculation=pedpy.SpeedCalculation.BORDER_SINGLE_SIDED,
         )
-        individual_voronoi_cells = pedpy.compute_individual_voronoi_polygons(
-            traj_data=trajectory_data,
-            walkable_area=loaded_walkable_area,
-            cut_off=pedpy.Cutoff(radius=0.8, quad_segments=3),
-        )
-
         sum_density = None
         count = 0
         frames_to_process = individual_speed["frame"].unique()[::frame_step]
-        for f in frames_to_process:
-            speed_f = individual_speed[individual_speed.frame == f]
-            cells_f = individual_voronoi_cells[individual_voronoi_cells.frame == f]
-            frame_data = pd.merge(cells_f, speed_f, on=["id", "frame"])
-            if frame_data.empty:
-                continue
-            d_profile, _ = pedpy.compute_profiles(
-                individual_voronoi_speed_data=frame_data,
-                walkable_area=loaded_walkable_area.polygon,
-                grid_size=grid_size_m,
-                speed_method=pedpy.SpeedMethod.ARITHMETIC,
+
+        if speed_mode == "accurate":
+            individual_voronoi_cells = pedpy.compute_individual_voronoi_polygons(
+                traj_data=trajectory_data,
+                walkable_area=loaded_walkable_area,
+                cut_off=pedpy.Cutoff(radius=0.8, quad_segments=3),
             )
-            arr = d_profile[0] if hasattr(d_profile, "__getitem__") else np.array(d_profile)
-            if sum_density is None:
-                sum_density = arr.copy().astype(np.float32)
-            else:
-                sum_density += arr.astype(np.float32)
-            count += 1
+            for f in frames_to_process:
+                speed_f = individual_speed[individual_speed.frame == f]
+                cells_f = individual_voronoi_cells[individual_voronoi_cells.frame == f]
+                frame_data = pd.merge(cells_f, speed_f, on=["id", "frame"])
+                if frame_data.empty:
+                    continue
+                d_profile, _ = pedpy.compute_profiles(
+                    individual_voronoi_speed_data=frame_data,
+                    walkable_area=loaded_walkable_area.polygon,
+                    grid_size=grid_size_m,
+                    speed_method=pedpy.SpeedMethod.ARITHMETIC,
+                )
+                arr = d_profile[0] if hasattr(d_profile, "__getitem__") else np.array(d_profile)
+                if sum_density is None:
+                    sum_density = arr.copy().astype(np.float32)
+                else:
+                    sum_density += arr.astype(np.float32)
+                count += 1
+        else:
+            if not (HAS_TORCH and torch_device is not None and getattr(torch_device, "type", "cpu") == "cuda"):
+                raise RuntimeError("speed_mode=pedpy_gpu requires CUDA. Use --device cuda or --device auto with CUDA.")
+
+            grid_coords_t, profile_mask_t, nx_gpu, ny_gpu, _, _ = _setup_gpu_profile_grid(
+                loaded_walkable_area.polygon,
+                grid_size_m,
+                torch_device,
+            )
+            raw_data = trajectory_data.data
+            x_col = "x" if "x" in raw_data.columns else "pos_x"
+            y_col = "y" if "y" in raw_data.columns else "pos_y"
+            for f in frames_to_process:
+                speed_f = individual_speed[individual_speed.frame == f]
+                raw_f = raw_data[raw_data.frame == f]
+                frame_data = pd.merge(raw_f, speed_f, on=["id", "frame"], how="inner")
+                if frame_data.empty:
+                    continue
+                arr = _compute_gpu_voronoi_density_profile(
+                    frame_data[x_col].to_numpy(dtype=np.float32, copy=False),
+                    frame_data[y_col].to_numpy(dtype=np.float32, copy=False),
+                    grid_coords_t,
+                    profile_mask_t,
+                    grid_size_m,
+                    ny_gpu,
+                    nx_gpu,
+                    torch_device,
+                )
+                if sum_density is None:
+                    sum_density = arr.copy().astype(np.float32)
+                else:
+                    sum_density += arr.astype(np.float32)
+                count += 1
+            del grid_coords_t
+            del profile_mask_t
 
         if count == 0 or sum_density is None:
             return np.zeros((H, W, 3), dtype=np.uint8)
@@ -749,12 +851,12 @@ def build_densitymap_dataset(
     preserve_aspect: bool = True,
     density_scale_mode: str = "fixed",
     density_percentile: float = 99.0,
-    density_gamma: float = 0.35,
-    walkable_zero_gray: int = 8,
+    density_gamma: float = 1.0,
+    walkable_zero_gray: int = 0,
     device_preference: str = "auto",
     force_gpu: bool = False,
     workers: int = 1,
-    speed_mode: str = "accurate",
+    speed_mode: str = "pedpy_gpu",
     turbo_blur_iters: int = 2,
 ) -> None:
     """Build A/B pairs where:
@@ -764,12 +866,12 @@ def build_densitymap_dataset(
     Both images share the same canonical coordinate system derived from the
     SQLite geometry table, ensuring pixel-perfect alignment.
     """
-    ensure_clean_output(output_dir, overwrite=overwrite)
     torch_device, device_label = _resolve_torch_device(device_preference, force_gpu=force_gpu)
     print(f"[DEVICE] density map device: {device_label}")
     workers = max(1, int(workers))
     print(f"[WORKERS] parallel workers: {workers}")
     print(f"[SPEED] mode: {speed_mode}")
+    ensure_clean_output(output_dir, overwrite=overwrite)
 
     pairs = _collect_housegan_pairs(topo_root, trajectory_dir)
     if not pairs:
@@ -886,18 +988,18 @@ def main() -> None:
                         help="How to scale density to grayscale (default: fixed).")
     parser.add_argument("--density_percentile", type=float, default=99.0,
                         help="Percentile used when --density_scale_mode=percentile (default: 99.0).")
-    parser.add_argument("--density_gamma", type=float, default=0.35,
-                        help="Gamma for grayscale tone mapping, <1 brightens low density (default: 0.35).")
-    parser.add_argument("--walkable_zero_gray", type=int, default=8,
-                        help="Gray value for walkable pixels where density is zero (default: 8).")
+    parser.add_argument("--density_gamma", type=float, default=1.0,
+                        help="Gamma for grayscale tone mapping. 1.0 keeps density brightness linear (default: 1.0).")
+    parser.add_argument("--walkable_zero_gray", type=int, default=0,
+                        help="Gray value for walkable pixels where density is zero (default: 0).")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"],
                         help="Device for density map raster/tone operations (default: auto).")
     parser.add_argument("--force_gpu", action="store_true",
                         help="Fail fast if CUDA is unavailable instead of falling back.")
     parser.add_argument("--workers", type=int, default=1,
                         help="Parallel worker processes for pair rendering (default: 1).")
-    parser.add_argument("--speed_mode", type=str, default="accurate", choices=["accurate", "turbo"],
-                        help="accurate: pedpy Voronoi baseline; turbo: much faster occupancy approximation.")
+    parser.add_argument("--speed_mode", type=str, default="accurate", choices=["accurate", "pedpy_gpu", "turbo"],
+                        help="accurate: pedpy.compute_profiles baseline; pedpy_gpu: faster GPU grid-Voronoi approximation; turbo: fast occupancy approximation.")
     parser.add_argument("--turbo_blur_iters", type=int, default=2,
                         help="Smoothing iterations for turbo mode (default: 2).")
     args = parser.parse_args()

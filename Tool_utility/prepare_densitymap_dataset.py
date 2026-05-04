@@ -331,9 +331,9 @@ def _render_b_densitymap(
     preserve_aspect: bool = True,
     density_scale_mode: str = "fixed",
     density_percentile: float = 99.0,
-    density_gamma: float = 0.35,
+    density_gamma: float = 1.0,
     frame_step: int = 60,
-    walkable_zero_gray: int = 8,
+    walkable_zero_gray: int = 0,
 ) -> np.ndarray:
     """Render B density map as grayscale from the exact same density pipeline."""
     import pedpy
@@ -500,8 +500,8 @@ def build_densitymap_dataset(
     preserve_aspect: bool = True,
     density_scale_mode: str = "fixed",
     density_percentile: float = 99.0,
-    density_gamma: float = 0.35,
-    walkable_zero_gray: int = 8,
+    density_gamma: float = 1.0,
+    walkable_zero_gray: int = 0,
 ) -> None:
     """Build A/B pairs where:
        A = floor-plan with spawn dot + exit area   (same as trajectory dataset)
@@ -640,10 +640,10 @@ def main() -> None:
                         help="How to scale density to grayscale (default: fixed).")
     parser.add_argument("--density_percentile", type=float, default=99.0,
                         help="Percentile used when --density_scale_mode=percentile (default: 99.0).")
-    parser.add_argument("--density_gamma", type=float, default=0.35,
-                        help="Gamma for grayscale tone mapping, <1 brightens low density (default: 0.35).")
-    parser.add_argument("--walkable_zero_gray", type=int, default=8,
-                        help="Gray value for walkable pixels where density is zero (default: 8).")
+    parser.add_argument("--density_gamma", type=float, default=1.0,
+                        help="Gamma for grayscale tone mapping. 1.0 keeps density brightness linear (default: 1.0).")
+    parser.add_argument("--walkable_zero_gray", type=int, default=0,
+                        help="Gray value for walkable pixels where density is zero (default: 0).")
     args = parser.parse_args()
 
     source_root    = args.source_root.resolve()

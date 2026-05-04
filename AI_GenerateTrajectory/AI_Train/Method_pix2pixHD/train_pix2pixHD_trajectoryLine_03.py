@@ -45,6 +45,7 @@ class TrainingConfiguration:
 
     # 6. Dataset (override via config_train.json "dataset_root")
     dataset_root = ""  # set in config_train.json; empty = use default below
+    loaded_config_path = ""
 
     # 7. Run Organization
     BASE_DIR = pathlib.Path(__file__).parent.resolve()
@@ -80,11 +81,12 @@ def load_config_from_json(json_path):
         if not p.is_absolute():
             p = config.PROJECT_ROOT / p
         config.DATASET_ROOT = p
+    config.loaded_config_path = str(pathlib.Path(json_path).resolve())
 
     # Ensure image_size is a valid multiple of 32
     config.image_size = ((config.image_size + 31) // 32) * 32
 
-    print(f"📂 [CONFIG] Loaded parameters from {json_path}")
+    print(f"📂 [CONFIG] Loaded parameters from {config.loaded_config_path}")
     print(f"📂 [CONFIG] DATASET_ROOT = {config.DATASET_ROOT}")
     print(f"🖼️  [CONFIG] image_size = {config.image_size} | batch = {config.batch_size} | n_critic = {config.n_critic} | D scales = {config.num_discriminators}")
 
@@ -238,7 +240,7 @@ def execute_training():
         json.dump(config_dict, f, indent=4)
     print(f"📄 [CONFIG] Run snapshot saved to {run_config_path}")
 
-    raw_config_path = config.BASE_DIR / "config_train.json"
+    raw_config_path = pathlib.Path(config.loaded_config_path) if config.loaded_config_path else (config.BASE_DIR / "config_train.json")
     if not raw_config_path.exists():
         raw_config_path = config.BASE_DIR / "config_active.json"
     if raw_config_path.exists():
@@ -268,6 +270,11 @@ def execute_training():
     train_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "train", config.image_size)
     val_ds   = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "validation", config.image_size)
     test_ds  = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "test", config.image_size)
+    if len(train_ds) == 0:
+        raise RuntimeError(
+            f"Dataset is empty at '{config.DATASET_ROOT}'. "
+            f"Expected PNG files under A/train and B/train."
+        )
     train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True,  num_workers=0, pin_memory=True)
     val_loader   = DataLoader(val_ds,   batch_size=config.batch_size, shuffle=False, num_workers=0, pin_memory=True)
     test_loader  = DataLoader(test_ds,  batch_size=config.batch_size, shuffle=False, num_workers=0, pin_memory=True)
@@ -373,13 +380,25 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     script_dir = os.path.dirname(__file__)
-    cpath = args.config if os.path.isabs(args.config) else os.path.join(script_dir, args.config)
+    config_candidates = []
+    if os.path.isabs(args.config):
+        config_candidates.append(args.config)
+    else:
+        # Prefer path as provided from current working directory, then script-relative.
+        config_candidates.append(args.config)
+        config_candidates.append(os.path.join(script_dir, args.config))
 
-    if os.path.exists(cpath):
-        load_config_from_json(cpath)
+    selected_config = next((p for p in config_candidates if os.path.exists(p)), None)
+    if selected_config:
+        load_config_from_json(selected_config)
     else:
         fallback = os.path.join(script_dir, "config_active.json")
         if os.path.exists(fallback):
+            print(f"[WARN] Config '{args.config}' not found. Fallback to '{fallback}'.")
             load_config_from_json(fallback)
+        else:
+            raise FileNotFoundError(
+                f"Config not found: {args.config} and fallback config_active.json is missing."
+            )
 
     execute_training()
