@@ -17,6 +17,7 @@ class TestConfig:
     output_channels = 3
     l1_loss_weight = 10.0
     num_discriminators = 2
+    mask_threshold = 0.5
     DATASET_ROOT = pathlib.Path(".")
     
     def __init__(self, run_path=None, config_file=None):
@@ -161,9 +162,21 @@ class GeneratorNetwork(nn.Module):
         for _ in range(n_blocks):
             model += [ResNetBlock(512)]
         model += [
-            nn.ConvTranspose2d(512, 256, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(256, affine=True), nn.ReLU(True),
-            nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(128, affine=True), nn.ReLU(True),
-            nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(64, affine=True), nn.ReLU(True)
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(512, 256, 3, 1, 0),
+            nn.InstanceNorm2d(256, affine=True),
+            nn.ReLU(True),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(256, 128, 3, 1, 0),
+            nn.InstanceNorm2d(128, affine=True),
+            nn.ReLU(True),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(128, 64, 3, 1, 0),
+            nn.InstanceNorm2d(64, affine=True),
+            nn.ReLU(True),
         ]
         model += [
             nn.ReflectionPad2d(3),
@@ -178,13 +191,20 @@ class Pix2PixTrajectoryDataset(Dataset):
     def __init__(self, root_directory, subset="test", image_size=256):
         self.directory_A = pathlib.Path(root_directory) / "A" / subset
         self.directory_B = pathlib.Path(root_directory) / "B" / subset
-        self.file_list = sorted([f.name for f in self.directory_A.glob("*.png")])
+        a_names = {f.name for f in self.directory_A.glob("*.png")}
+        b_names = {f.name for f in self.directory_B.glob("*.png")}
+        self.file_list = sorted(a_names & b_names)
         # Snap to multiple of 32 — must match training resize
         target = ((image_size + 31) // 32) * 32
         self.target_w = target
         self.target_h = target
-        self.transforms = transforms.Compose([
+        self.transform_a = transforms.Compose([
             transforms.Resize((self.target_h, self.target_w), transforms.InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        ])
+        self.transform_b = transforms.Compose([
+            transforms.Resize((self.target_h, self.target_w), transforms.InterpolationMode.NEAREST),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
@@ -195,7 +215,7 @@ class Pix2PixTrajectoryDataset(Dataset):
         img_a_raw = Image.open(self.directory_A / name).convert("RGB")
         img_b_raw = Image.open(self.directory_B / name).convert("RGB")
         orig_w, orig_h = img_a_raw.size
-        return self.transforms(img_a_raw), self.transforms(img_b_raw), torch.tensor([orig_w, orig_h]), name
+        return self.transform_a(img_a_raw), self.transform_b(img_b_raw), torch.tensor([orig_w, orig_h]), name
 
 def run_evaluation(run_path, config_file=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -270,15 +290,20 @@ def run_evaluation(run_path, config_file=None):
             if i < 50:
                 ow, oh = orig_size[0].tolist()
                 file_name = str(file_name_batch[0])
-                def denorm_and_finalize(x):
-                    # Use high-quality LANCZOS for better final presentation
+                def denorm_and_finalize_image(x):
                     arr = ((x.cpu().numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
                     img = Image.fromarray(arr).resize((int(ow), int(oh)), Image.LANCZOS)
                     return img
+
+                def denorm_and_finalize_mask(x):
+                    arr = ((x.cpu().numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
+                    gray = Image.fromarray(arr).convert("L").resize((int(ow), int(oh)), Image.NEAREST)
+                    mask = np.array(gray) >= int(float(getattr(config, "mask_threshold", 0.5)) * 255)
+                    return Image.fromarray((mask.astype(np.uint8) * 255), mode="L").convert("RGB")
                 
-                res_a = denorm_and_finalize(ta[0])
-                res_b = denorm_and_finalize(tb[0])
-                res_f = denorm_and_finalize(tfb[0])
+                res_a = denorm_and_finalize_image(ta[0])
+                res_b = denorm_and_finalize_mask(tb[0])
+                res_f = denorm_and_finalize_mask(tfb[0])
                 
                 # 🖼️ Save files individually for better quality and UX
                 # Keep original dataset filename for stable downstream matching (UI/jet lookup).

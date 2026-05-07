@@ -1,0 +1,6 @@
+{
+    "batch_size": 1,
+    "mask_threshold": 0.65,
+    "export_thresholds": [0.5, 0.6, 0.65, 0.7, 0.8],
+    "dataset_root": "../Dataset/Data_ImageUNet/Trajectory_line_mask_dataset/Topo_HouseGAN"
+}

@@ -1,6 +1,4 @@
-tensorflow-macos==2.16.1
-tensorflow-metal==1.2.0
-keras==3.3.3
+# Apple Silicon / M-series Macs use PyTorch MPS acceleration.
 numpy==1.26.4
 jupedsim==1.1.1
 pedpy==1.1.3
@@ -9,12 +7,10 @@ matplotlib
 shapely
 tqdm
 psutil
-torch
 pyarrow
-torchvision
 streamlit
 transformers
 accelerate
-
-# For Apple Silicon (M1/M2/M3) GPU acceleration:
-# tensorflow-metal 1.2.0 is required for Python 3.12
+torch==2.6.0
+torchvision==0.21.0
+torchaudio==2.6.0

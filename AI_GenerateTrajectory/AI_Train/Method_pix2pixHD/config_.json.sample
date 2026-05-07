@@ -1,0 +1,44 @@
+///// DENSITY MAP
+
+{
+    "epochs": 50,
+    "batch_size": 8,
+    "generator_learning_rate": 0.0002,
+    "discriminator_learning_rate": 0.0001,
+    "l1_loss_weight": 10.0,
+    "feature_matching_weight": 10.0,
+    "num_discriminators": 1,
+    "use_label_smoothing": false,
+    "n_critic": 1,
+    "image_size": 256,
+    "resume_checkpoint_path": "-",
+    "dataset_root": "../Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN"
+}
+
+{
+    "batch_size": 1,
+    "image_size": 256,
+    "DATASET_ROOT": "../Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN"
+}
+
+///// Trajectory Line Mask
+{
+    "epochs": 50,
+    "batch_size": 8,
+    "generator_learning_rate": 0.0002,
+    "discriminator_learning_rate": 0.0001,
+    "l1_loss_weight": 10.0,
+    "feature_matching_weight": 10.0,
+    "num_discriminators": 1,
+    "use_label_smoothing": false,
+    "n_critic": 1,
+    "image_size": 256,
+    "resume_checkpoint_path": "-",
+    "dataset_root": "../Dataset/Data_ImageUNet/Trajectory_line_mask_dataset/Topo_HouseGAN"
+}
+
+{
+    "batch_size": 1,
+    "image_size": 256,
+    "DATASET_ROOT": "../Dataset/Data_ImageUNet/Trajectory_line_mask_dataset/Topo_HouseGAN"
+}

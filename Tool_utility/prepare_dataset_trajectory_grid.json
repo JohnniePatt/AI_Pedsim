@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "utility_script": "prepare_dataset_trajectory_grid.py",
+  "source_root": "Geo_scenario/Topo_HouseGAN",
+  "output_root": "Dataset/Data_TrajectoryGrid/Topo_HouseGAN",
+  "source_priority": [
+    "dataswarm",
+    "geo",
+    "metadata"
+  ],
+  "do_not_rename_source_names": true,
+  "output_structure": {
+    "A/<split>/<plan_name>/<sqlite_stem>/walkablearea_grid.json": "input grid copied from geo/<plan_name>/walkablearea_grid.json",
+    "A/<split>/<plan_name>/<sqlite_stem>/spawn_agent.parquet": "input spawn positions from frame 0 of sqlite trajectory",
+    "A/<split>/<plan_name>/<sqlite_stem>/exit_room.json": "input trigger room/node from metadata/<plan_name>/route_<route_index>.json",
+    "B/<split>/<plan_name>/<sqlite_stem>/trajectory.parquet": "target trajectory converted from dataswarm sqlite",
+    "metadata/<split>/<plan_name>/<sqlite_stem>.json": "case sidecar summary",
+    "manifest_trajectory_grid.csv": "dataset manifest"
+  },
+  "default_parameters": {
+    "cell_size_m": 0.125,
+    "padding_m": 0.0,
+    "wall_thickness_m": 0.125,
+    "split_seed": 42,
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15
+  }
+}

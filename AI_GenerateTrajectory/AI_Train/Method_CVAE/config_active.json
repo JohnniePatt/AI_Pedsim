@@ -1,16 +1,12 @@
 {
-  "epochs": 40,
-  "batch_size": 2,
+  "epochs": 50,
+  "batch_size": 8,
   "learning_rate": 0.0002,
-  "image_size": 512,
+  "image_size": 256,
   "latent_dim": 32,
-  "base_filters": 40,
-  "kl_weight": 0.015,
-  "kl_anneal_epochs": 10,
-  "l1_loss_weight": 8.0,
-  "mask_bce_loss_weight": 1.0,
-  "mask_dice_loss_weight": 1.2,
-  "edge_loss_weight": 3.0,
-  "mask_threshold": 0.08,
-  "resume_checkpoint_dir": "-"
+  "base_filters": 32,
+  "kl_weight": 0.01,
+  "mask_threshold": 0.65,
+  "resume_checkpoint_path": "-",
+  "dataset_root": "../Dataset/Data_ImageUNet/Trajectory_line_mask_dataset/Topo_HouseGAN"
 }

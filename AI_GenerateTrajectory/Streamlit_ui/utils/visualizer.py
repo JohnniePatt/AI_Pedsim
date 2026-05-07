@@ -142,6 +142,105 @@ def show_sample_images(sample_dir):
                 img_path = images[idx]
                 st_cols[j].image(str(img_path), caption=img_path.name, use_container_width=True)
 
+def _resolve_triplet_paths(result_dir, image_name):
+    result_dir = pathlib.Path(result_dir)
+    pred_path = result_dir / "predictions" / image_name
+    input_path = result_dir / "inputs" / image_name
+    target_path = result_dir / "targets" / image_name
+    return input_path, pred_path, target_path
+
+def _show_summary_table(result_dir, title="Metrics"):
+    summary_path = pathlib.Path(result_dir) / "test_evaluation_summary.csv"
+    threshold_path = pathlib.Path(result_dir) / "test_threshold_metrics.csv"
+    if summary_path.exists():
+        try:
+            st.caption(title)
+            st.dataframe(pd.read_csv(summary_path), use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not read {summary_path.name}: {e}")
+    if threshold_path.exists():
+        try:
+            st.caption(f"{title} by threshold")
+            st.dataframe(pd.read_csv(threshold_path), use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not read {threshold_path.name}: {e}")
+
+def _show_single_mask_result(run_path, result_dir, title):
+    result_dir = pathlib.Path(result_dir)
+    pred_dir = result_dir / "predictions"
+    input_dir = result_dir / "inputs"
+    target_dir = result_dir / "targets"
+    if not (pred_dir.exists() and input_dir.exists() and target_dir.exists()):
+        st.info(f"No prediction grid found for {title}.")
+        return
+
+    st.subheader(title)
+    _show_summary_table(result_dir, title=title)
+    pred_images = sorted(list(pred_dir.glob("*.png")), key=lambda x: x.name)
+    jet_map = _get_density_jet_map_for_run(run_path)
+    if not pred_images:
+        st.info("No prediction images found.")
+        return
+
+    max_samples = 50
+    h_col1, h_col2, h_col3, h_col4 = st.columns(4)
+    h_col1.caption("INPUT (Scenario)")
+    h_col2.caption("PREDICTION (AI)")
+    h_col3.caption("TARGET (Reality)")
+    h_col4.caption("TARGET (Reality color jet)")
+    for idx, p_path in enumerate(pred_images[:max_samples]):
+        i_path, _, t_path = _resolve_triplet_paths(result_dir, p_path.name)
+        jet_path = jet_map.get(idx)
+        if i_path.exists() and t_path.exists():
+            r_col1, r_col2, r_col3, r_col4 = st.columns(4)
+            r_col1.image(str(i_path), use_container_width=True)
+            r_col2.image(str(p_path), use_container_width=True)
+            r_col3.image(str(t_path), use_container_width=True)
+            if jet_path and jet_path.exists():
+                r_col4.image(str(jet_path), use_container_width=True)
+            else:
+                r_col4.caption("No matched heatmap_density")
+            st.divider()
+
+def _show_compare_mask_results(run_path, result_a, label_a, result_b, label_b):
+    result_a = pathlib.Path(result_a)
+    result_b = pathlib.Path(result_b)
+    pred_a_dir = result_a / "predictions"
+    pred_b_dir = result_b / "predictions"
+    if not (pred_a_dir.exists() and pred_b_dir.exists()):
+        st.info("Both checkpoint results must exist before compare mode is available.")
+        return
+
+    st.subheader(f"Result Comparison: {label_a} vs {label_b}")
+    c1, c2 = st.columns(2)
+    with c1:
+        _show_summary_table(result_a, title=label_a)
+    with c2:
+        _show_summary_table(result_b, title=label_b)
+
+    pred_images = sorted(list(pred_a_dir.glob("*.png")), key=lambda x: x.name)
+    pred_b_names = {p.name for p in pred_b_dir.glob("*.png")}
+    pred_images = [p for p in pred_images if p.name in pred_b_names]
+    if not pred_images:
+        st.info("No matching prediction images found between both checkpoints.")
+        return
+
+    h_col1, h_col2, h_col3, h_col4 = st.columns(4)
+    h_col1.caption("INPUT (Scenario)")
+    h_col2.caption(label_a)
+    h_col3.caption(label_b)
+    h_col4.caption("TARGET (Reality)")
+    for p_a in pred_images[:50]:
+        i_path, _, t_path = _resolve_triplet_paths(result_a, p_a.name)
+        p_b = pred_b_dir / p_a.name
+        if i_path.exists() and t_path.exists() and p_b.exists():
+            r_col1, r_col2, r_col3, r_col4 = st.columns(4)
+            r_col1.image(str(i_path), use_container_width=True)
+            r_col2.image(str(p_a), use_container_width=True)
+            r_col3.image(str(p_b), use_container_width=True)
+            r_col4.image(str(t_path), use_container_width=True)
+            st.divider()
+
 def show_test_evaluation(run_dir):
     """
     Displays the test evaluation metrics and a compact comparison grid for Input, AI Prediction, and Ground Truth.
@@ -187,6 +286,31 @@ def show_test_evaluation(run_dir):
 
     
     st.divider()
+
+    nested_mask_results = []
+    for result_name in ["best_dice", "best_loss", "final"]:
+        candidate = test_results_dir / result_name
+        if (candidate / "predictions").exists():
+            nested_mask_results.append((result_name, candidate))
+
+    if nested_mask_results:
+        result_map = dict(nested_mask_results)
+        options = []
+        if "best_dice" in result_map and "best_loss" in result_map:
+            options.append("Compare: best_dice vs best_loss")
+        options.extend([name for name, _ in nested_mask_results])
+        selected_result = st.selectbox("UNet checkpoint result", options=options)
+        if selected_result.startswith("Compare"):
+            _show_compare_mask_results(
+                run_path,
+                result_map["best_dice"],
+                "best_dice",
+                result_map["best_loss"],
+                "best_loss",
+            )
+        else:
+            _show_single_mask_result(run_path, result_map[selected_result], f"Result Comparison: {selected_result}")
+        return
 
     # 2. Comparison Grid (Inputs vs Predictions vs Targets - Pix2Pix Style)
     pred_dir = test_results_dir / "predictions"

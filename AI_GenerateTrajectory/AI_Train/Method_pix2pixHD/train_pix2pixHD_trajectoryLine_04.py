@@ -27,11 +27,12 @@ class TrainingConfiguration:
 
     # 2. Loss Weights (HD specific)
     l1_loss_weight = 10.0
-    feature_matching_weight = 10.0
+    feature_matching_weight = 2.0
     lambda_gp = 10.0  # Gradient Penalty weight
-    mask_bce_loss_weight = 2.0
-    mask_dice_loss_weight = 2.0
-    mask_threshold = 0.08
+    mask_bce_loss_weight = 6.0
+    mask_dice_loss_weight = 6.0
+    mask_threshold = 0.5
+    mask_foreground_weight = 20.0
     dice_smooth = 1e-6
 
     # 3. GAN Options
@@ -159,6 +160,13 @@ def dice_loss(pred_prob, target_mask, smooth=1e-6):
     dice_score = (2.0 * intersection + smooth) / (denom + smooth)
     return 1.0 - dice_score.mean()
 
+
+def weighted_bce_loss(pred_prob, target_mask, foreground_weight=1.0, eps=1e-6):
+    pred_prob = torch.clamp(pred_prob, eps, 1.0 - eps)
+    weights = 1.0 + (float(foreground_weight) - 1.0) * target_mask
+    bce = -(target_mask * torch.log(pred_prob) + (1.0 - target_mask) * torch.log(1.0 - pred_prob))
+    return (weights * bce).mean()
+
 # --- Pix2PixHD Components: ResNet-based Generator ---
 class ResNetBlock(nn.Module):
     def __init__(self, channels):
@@ -192,9 +200,21 @@ class GeneratorNetwork(nn.Module):
         for _ in range(n_blocks):
             model += [ResNetBlock(512)]
         model += [
-            nn.ConvTranspose2d(512, 256, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(256, affine=True), nn.ReLU(True),
-            nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(128, affine=True), nn.ReLU(True),
-            nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(64, affine=True), nn.ReLU(True)
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(512, 256, 3, 1, 0),
+            nn.InstanceNorm2d(256, affine=True),
+            nn.ReLU(True),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(256, 128, 3, 1, 0),
+            nn.InstanceNorm2d(128, affine=True),
+            nn.ReLU(True),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(128, 64, 3, 1, 0),
+            nn.InstanceNorm2d(64, affine=True),
+            nn.ReLU(True),
         ]
         model += [
             nn.ReflectionPad2d(3),
@@ -285,15 +305,30 @@ class Pix2PixTrajectoryDataset(Dataset):
                 f"B splits: {b_splits if b_splits else 'B missing/empty'}"
             )
 
-        self.file_list = sorted([f.name for f in self.directory_A.glob("*.png")])
+        a_names = {f.name for f in self.directory_A.glob("*.png")}
+        b_names = {f.name for f in self.directory_B.glob("*.png")}
+        missing_b = sorted(a_names - b_names)
+        missing_a = sorted(b_names - a_names)
+        if missing_a or missing_b:
+            raise RuntimeError(
+                f"[DATASET-{subset}] A/B filename mismatch: "
+                f"missing_in_B={len(missing_b)}, missing_in_A={len(missing_a)}"
+            )
+        self.file_list = sorted(a_names & b_names)
 
         target = ((image_size + 31) // 32) * 32
         self.target_w = target
         self.target_h = target
         print(f"[DATASET-{subset}] {len(self.file_list)} images | resize -> {self.target_w}x{self.target_h}")
 
-        self.transforms = transforms.Compose([
+        self.transform_a = transforms.Compose([
             transforms.Resize((self.target_h, self.target_w), transforms.InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+        self.transform_b = transforms.Compose([
+            # B is a binary mask; interpolating it creates gray halos and thick blobs.
+            transforms.Resize((self.target_h, self.target_w), transforms.InterpolationMode.NEAREST),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
@@ -304,7 +339,7 @@ class Pix2PixTrajectoryDataset(Dataset):
         name = self.file_list[idx]
         img_a = Image.open(self.directory_A / name).convert("RGB")
         img_b = Image.open(self.directory_B / name).convert("RGB")
-        return self.transforms(img_a), self.transforms(img_b)
+        return self.transform_a(img_a), self.transform_b(img_b)
 
 def execute_training():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -426,9 +461,13 @@ def execute_training():
             real_gray = tensor_to_gray01(real_b)
             fake_gray = tensor_to_gray01(fake_b)
             gt_mask = hard_mask_from_gray(real_gray, config.mask_threshold)
-            pred_mask_prob = soft_mask_from_gray(fake_gray, config.mask_threshold)
+            pred_mask_prob = torch.clamp(fake_gray, 1e-6, 1.0 - 1e-6)
 
-            loss_g_bce = mask_bce_criterion(pred_mask_prob, gt_mask)
+            loss_g_bce = weighted_bce_loss(
+                pred_mask_prob,
+                gt_mask,
+                foreground_weight=config.mask_foreground_weight,
+            )
             loss_g_dice = dice_loss(pred_mask_prob, gt_mask, smooth=config.dice_smooth)
             loss_total = (
                 loss_g_adv
@@ -467,8 +506,12 @@ def execute_training():
                 vb_gray = tensor_to_gray01(vb)
                 vp_gray = tensor_to_gray01(vpred)
                 v_gt_mask = hard_mask_from_gray(vb_gray, config.mask_threshold)
-                v_pred_mask_prob = soft_mask_from_gray(vp_gray, config.mask_threshold)
-                val_bce += mask_bce_criterion(v_pred_mask_prob, v_gt_mask).item()
+                v_pred_mask_prob = torch.clamp(vp_gray, 1e-6, 1.0 - 1e-6)
+                val_bce += weighted_bce_loss(
+                    v_pred_mask_prob,
+                    v_gt_mask,
+                    foreground_weight=config.mask_foreground_weight,
+                ).item()
                 val_dice += dice_loss(v_pred_mask_prob, v_gt_mask, smooth=config.dice_smooth).item()
 
         avg_val_l1_raw = (val_l1 / len(val_loader))

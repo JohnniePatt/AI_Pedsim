@@ -1,249 +1,252 @@
-import argparse
-import os
+﻿import argparse
+import json
 import pathlib
 import subprocess
 import sys
 
 import numpy as np
+import torch
 from tqdm import tqdm
 
-import tensorflow as tf
-
-from cvae_config import (
-    TrainingConfiguration,
-    load_train_config_from_json,
-    resolve_input_path,
-    save_run_snapshot,
-    write_progress,
-)
+from cvae_config import build_train_config, make_run_dirs, save_run_snapshot, write_progress, write_summary_csv
 from cvae_data import make_dataset
 from cvae_io import save_triptych_sample
-from cvae_losses import LossComputer
+from cvae_losses import LossComputer, dice_from_probs, iou_from_probs
 from cvae_model import CVAE
 
 
-config = TrainingConfiguration()
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
-def execute_training():
-    tf.random.set_seed(config.seed)
-    np.random.seed(config.seed)
+def print_system(device):
+    print("=" * 70)
+    print(f"[SYSTEM] PyTorch: {torch.__version__}")
+    print(f"[SYSTEM] Device: {device}")
+    if device.type == "cuda":
+        print(f"[SYSTEM] CUDA: {torch.version.cuda}")
+        print(f"[SYSTEM] GPU: {torch.cuda.get_device_name(0)}")
+    print("=" * 70)
 
-    print("=" * 60)
-    print(f"[SYSTEM] TensorFlow version: {tf.__version__}")
-    gpu_devices = tf.config.list_physical_devices("GPU")
-    if gpu_devices:
-        print(f"[SYSTEM] Training on GPU: {gpu_devices[0].name}")
-    else:
-        print("[SYSTEM] Training on CPU")
-    print("=" * 60)
 
-    save_run_snapshot(config)
-    write_progress(config, -1, config.epochs, 0.0, 0.0)
-
-    train_ds, train_pairs = make_dataset(
-        config.DATASET_ROOT,
-        "train",
-        int(config.batch_size),
-        int(config.image_size),
-        shuffle=True,
-        seed=int(config.seed),
-    )
-    val_ds, val_pairs = make_dataset(
-        config.DATASET_ROOT,
-        "validation",
-        int(config.batch_size),
-        int(config.image_size),
-        shuffle=False,
-        seed=int(config.seed),
-    )
-    _test_ds, test_pairs = make_dataset(
-        config.DATASET_ROOT,
-        "test",
-        int(config.batch_size),
-        int(config.image_size),
-        shuffle=False,
-        seed=int(config.seed),
-    )
-
-    if len(train_pairs) == 0 or len(val_pairs) == 0 or len(test_pairs) == 0:
-        raise RuntimeError("[DATASET] One of train/validation/test splits is empty.")
-
-    cvae = CVAE(int(config.image_size), int(config.base_filters), int(config.latent_dim))
-    loss_comp = LossComputer(config)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=float(config.learning_rate))
-
-    for batch_a, batch_b in train_ds.take(1):
-        _ = cvae.forward_train(batch_a, batch_b, training=False)
-
-    if config.resume_checkpoint_dir not in ["-", "", None]:
-        ckpt_dir = pathlib.Path(config.resume_checkpoint_dir)
-        if not ckpt_dir.is_absolute():
-            ckpt_dir = (config.BASE_DIR / ckpt_dir).resolve()
-        cond_w = ckpt_dir / "cond_encoder_best.weights.h5"
-        post_w = ckpt_dir / "posterior_encoder_best.weights.h5"
-        dec_w = ckpt_dir / "decoder_best.weights.h5"
-        if cond_w.exists() and post_w.exists() and dec_w.exists():
-            cvae.cond_encoder.load_weights(str(cond_w))
-            cvae.posterior_encoder.load_weights(str(post_w))
-            cvae.decoder.load_weights(str(dec_w))
-            print(f"[RESUME] Loaded weights from {ckpt_dir}")
-
-    log_hist_path = config.LOG_DIR / "training_history.csv"
-    with open(log_hist_path, "w", encoding="utf-8") as f:
-        f.write(
-            "epoch,train_total,train_l1,train_bce,train_dice,train_edge,train_kl,"
-            "val_total,val_l1_raw,val_l1,val_bce,val_dice,val_edge,val_kl,kl_weight\n"
+def run_epoch(model, loader, optimizer, loss_comp, device, train, epoch, total_epochs, kl_weight):
+    model.train(train)
+    phase = "Train" if train else "Val"
+    totals = {"total": 0.0, "l1": 0.0, "bce": 0.0, "dice_loss": 0.0, "edge": 0.0, "kl": 0.0, "dice_coef": 0.0, "iou_coef": 0.0}
+    batches = 0
+    progress = tqdm(loader, desc=f"{phase} {epoch:03d}/{total_epochs:03d}", leave=False, dynamic_ncols=True)
+    for batch_a, batch_b, _ in progress:
+        batch_a = batch_a.to(device, non_blocking=True)
+        batch_b = batch_b.to(device, non_blocking=True)
+        with torch.set_grad_enabled(train):
+            logits, mu, logvar = model.forward_train(batch_a, batch_b)
+            loss_total, loss_l1, loss_bce, loss_dice, loss_edge, loss_kl = loss_comp.compute(
+                logits, batch_b, mu, logvar, kl_weight
+            )
+            probs = torch.sigmoid(logits)
+            dice = dice_from_probs(batch_b, probs)
+            iou = iou_from_probs(batch_b, probs)
+            if train:
+                optimizer.zero_grad(set_to_none=True)
+                loss_total.backward()
+                optimizer.step()
+        totals["total"] += float(loss_total.detach().cpu())
+        totals["l1"] += float(loss_l1.detach().cpu())
+        totals["bce"] += float(loss_bce.detach().cpu())
+        totals["dice_loss"] += float(loss_dice.detach().cpu())
+        totals["edge"] += float(loss_edge.detach().cpu())
+        totals["kl"] += float(loss_kl.detach().cpu())
+        totals["dice_coef"] += float(dice.detach().cpu())
+        totals["iou_coef"] += float(iou.detach().cpu())
+        batches += 1
+        progress.set_postfix(
+            total=f"{totals['total'] / batches:.4f}",
+            dice=f"{totals['dice_coef'] / batches:.4f}",
+            iou=f"{totals['iou_coef'] / batches:.4f}",
+            kl=f"{totals['kl'] / batches:.4f}",
         )
-
-    fixed_val_samples = []
-    for va, vb in val_ds.unbatch().take(int(config.sample_count)):
-        fixed_val_samples.append((va.numpy(), vb.numpy()))
-
-    best_val = float("inf")
-    train_steps = max(1, len(train_pairs) // int(config.batch_size) + int(len(train_pairs) % int(config.batch_size) > 0))
-
-    for epoch in range(int(config.epochs)):
-        kl_w = float(config.kl_weight)
-        if int(config.kl_anneal_epochs) > 0:
-            kl_w = float(config.kl_weight) * min(1.0, (epoch + 1) / float(config.kl_anneal_epochs))
-
-        train_metrics = {"total": 0.0, "l1": 0.0, "bce": 0.0, "dice": 0.0, "edge": 0.0, "kl": 0.0}
-
-        pbar = tqdm(train_ds, total=train_steps, desc=f"E{epoch}", leave=False)
-        for batch_a, batch_b in pbar:
-            with tf.GradientTape() as tape:
-                pred_b, mu, logvar = cvae.forward_train(batch_a, batch_b, training=True)
-                loss_total, loss_l1_raw, loss_bce, loss_dice, loss_edge, loss_kl = loss_comp.compute(
-                    pred_b, batch_b, mu, logvar, kl_w
-                )
-
-            grads = tape.gradient(loss_total, cvae.trainable_variables)
-            optimizer.apply_gradients(zip(grads, cvae.trainable_variables))
-
-            train_metrics["total"] += float(loss_total.numpy())
-            train_metrics["l1"] += float(loss_l1_raw.numpy())
-            train_metrics["bce"] += float(loss_bce.numpy())
-            train_metrics["dice"] += float(loss_dice.numpy())
-            train_metrics["edge"] += float(loss_edge.numpy())
-            train_metrics["kl"] += float(loss_kl.numpy())
-
-            pbar.set_postfix(
-                total=f"{float(loss_total.numpy()):.4f}",
-                l1=f"{float(loss_l1_raw.numpy()):.4f}",
-                bce=f"{float(loss_bce.numpy()):.4f}",
-                dice=f"{float(loss_dice.numpy()):.4f}",
-                edge=f"{float(loss_edge.numpy()):.4f}",
-                kl=f"{float(loss_kl.numpy()):.4f}",
-            )
-
-        train_batches = max(1, train_steps)
-        train_avg_total = train_metrics["total"] / train_batches
-        train_avg_l1 = train_metrics["l1"] / train_batches
-        train_avg_bce = train_metrics["bce"] / train_batches
-        train_avg_dice = train_metrics["dice"] / train_batches
-        train_avg_edge = train_metrics["edge"] / train_batches
-        train_avg_kl = train_metrics["kl"] / train_batches
-
-        val_metrics = {"total": 0.0, "l1_raw": 0.0, "bce": 0.0, "dice": 0.0, "edge": 0.0, "kl": 0.0}
-        val_steps = 0
-
-        for batch_a, batch_b in val_ds:
-            pred_b = cvae.forward_infer(batch_a, z=None, training=False)
-            posterior_input = tf.concat([batch_a, batch_b], axis=-1)
-            mu, logvar = cvae.posterior_encoder(posterior_input, training=False)
-
-            _, loss_l1_raw, loss_bce, loss_dice, loss_edge, loss_kl = loss_comp.compute(
-                pred_b, batch_b, mu, logvar, kl_w
-            )
-
-            loss_total = (
-                config.l1_loss_weight * loss_l1_raw
-                + config.mask_bce_loss_weight * loss_bce
-                + config.mask_dice_loss_weight * loss_dice
-                + config.edge_loss_weight * loss_edge
-                + kl_w * loss_kl
-            )
-
-            val_metrics["total"] += float(loss_total.numpy())
-            val_metrics["l1_raw"] += float(loss_l1_raw.numpy())
-            val_metrics["bce"] += float(loss_bce.numpy())
-            val_metrics["dice"] += float(loss_dice.numpy())
-            val_metrics["edge"] += float(loss_edge.numpy())
-            val_metrics["kl"] += float(loss_kl.numpy())
-            val_steps += 1
-
-        val_steps = max(1, val_steps)
-        val_total = val_metrics["total"] / val_steps
-        val_l1_raw = val_metrics["l1_raw"] / val_steps
-        val_l1 = val_l1_raw * float(config.l1_loss_weight)
-        val_bce = val_metrics["bce"] / val_steps
-        val_dice = val_metrics["dice"] / val_steps
-        val_edge = val_metrics["edge"] / val_steps
-        val_kl = val_metrics["kl"] / val_steps
-
-        with open(log_hist_path, "a", encoding="utf-8") as f:
-            f.write(
-                f"{epoch},{train_avg_total:.6f},{train_avg_l1:.6f},{train_avg_bce:.6f},{train_avg_dice:.6f},{train_avg_edge:.6f},{train_avg_kl:.6f},"
-                f"{val_total:.6f},{val_l1_raw:.6f},{val_l1:.6f},{val_bce:.6f},{val_dice:.6f},{val_edge:.6f},{val_kl:.6f},{kl_w:.6f}\n"
-            )
-
-        print(
-            f"[EPOCH {epoch}] train_total={train_avg_total:.4f} | "
-            f"train_l1/bce/dice/edge/kl={train_avg_l1:.4f}/{train_avg_bce:.4f}/{train_avg_dice:.4f}/{train_avg_edge:.4f}/{train_avg_kl:.4f} | "
-            f"val_total={val_total:.4f} | "
-            f"val_l1raw/l1/bce/dice/edge/kl={val_l1_raw:.4f}/{val_l1:.4f}/{val_bce:.4f}/{val_dice:.4f}/{val_edge:.4f}/{val_kl:.4f} | "
-            f"kl_w={kl_w:.4f}"
-        )
-
-        write_progress(config, epoch, int(config.epochs), train_avg_total, val_total)
-
-        if (epoch + 1) % int(config.sample_every_epochs) == 0 and fixed_val_samples:
-            for i, (sample_a, sample_b) in enumerate(fixed_val_samples):
-                sample_a_batched = tf.convert_to_tensor(sample_a[None, ...], dtype=tf.float32)
-                pred = cvae.forward_infer(sample_a_batched, z=None, training=False)[0].numpy()
-                out_file = config.SAMPLE_DIR / f"epoch_{epoch+1:04d}_sample_{i:02d}.png"
-                save_triptych_sample(sample_a, pred, sample_b, out_file)
-
-        if val_total < best_val:
-            best_val = val_total
-            cvae.cond_encoder.save_weights(str(config.CHECKPOINT_DIR / "cond_encoder_best.weights.h5"))
-            cvae.posterior_encoder.save_weights(str(config.CHECKPOINT_DIR / "posterior_encoder_best.weights.h5"))
-            cvae.decoder.save_weights(str(config.CHECKPOINT_DIR / "decoder_best.weights.h5"))
-            print(f"  New best model (val_total={best_val:.4f})")
-
-        if (epoch + 1) % int(config.checkpoint_every_epochs) == 0:
-            cvae.cond_encoder.save_weights(str(config.CHECKPOINT_DIR / f"cond_encoder_epoch_{epoch+1}.weights.h5"))
-            cvae.posterior_encoder.save_weights(str(config.CHECKPOINT_DIR / f"posterior_encoder_epoch_{epoch+1}.weights.h5"))
-            cvae.decoder.save_weights(str(config.CHECKPOINT_DIR / f"decoder_epoch_{epoch+1}.weights.h5"))
-
-    print("\n--- Triggering Standalone CVAE Test Evaluation ---")
-    test_script = pathlib.Path(__file__).parent / "test_cvae_trajectoryLine.py"
-    test_proc = subprocess.run([sys.executable, str(test_script), "--run_path", str(config.CURRENT_RUN_DIR)])
-    if test_proc.returncode == 0:
-        print(f"Training finished. Results in {config.CURRENT_RUN_DIR}")
-    else:
-        print(
-            f"[WARN] Training finished but standalone test evaluation failed "
-            f"(exit code {test_proc.returncode}). Run test script manually after fixing."
-        )
+    return {k: v / max(batches, 1) for k, v in totals.items()}
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def save_checkpoint(path, model, optimizer, epoch, cfg, best_val_dice, best_val_loss):
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "config": cfg,
+            "best_val_dice": best_val_dice,
+            "best_val_loss": best_val_loss,
+        },
+        path,
+    )
+
+
+def save_epoch_samples(model, samples, sample_dir, epoch, device):
+    model.eval()
+    with torch.no_grad():
+        for idx, (a, b) in enumerate(samples):
+            a = a.to(device).unsqueeze(0)
+            pred = torch.sigmoid(model.forward_infer(a))[0]
+            save_triptych_sample(a[0].detach().cpu(), pred.detach().cpu(), b.detach().cpu(), sample_dir / f"epoch_{epoch:04d}_sample_{idx:02d}.png")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train PyTorch CVAE for trajectory-line masks.")
     parser.add_argument("--config", type=str, default="config_train.json")
     args = parser.parse_args()
 
-    script_dir = os.path.dirname(__file__)
-    cpath = resolve_input_path(args.config, script_dir)
-    if cpath:
-        load_train_config_from_json(config, cpath)
-    else:
-        fallback = resolve_input_path("config_active.json", script_dir)
-        if fallback:
-            print(f"[WARN] Config not found: {args.config}. Falling back to {fallback}")
-            load_train_config_from_json(config, fallback)
-        else:
-            print("[WARN] No config file found. Using in-script defaults.")
+    script_dir = pathlib.Path(__file__).parent.resolve()
+    config_path = pathlib.Path(args.config)
+    if not config_path.is_absolute():
+        config_path = pathlib.Path.cwd() / config_path
+        if not config_path.exists():
+            config_path = script_dir / args.config
 
-    execute_training()
+    cfg = build_train_config(config_path)
+    dataset_root = pathlib.Path(cfg["DATASET_ROOT"])
+    if not dataset_root.exists():
+        raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
+
+    torch.manual_seed(int(cfg.get("seed", 42)))
+    np.random.seed(int(cfg.get("seed", 42)))
+    device = get_device()
+    print_system(device)
+
+    run_dirs = make_run_dirs(script_dir, method_name="Method_CVAE")
+    cfg = save_run_snapshot(cfg, config_path, run_dirs)
+    print(f"[CONFIG] Loaded: {config_path}")
+    print(f"[CONFIG] Dataset: {dataset_root}")
+    print(f"[RUN] {run_dirs['CURRENT_RUN_DIR']}")
+
+    train_loader, train_pairs = make_dataset(dataset_root, "train", cfg["batch_size"], cfg["image_size"], True, seed=cfg.get("seed", 42), num_workers=cfg.get("num_workers", 0))
+    val_loader, val_pairs = make_dataset(dataset_root, "validation", cfg["batch_size"], cfg["image_size"], False, seed=cfg.get("seed", 42), num_workers=cfg.get("num_workers", 0))
+    test_loader, test_pairs = make_dataset(dataset_root, "test", cfg["batch_size"], cfg["image_size"], False, seed=cfg.get("seed", 42), num_workers=0)
+    print(f"[DATA] train={len(train_pairs)} validation={len(val_pairs)} test={len(test_pairs)}")
+
+    model = CVAE(cfg["image_size"], cfg["base_filters"], cfg["latent_dim"], dropout=cfg.get("dropout", 0.1)).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=int(cfg.get("reduce_lr_patience", 5)), min_lr=1e-7)
+    loss_comp = LossComputer(cfg, device)
+
+    with open(run_dirs["CHECKPOINT_DIR"] / "model_architecture.txt", "w", encoding="utf-8") as f:
+        f.write(str(model))
+
+    resume_path = str(cfg.get("resume_checkpoint_path", "-"))
+    best_val_dice = -1.0
+    best_val_loss = float("inf")
+    start_epoch = 1
+    if resume_path not in ("-", "", "None", "none", None):
+        resume = pathlib.Path(resume_path)
+        if not resume.is_absolute():
+            resume = pathlib.Path(cfg["PROJECT_ROOT"]) / resume
+        checkpoint = torch.load(resume, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        best_val_dice = float(checkpoint.get("best_val_dice", best_val_dice))
+        best_val_loss = float(checkpoint.get("best_val_loss", best_val_loss))
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
+        print(f"[RESUME] Loaded {resume}")
+
+    fixed_samples = []
+    for a, b, _ in test_loader:
+        for i in range(a.shape[0]):
+            fixed_samples.append((a[i], b[i]))
+            if len(fixed_samples) >= int(cfg.get("sample_count", 4)):
+                break
+        if len(fixed_samples) >= int(cfg.get("sample_count", 4)):
+            break
+
+    progress_path = run_dirs["CURRENT_RUN_DIR"] / "progress.json"
+    write_progress(progress_path, 0, int(cfg["epochs"]), 0.0, 0.0)
+    history_rows = []
+    patience_counter = 0
+
+    for epoch in range(start_epoch, int(cfg["epochs"]) + 1):
+        kl_weight = float(cfg.get("kl_weight", 0.01))
+        anneal = int(cfg.get("kl_anneal_epochs", 0))
+        if anneal > 0:
+            kl_weight *= min(1.0, epoch / float(anneal))
+
+        train_metrics = run_epoch(model, train_loader, optimizer, loss_comp, device, True, epoch, int(cfg["epochs"]), kl_weight)
+        with torch.no_grad():
+            val_metrics = run_epoch(model, val_loader, optimizer, loss_comp, device, False, epoch, int(cfg["epochs"]), kl_weight)
+        scheduler.step(val_metrics["total"])
+
+        row = {
+            "epoch": epoch,
+            "train_total": train_metrics["total"],
+            "train_l1": train_metrics["l1"],
+            "train_bce": train_metrics["bce"],
+            "train_dice_loss": train_metrics["dice_loss"],
+            "train_edge": train_metrics["edge"],
+            "train_kl": train_metrics["kl"],
+            "dice_coef": train_metrics["dice_coef"],
+            "iou_coef": train_metrics["iou_coef"],
+            "val_total": val_metrics["total"],
+            "val_l1": val_metrics["l1"],
+            "val_bce": val_metrics["bce"],
+            "val_dice_loss": val_metrics["dice_loss"],
+            "val_edge": val_metrics["edge"],
+            "val_kl": val_metrics["kl"],
+            "val_dice_coef": val_metrics["dice_coef"],
+            "val_iou_coef": val_metrics["iou_coef"],
+            "kl_weight": kl_weight,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+        }
+        history_rows.append(row)
+        write_summary_csv(run_dirs["LOG_DIR"] / "training_history.csv", history_rows)
+        write_progress(progress_path, epoch, int(cfg["epochs"]), train_metrics["total"], val_metrics["total"])
+
+        print(
+            f"[EPOCH {epoch:03d}/{int(cfg['epochs']):03d}] "
+            f"train_total={train_metrics['total']:.4f} train_dice={train_metrics['dice_coef']:.4f} "
+            f"val_total={val_metrics['total']:.4f} val_dice={val_metrics['dice_coef']:.4f} "
+            f"kl_w={kl_weight:.4f} lr={optimizer.param_groups[0]['lr']:.2e}"
+        )
+
+        if epoch % int(cfg.get("sample_every_epochs", 1)) == 0 and fixed_samples:
+            save_epoch_samples(model, fixed_samples, run_dirs["SAMPLE_DIR"], epoch, device)
+
+        improved_dice = val_metrics["dice_coef"] > best_val_dice
+        improved_loss = val_metrics["total"] < best_val_loss
+        if improved_dice:
+            best_val_dice = val_metrics["dice_coef"]
+            patience_counter = 0
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best_dice.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
+            print(f"[CKPT] Saved best_dice.pt val_dice={best_val_dice:.4f}")
+        else:
+            patience_counter += 1
+        if improved_loss:
+            best_val_loss = val_metrics["total"]
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best_loss.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
+            print(f"[CKPT] Saved best_loss.pt val_total={best_val_loss:.4f}")
+
+        if epoch % int(cfg.get("checkpoint_every_epochs", 10)) == 0:
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / f"epoch_{epoch:04d}.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
+        if patience_counter >= int(cfg.get("early_stopping_patience", 10)):
+            print(f"[EARLY STOP] No val_dice improvement for {patience_counter} epochs.")
+            break
+
+    save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "final.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
+    print(f"[DONE] Training finished: {run_dirs['CURRENT_RUN_DIR']}")
+
+    if bool(cfg.get("run_test_after_train", True)):
+        test_script = script_dir / "test_cvae_trajectoryLine.py"
+        for checkpoint_mode in cfg.get("test_checkpoint_modes", ["best_dice", "best_loss"]):
+            checkpoint_path = run_dirs["CHECKPOINT_DIR"] / f"{checkpoint_mode}.pt"
+            if not checkpoint_path.exists():
+                continue
+            cmd = [sys.executable, str(test_script), "--run_path", str(run_dirs["CURRENT_RUN_DIR"]), "--checkpoint_mode", checkpoint_mode, "--output_name", checkpoint_mode]
+            print(f"[TEST] Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=False)
+
+
+if __name__ == "__main__":
+    main()

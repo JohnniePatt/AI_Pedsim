@@ -1,65 +1,77 @@
-import tensorflow as tf
+﻿import torch
+from torch.nn import functional as F
 
 
-def grayscale_01(image_m11):
-    image_01 = (image_m11 + 1.0) * 0.5
-    r = image_01[..., 0:1]
-    g = image_01[..., 1:2]
-    b = image_01[..., 2:3]
-    return 0.299 * r + 0.587 * g + 0.114 * b
+def dice_from_probs(targets, probs, smooth=1e-6):
+    targets = targets.float().reshape(targets.shape[0], -1)
+    probs = probs.float().reshape(probs.shape[0], -1)
+    intersection = (targets * probs).sum(dim=1)
+    denom = targets.sum(dim=1) + probs.sum(dim=1)
+    return ((2.0 * intersection + smooth) / (denom + smooth)).mean()
 
 
-def hard_mask_from_gray(gray, threshold):
-    return tf.cast(gray >= threshold, tf.float32)
+def iou_from_probs(targets, probs, smooth=1e-6):
+    targets = targets.float().reshape(targets.shape[0], -1)
+    probs = probs.float().reshape(probs.shape[0], -1)
+    intersection = (targets * probs).sum(dim=1)
+    union = targets.sum(dim=1) + probs.sum(dim=1) - intersection
+    return ((intersection + smooth) / (union + smooth)).mean()
 
 
-def soft_mask_from_gray(gray, threshold):
-    denom = tf.maximum(1.0 - threshold, 1e-6)
-    return tf.clip_by_value((gray - threshold) / denom, 0.0, 1.0)
+def _sobel_kernels(device, dtype):
+    gx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], device=device, dtype=dtype).view(1, 1, 3, 3)
+    gy = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], device=device, dtype=dtype).view(1, 1, 3, 3)
+    return gx, gy
 
 
-def dice_loss(pred_prob, target_mask, smooth):
-    pred = tf.reshape(pred_prob, [tf.shape(pred_prob)[0], -1])
-    target = tf.reshape(target_mask, [tf.shape(target_mask)[0], -1])
-    intersection = tf.reduce_sum(pred * target, axis=1)
-    denom = tf.reduce_sum(pred, axis=1) + tf.reduce_sum(target, axis=1)
-    dice = (2.0 * intersection + smooth) / (denom + smooth)
-    return 1.0 - tf.reduce_mean(dice)
-
-
-def sobel_edge_map(gray):
-    # shape: [N, H, W, 1, 2] -> gx, gy
-    sobel = tf.image.sobel_edges(gray)
-    gx = sobel[..., 0]
-    gy = sobel[..., 1]
-    return tf.sqrt(tf.maximum(gx * gx + gy * gy, 1e-8))
+def sobel_edge_map(x):
+    gx, gy = _sobel_kernels(x.device, x.dtype)
+    px = F.conv2d(x, gx, padding=1)
+    py = F.conv2d(x, gy, padding=1)
+    return torch.sqrt(torch.clamp(px * px + py * py, min=1e-8))
 
 
 class LossComputer:
-    def __init__(self, cfg):
+    def __init__(self, cfg, device):
         self.cfg = cfg
-        self.bce = tf.keras.losses.BinaryCrossentropy()
+        self.device = device
+        self.pos_weight = torch.tensor([float(cfg.get("foreground_weight", 8.0))], device=device)
 
-    def compute(self, pred_b, real_b, mu, logvar, kl_weight):
-        loss_l1_raw = tf.reduce_mean(tf.abs(pred_b - real_b))
-
-        real_gray = grayscale_01(real_b)
-        pred_gray = grayscale_01(pred_b)
-
-        gt_mask = hard_mask_from_gray(real_gray, self.cfg.mask_threshold)
-        pred_prob = soft_mask_from_gray(pred_gray, self.cfg.mask_threshold)
-
-        loss_bce = self.bce(gt_mask, pred_prob)
-        loss_dice = dice_loss(pred_prob, gt_mask, self.cfg.dice_smooth)
-        loss_edge = tf.reduce_mean(tf.abs(sobel_edge_map(pred_gray) - sobel_edge_map(real_gray)))
-
-        loss_kl = -0.5 * tf.reduce_mean(1.0 + logvar - tf.square(mu) - tf.exp(logvar))
-
+    def compute(self, logits, real_b, mu, logvar, kl_weight):
+        pred_prob = torch.sigmoid(logits)
+        loss_l1_raw = torch.mean(torch.abs(pred_prob - real_b))
+        loss_bce = F.binary_cross_entropy_with_logits(logits, real_b, pos_weight=self.pos_weight)
+        loss_dice_value = 1.0 - dice_from_probs(real_b, pred_prob)
+        loss_edge = torch.mean(torch.abs(sobel_edge_map(pred_prob) - sobel_edge_map(real_b)))
+        loss_kl = -0.5 * torch.mean(1.0 + logvar - mu.pow(2) - logvar.exp())
         loss_total = (
-            self.cfg.l1_loss_weight * loss_l1_raw
-            + self.cfg.mask_bce_loss_weight * loss_bce
-            + self.cfg.mask_dice_loss_weight * loss_dice
-            + self.cfg.edge_loss_weight * loss_edge
-            + kl_weight * loss_kl
+            float(self.cfg.get("l1_loss_weight", 0.5)) * loss_l1_raw
+            + float(self.cfg.get("mask_bce_loss_weight", 0.5)) * loss_bce
+            + float(self.cfg.get("mask_dice_loss_weight", 2.0)) * loss_dice_value
+            + float(self.cfg.get("edge_loss_weight", 1.0)) * loss_edge
+            + float(kl_weight) * loss_kl
         )
-        return loss_total, loss_l1_raw, loss_bce, loss_dice, loss_edge, loss_kl
+        return loss_total, loss_l1_raw, loss_bce, loss_dice_value, loss_edge, loss_kl
+
+
+def hard_metrics(y_true, y_prob, threshold):
+    import numpy as np
+
+    y_true = (y_true >= 0.5).astype(np.uint8)
+    y_pred = (y_prob >= threshold).astype(np.uint8)
+    tp = int(np.logical_and(y_true == 1, y_pred == 1).sum())
+    fp = int(np.logical_and(y_true == 0, y_pred == 1).sum())
+    fn = int(np.logical_and(y_true == 1, y_pred == 0).sum())
+    tn = int(np.logical_and(y_true == 0, y_pred == 0).sum())
+    eps = 1e-9
+    return {
+        "precision": tp / max(tp + fp, eps),
+        "recall": tp / max(tp + fn, eps),
+        "dice": (2 * tp) / max(2 * tp + fp + fn, eps),
+        "iou": tp / max(tp + fp + fn, eps),
+        "accuracy": (tp + tn) / max(tp + tn + fp + fn, eps),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+    }

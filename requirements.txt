@@ -1,5 +1,6 @@
-tensorflow==2.16.1
-keras==3.3.3
+# Default requirements for WSL2/Linux with NVIDIA GPU.
+# PyTorch uses CUDA 12.4 in this project.
+--extra-index-url https://download.pytorch.org/whl/cu124
 numpy==1.26.4
 jupedsim==1.1.1
 pedpy==1.1.3
@@ -8,10 +9,10 @@ matplotlib
 shapely
 tqdm
 psutil
-torch
 pyarrow
-torchvision
 streamlit
 transformers
 accelerate
-nvidia-cuda-nvcc-cu12
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+torchaudio==2.6.0+cu124

@@ -1,15 +1,22 @@
-# CVAE Concept
+﻿# CVAE Concept
 
-This method handles one-to-many mapping better than deterministic image-to-image generators.
+This method handles one-to-many mapping better than deterministic image-to-image models by using a latent variable `z`.
 
-- Input: map-condition image `A`
-- Target: trajectory-line image `B`
-- Latent variable `z` is sampled internally (no extra z file required)
+Current implementation:
+
+- Framework: PyTorch
+- Input: scenario image `A`
+- Target: binary trajectory-line mask `B`
+- Output: 1-channel trajectory probability map
+- Inference default: `z=0` for stable repeatable output
+- Optional stochastic inference: use `--num_samples N` during test to average N latent samples
 
 Training objective:
-- Weighted L1 reconstruction
-- Mask BCE
-- Mask Dice
+
+- L1 reconstruction on probability map
+- Weighted BCE for sparse foreground pixels
+- Dice loss
+- Sobel edge loss
 - KL regularization with annealing
 
-Inference default in this implementation uses `z=0` for stable, repeatable outputs.
+Note: this is still an image-level CVAE. For true per-agent trajectories, the next step should condition on each agent/start point and generate one trajectory per agent.
