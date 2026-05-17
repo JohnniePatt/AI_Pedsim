@@ -93,7 +93,7 @@ def resolve_input_path(path_str, script_dir):
 def load_config_from_json(json_path):
     if not os.path.exists(json_path):
         return
-    with open(json_path, 'r') as f:
+    with open(json_path, 'r', encoding='utf-8-sig') as f:
         data = json.load(f)
     for key, value in data.items():
         if hasattr(config, key):
@@ -566,7 +566,7 @@ def execute_training():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config_train.json")
+    parser.add_argument("--config", type=str, default="config_train_04.json")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(__file__)
@@ -574,12 +574,17 @@ if __name__ == "__main__":
     if cpath:
         load_config_from_json(cpath)
     else:
-        fallback = resolve_input_path("config_active.json", script_dir)
-        if fallback:
-            print(f"[WARN] Config not found: {args.config}. Falling back to {fallback}")
-            load_config_from_json(fallback)
+        fallback_train = resolve_input_path("config_train.json", script_dir)
+        if fallback_train:
+            print(f"[WARN] Config not found: {args.config}. Falling back to {fallback_train}")
+            load_config_from_json(fallback_train)
         else:
-            print(f"[WARN] No config file found. Using in-script defaults.")
+            fallback = resolve_input_path("config_active.json", script_dir)
+            if fallback:
+                print(f"[WARN] Config not found: {args.config}. Falling back to {fallback}")
+                load_config_from_json(fallback)
+            else:
+                print(f"[WARN] No config file found. Using in-script defaults.")
 
     execute_training()
 

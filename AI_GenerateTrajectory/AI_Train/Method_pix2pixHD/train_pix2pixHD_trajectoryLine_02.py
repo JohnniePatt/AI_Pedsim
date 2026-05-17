@@ -68,7 +68,7 @@ config = TrainingConfiguration()
 def load_config_from_json(json_path):
     if not os.path.exists(json_path):
         return
-    with open(json_path, 'r') as f:
+    with open(json_path, 'r', encoding='utf-8-sig') as f:
         data = json.load(f)
     for key, value in data.items():
         if hasattr(config, key):
@@ -390,7 +390,7 @@ def execute_training():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config_train.json", help="Path to training config (e.g. config_train.json)")
+    parser.add_argument("--config", type=str, default="config_train_02.json", help="Path to training config (e.g. config_train_02.json)")
     args = parser.parse_args()
     
     # If explicitly provided or default exists, load it
@@ -401,9 +401,13 @@ if __name__ == "__main__":
     if os.path.exists(cpath):
         load_config_from_json(cpath)
     else:
-        # Fallback for older naming convention
-        fallback = os.path.join(script_dir, "config_active.json")
-        if os.path.exists(fallback):
-            load_config_from_json(fallback)
+        fallback_train = os.path.join(script_dir, "config_train.json")
+        if os.path.exists(fallback_train):
+            load_config_from_json(fallback_train)
+        else:
+            # Legacy fallback
+            fallback = os.path.join(script_dir, "config_active.json")
+            if os.path.exists(fallback):
+                load_config_from_json(fallback)
         
     execute_training()

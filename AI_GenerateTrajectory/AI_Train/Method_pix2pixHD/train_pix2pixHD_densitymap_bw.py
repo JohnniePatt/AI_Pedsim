@@ -14,7 +14,7 @@ import argparse
 import json
 
 # ==========================================
-# TRAINING CONFIGURATION (Pix2PixHD v03 — Fast Mode)
+# TRAINING CONFIGURATION (Pix2PixHD DensityMap BW)
 # ==========================================
 class TrainingConfiguration:
     # 1. Hyperparameters
@@ -28,8 +28,10 @@ class TrainingConfiguration:
     # 2. Loss Weights (HD specific)
     l1_loss_weight = 10.0
     feature_matching_weight = 10.0
-    density_foreground_weight = 0.0
-    density_intensity_weight = 0.0
+    # Density BW targets are sparse. These weights prevent the generator from
+    # taking the easy shortcut of predicting an all-black image.
+    density_foreground_weight = 30.0
+    density_intensity_weight = 10.0
     density_foreground_threshold = 1.0 / 255.0
     lambda_gp = 10.0  # Gradient Penalty weight
 
@@ -46,14 +48,14 @@ class TrainingConfiguration:
     input_channels = 3
     output_channels = 3
 
-    # 6. Dataset (override via config_train.json "dataset_root")
-    dataset_root = ""  # set in config_train.json; empty = use default below
+    # 6. Dataset (fixed default for DensityMap BW; override via config if needed)
+    dataset_root = "../Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN"
     loaded_config_path = ""
 
     # 7. Run Organization
     BASE_DIR = pathlib.Path(__file__).parent.resolve()
     PROJECT_ROOT = BASE_DIR.parent.parent
-    DATASET_ROOT = PROJECT_ROOT / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1"
+    DATASET_ROOT = (PROJECT_ROOT / dataset_root).resolve()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"run_HD_{timestamp}"
@@ -92,6 +94,11 @@ def load_config_from_json(json_path):
     print(f"📂 [CONFIG] Loaded parameters from {config.loaded_config_path}")
     print(f"📂 [CONFIG] DATASET_ROOT = {config.DATASET_ROOT}")
     print(f"🖼️  [CONFIG] image_size = {config.image_size} | batch = {config.batch_size} | n_critic = {config.n_critic} | D scales = {config.num_discriminators}")
+    print(
+        f"🎯 [DENSITY BW] fg_weight={config.density_foreground_weight} | "
+        f"intensity_weight={config.density_intensity_weight} | "
+        f"threshold={config.density_foreground_threshold}"
+    )
 
 def write_progress(epoch, total_epochs, loss, val_l1):
     progress_file = config.CURRENT_RUN_DIR / "progress.json"
@@ -301,6 +308,16 @@ def execute_training():
             f"Dataset is empty at '{config.DATASET_ROOT}'. "
             f"Expected PNG files under A/train and B/train."
         )
+    if len(val_ds) == 0:
+        raise RuntimeError(
+            f"Validation dataset is empty at '{config.DATASET_ROOT}'. "
+            f"Expected PNG files under A/validation and B/validation."
+        )
+    if len(test_ds) == 0:
+        raise RuntimeError(
+            f"Test dataset is empty at '{config.DATASET_ROOT}'. "
+            f"Expected PNG files under A/test and B/test."
+        )
     train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True,  num_workers=0, pin_memory=True)
     val_loader   = DataLoader(val_ds,   batch_size=config.batch_size, shuffle=False, num_workers=0, pin_memory=True)
     test_loader  = DataLoader(test_ds,  batch_size=config.batch_size, shuffle=False, num_workers=0, pin_memory=True)
@@ -395,14 +412,22 @@ def execute_training():
 
     print("\n--- Triggering Standalone HD Test Evaluation ---")
     import subprocess
-    test_script = pathlib.Path(__file__).parent / "test_pix2pixHD_trajectoryLine_03.py"
-    subprocess.run([sys.executable, str(test_script), "--run_path", str(config.CURRENT_RUN_DIR)])
+    test_script = pathlib.Path(__file__).parent / "test_pix2pixHD_densitymap_bw.py"
+    test_config = pathlib.Path(__file__).parent / "config_test_03_bw.json"
+    subprocess.run([
+        sys.executable,
+        str(test_script),
+        "--run_path",
+        str(config.CURRENT_RUN_DIR),
+        "--config",
+        str(test_config),
+    ])
 
     print(f"🏁 HD Training Finished! Results in {config.CURRENT_RUN_DIR}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config_train_03.json")
+    parser.add_argument("--config", type=str, default="config_train_03_bw.json")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(__file__)

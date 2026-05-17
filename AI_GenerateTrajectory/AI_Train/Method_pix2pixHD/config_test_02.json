@@ -1,0 +1,5 @@
+﻿{
+  "batch_size": 1,
+  "image_size": 256,
+  "DATASET_ROOT": "../Dataset/Data_ImageUNet/Trajectory_line_dataset/Topo_HouseGAN"
+}

@@ -1,0 +1,14 @@
+﻿{
+  "epochs": 100,
+  "batch_size": 2,
+  "generator_learning_rate": 0.0002,
+  "discriminator_learning_rate": 0.0001,
+  "l1_loss_weight": 10.0,
+  "feature_matching_weight": 10.0,
+  "num_discriminators": 2,
+  "use_label_smoothing": true,
+  "n_critic": 1,
+  "image_size": 256,
+  "resume_checkpoint_path": "-",
+  "dataset_root": "../Dataset/Data_ImageUNet/Trajectory_line_dataset/Topo_HouseGAN"
+}

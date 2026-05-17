@@ -8,7 +8,17 @@ import numpy as np
 import pathlib
 import argparse
 import json
+import math
 from datetime import datetime
+
+try:
+    import lpips
+    LPIPS_AVAILABLE = True
+except Exception:
+    lpips = None
+    LPIPS_AVAILABLE = False
+
+# NOTE: Color densitymap evaluation script (no binary mask thresholding).
 
 # --- Minimal Config for Testing ---
 class TestConfig:
@@ -194,6 +204,42 @@ class GeneratorNetwork(nn.Module):
 
     def forward(self, x): return self.model(x)
 
+
+
+def _compute_ssim_global(img_pred_01, img_true_01):
+    # Global SSIM approximation over full image (stable and dependency-free).
+    x = img_pred_01.astype(np.float64)
+    y = img_true_01.astype(np.float64)
+    c1 = (0.01 ** 2)
+    c2 = (0.03 ** 2)
+    mu_x = x.mean()
+    mu_y = y.mean()
+    sigma_x2 = ((x - mu_x) ** 2).mean()
+    sigma_y2 = ((y - mu_y) ** 2).mean()
+    sigma_xy = ((x - mu_x) * (y - mu_y)).mean()
+    num = (2 * mu_x * mu_y + c1) * (2 * sigma_xy + c2)
+    den = (mu_x ** 2 + mu_y ** 2 + c1) * (sigma_x2 + sigma_y2 + c2)
+    if den == 0:
+        return 1.0
+    return float(num / den)
+
+
+def _compute_segmentation_metrics(gray_pred_01, gray_true_01, threshold):
+    pred_mask = gray_pred_01 >= threshold
+    true_mask = gray_true_01 >= threshold
+
+    tp = np.logical_and(pred_mask, true_mask).sum(dtype=np.float64)
+    fp = np.logical_and(pred_mask, ~true_mask).sum(dtype=np.float64)
+    fn = np.logical_and(~pred_mask, true_mask).sum(dtype=np.float64)
+    tn = np.logical_and(~pred_mask, ~true_mask).sum(dtype=np.float64)
+
+    eps = 1e-8
+    dice = (2.0 * tp) / (2.0 * tp + fp + fn + eps)
+    iou = tp / (tp + fp + fn + eps)
+    pixel_acc = (tp + tn) / (tp + tn + fp + fn + eps)
+    return float(dice), float(iou), float(pixel_acc)
+
+
 class Pix2PixTrajectoryDataset(Dataset):
     def __init__(self, root_directory, subset="test", image_size=256):
         self.directory_A = pathlib.Path(root_directory) / "A" / subset
@@ -290,7 +336,27 @@ def run_evaluation(run_path, config_file=None):
     # Metrics
     mae_criterion = nn.L1Loss()
     mse_criterion = nn.MSELoss()
-    test_metrics = {"mae": 0.0, "mse": 0.0}
+    test_metrics = {
+        "mae": 0.0,
+        "mse": 0.0,
+        "rmse": 0.0,
+        "ssim": 0.0,
+        "psnr": 0.0,
+        "lpips": 0.0,
+    }
+    per_image_metrics = []
+
+    lpips_model = None
+    if LPIPS_AVAILABLE:
+        try:
+            lpips_model = lpips.LPIPS(net="alex").to(device)
+            lpips_model.eval()
+            print("[METRIC] LPIPS enabled (alex)")
+        except Exception as e:
+            print(f"[WARN] LPIPS unavailable at runtime: {e}")
+            lpips_model = None
+    else:
+        print("[WARN] lpips package not installed. LPIPS will be NaN.")
 
     print(f"🧪 [TEST] Running inference on {len(test_ds)} images...")
     
@@ -306,7 +372,41 @@ def run_evaluation(run_path, config_file=None):
             tfb = generator(ta)
             
             test_metrics["mae"] += mae_criterion(tfb, tb).item()
-            test_metrics["mse"] += mse_criterion(tfb, tb).item()
+            mse_val = mse_criterion(tfb, tb).item()
+            test_metrics["mse"] += mse_val
+
+            pred_01 = ((tfb[0].detach().cpu().numpy().transpose(1, 2, 0) * 0.5) + 0.5).clip(0.0, 1.0)
+            true_01 = ((tb[0].detach().cpu().numpy().transpose(1, 2, 0) * 0.5) + 0.5).clip(0.0, 1.0)
+
+            ssim_val = _compute_ssim_global(pred_01, true_01)
+            test_metrics["ssim"] += ssim_val
+
+            mse_255 = np.mean(((pred_01 * 255.0) - (true_01 * 255.0)) ** 2)
+            psnr_val = 100.0 if mse_255 <= 1e-12 else float(10.0 * np.log10((255.0 ** 2) / mse_255))
+            test_metrics["psnr"] += psnr_val
+
+            rmse_val = float(np.sqrt(mse_val))
+            test_metrics["rmse"] += rmse_val
+
+            lpips_val = float("nan")
+            if lpips_model is not None:
+                try:
+                    lpips_val = float(lpips_model(tfb, tb).mean().item())
+                    test_metrics["lpips"] += lpips_val
+                except Exception as e:
+                    print(f"[WARN] LPIPS compute failed: {e}")
+                    lpips_val = float("nan")
+
+            file_name = str(file_name_batch[0])
+            per_image_metrics.append({
+                "file_name": file_name,
+                "mae": float(np.mean(np.abs(pred_01 - true_01))),
+                "mse": float(mse_val),
+                "rmse": float(rmse_val),
+                "ssim": float(ssim_val),
+                "psnr": float(psnr_val),
+                "lpips": float(lpips_val),
+            })
             
             # Save periodic samples (first 50)
             if i < 50:
@@ -317,15 +417,9 @@ def run_evaluation(run_path, config_file=None):
                     img = Image.fromarray(arr).resize((int(ow), int(oh)), Image.LANCZOS)
                     return img
 
-                def denorm_and_finalize_mask(x):
-                    arr = ((x.cpu().numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
-                    gray = Image.fromarray(arr).convert("L").resize((int(ow), int(oh)), Image.NEAREST)
-                    mask = np.array(gray) >= int(float(getattr(config, "mask_threshold", 0.5)) * 255)
-                    return Image.fromarray((mask.astype(np.uint8) * 255), mode="L").convert("RGB")
-                
                 res_a = denorm_and_finalize_image(ta[0])
-                res_b = denorm_and_finalize_mask(tb[0])
-                res_f = denorm_and_finalize_mask(tfb[0])
+                res_b = denorm_and_finalize_image(tb[0])
+                res_f = denorm_and_finalize_image(tfb[0])
                 
                 # 🖼️ Save files individually for better quality and UX
                 # Keep original dataset filename for stable downstream matching (UI/jet lookup).
@@ -338,24 +432,48 @@ def run_evaluation(run_path, config_file=None):
     if n_test == 0:
         print("❌ [ERROR] No images processed.")
         return
-        
     mae_score = test_metrics["mae"] / n_test
     mse_score = test_metrics["mse"] / n_test
-    rmse_score = np.sqrt(mse_score)
+    rmse_score = test_metrics["rmse"] / n_test
+    ssim_score = test_metrics["ssim"] / n_test
+    psnr_score = test_metrics["psnr"] / n_test
+    lpips_vals = [m["lpips"] for m in per_image_metrics if not math.isnan(m["lpips"])]
+    lpips_score = (sum(lpips_vals) / len(lpips_vals)) if lpips_vals else float("nan")
+
+    per_image_path = config.CURRENT_RUN_DIR / "test_evaluation_per_image.csv"
+    with open(per_image_path, "w", encoding="utf-8") as f:
+        f.write("file_name,MAE,MSE,RMSE,SSIM,PSNR,LPIPS\n")
+        for row in per_image_metrics:
+            lpips_txt = "nan" if math.isnan(row["lpips"]) else f"{row['lpips']:.6f}"
+            f.write(
+                f"{row['file_name']},{row['mae']:.6f},{row['mse']:.6f},{row['rmse']:.6f},{row['ssim']:.6f},"
+                f"{row['psnr']:.6f},{lpips_txt}\n"
+            )
 
     score_path = config.CURRENT_RUN_DIR / "test_evaluation_summary.csv"
-    with open(score_path, "w") as f:
+    with open(score_path, "w", encoding="utf-8") as f:
         f.write("metric,value\n")
-        f.write(f"MAE (L1),{mae_score:.6f}\n")
+        f.write(f"MAE,{mae_score:.6f}\n")
         f.write(f"MSE,{mse_score:.6f}\n")
         f.write(f"RMSE,{rmse_score:.6f}\n")
+        f.write(f"SSIM,{ssim_score:.6f}\n")
+        f.write(f"PSNR,{psnr_score:.6f}\n")
+        if math.isnan(lpips_score):
+            f.write("LPIPS,nan\n")
+        else:
+            f.write(f"LPIPS,{lpips_score:.6f}\n")
 
-    print(f"📊 [EVAL] Result: MAE: {mae_score:.4f} | RMSE: {rmse_score:.4f}")
+    lpips_txt = "nan" if math.isnan(lpips_score) else f"{lpips_score:.4f}"
+    print(
+        f"?? [EVAL] MAE={mae_score:.4f} | MSE={mse_score:.4f} | RMSE={rmse_score:.4f} | "
+        f"SSIM={ssim_score:.4f} | PSNR={psnr_score:.2f} | LPIPS={lpips_txt}"
+    )
+    print(f"? [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")
     print(f"✅ [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_path", type=str, required=True, help="Path to the training run folder (e.g. outputs/run_xxx)")
-    parser.add_argument("--config", type=str, default="config_test.json", help="Path to testing config (e.g. config_test.json)")
+    parser.add_argument("--config", type=str, default="config_test_03.json", help="Path to testing config (e.g. config_test_03.json)")
     args = parser.parse_args()
     run_evaluation(args.run_path, args.config)

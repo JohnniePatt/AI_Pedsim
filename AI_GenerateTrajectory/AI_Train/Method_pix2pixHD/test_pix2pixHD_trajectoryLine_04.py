@@ -146,7 +146,7 @@ class ResNetBlock(nn.Module):
         return x + self.block(x)
 
 class GeneratorNetwork(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3, n_blocks=9, decoder_mode="deconv"):
+    def __init__(self, in_channels=3, out_channels=3, n_blocks=9):
         super().__init__()
         model = [
             nn.ReflectionPad2d(3),
@@ -161,30 +161,23 @@ class GeneratorNetwork(nn.Module):
         ]
         for _ in range(n_blocks):
             model += [ResNetBlock(512)]
-        if decoder_mode == "upsample":
-            model += [
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.ReflectionPad2d(1),
-                nn.Conv2d(512, 256, 3, 1, 0),
-                nn.InstanceNorm2d(256, affine=True),
-                nn.ReLU(True),
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.ReflectionPad2d(1),
-                nn.Conv2d(256, 128, 3, 1, 0),
-                nn.InstanceNorm2d(128, affine=True),
-                nn.ReLU(True),
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.ReflectionPad2d(1),
-                nn.Conv2d(128, 64, 3, 1, 0),
-                nn.InstanceNorm2d(64, affine=True),
-                nn.ReLU(True),
-            ]
-        else:
-            model += [
-                nn.ConvTranspose2d(512, 256, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(256, affine=True), nn.ReLU(True),
-                nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(128, affine=True), nn.ReLU(True),
-                nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1), nn.InstanceNorm2d(64, affine=True), nn.ReLU(True)
-            ]
+        model += [
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(512, 256, 3, 1, 0),
+            nn.InstanceNorm2d(256, affine=True),
+            nn.ReLU(True),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(256, 128, 3, 1, 0),
+            nn.InstanceNorm2d(128, affine=True),
+            nn.ReLU(True),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(128, 64, 3, 1, 0),
+            nn.InstanceNorm2d(64, affine=True),
+            nn.ReLU(True),
+        ]
         model += [
             nn.ReflectionPad2d(3),
             nn.Conv2d(64, out_channels, 7, 1, 0),
@@ -250,32 +243,18 @@ def run_evaluation(run_path, config_file=None):
                 print(f"❌ [ERROR] No checkpoint found at {config.CHECKPOINT_DIR}")
                 return
             
-    print(f"🔄 [MODEL] Loading weights from {best_ckpt.name}...")
-    state_dict = torch.load(best_ckpt, map_location=device)
-    if isinstance(state_dict, dict) and "state_dict" in state_dict:
-        state_dict = state_dict["state_dict"]
-
-    generator = None
-    load_errors = {}
-    for mode in ("deconv", "upsample"):
-        try:
-            candidate = GeneratorNetwork(
-                int(config.input_channels), int(config.output_channels), decoder_mode=mode
-            ).to(device)
-            candidate.load_state_dict(state_dict)
-            generator = candidate
-            print(f"✅ [MODEL] Model loaded successfully. decoder_mode={mode}")
-            break
-        except Exception as e:
-            load_errors[mode] = str(e)
-
-    if generator is None:
-        print("❌ [ERROR] Failed to load model with both decoder modes.")
-        for mode, err in load_errors.items():
-            print(f"   - {mode}: {err}")
+    try:
+        print(f"🔄 [MODEL] Loading weights from {best_ckpt.name}...")
+        generator = GeneratorNetwork(int(config.input_channels), int(config.output_channels)).to(device)
+        state_dict = torch.load(best_ckpt, map_location=device)
+        if isinstance(state_dict, dict) and "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+        generator.load_state_dict(state_dict)
+        generator.eval()
+        print("✅ [MODEL] Model loaded successfully.")
+    except Exception as e:
+        print(f"❌ [ERROR] Failed to load model: {e}")
         return
-
-    generator.eval()
 
     # Data
     test_ds = Pix2PixTrajectoryDataset(config.DATASET_ROOT, "test", int(config.image_size))

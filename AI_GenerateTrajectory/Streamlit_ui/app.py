@@ -123,6 +123,19 @@ def render_manual_terminal_command(command_parts, key_suffix: str):
         st.caption("Copy and run this in your terminal (activate your venv first).")
         st.code(cmd_text, language="bash")
 
+
+def infer_pix2pixhd_variant_from_script(script_name: str) -> str:
+    m = re.search(r"_0?([2-4])\.py$", script_name)
+    if m:
+        return f"0{m.group(1)}"
+    return "default"
+
+
+def resolve_pix2pixhd_config_filename(config_type: str, profile: str) -> str:
+    if profile in {"02", "03", "04"}:
+        return f"config_{config_type}_{profile}.json"
+    return f"config_{config_type}.json"
+
 if "process_manager" not in st.session_state:
     st.session_state.process_manager = ProcessManager()
 
@@ -225,6 +238,16 @@ if st.sidebar.button(
 ):
     st.session_state.current_nav = "🧹 Data Formatter"
     st.rerun()
+
+if st.sidebar.button(
+    "🌈 Format BW to COLORJET",
+    key="btn_bw_to_colorjet",
+    use_container_width=True,
+    help="Convert BW mask outputs in test_results predictions/targets into COLORJET images while keeping MASK_ backups"
+):
+    st.session_state.current_nav = "🌈 Format BW to COLORJET"
+    st.rerun()
+
 if st.sidebar.button(
     "📊 Split data (Train,Test,Val)", 
     key="btn_split", 
@@ -405,16 +428,26 @@ if navigation == "🚀 Training model":
     
     # 📝 1. Configuration Section (Integrated)
     st.subheader("🛠 Training Configuration")
-    config_train = load_config(method_path, config_type="train")
+    train_config_filename = "config_train.json"
+    if selected_method == "Method_pix2pixHD":
+        train_profile = st.selectbox(
+            "Config Profile",
+            ["02", "03", "04", "default"],
+            index=2,
+            key="pix2pixhd_train_profile",
+            help="Separate training config per script generation to prevent mixing.",
+        )
+        train_config_filename = resolve_pix2pixhd_config_filename("train", train_profile)
+    config_train = load_config(method_path, config_type="train", config_name=train_config_filename)
     if not config_train:
         config_train = {"epochs": 100, "batch_size": 4, "learning_rate": 0.0002}
     
     with st.expander("📝 Edit Parameters", expanded=True):
-        updated_config_str = st.text_area("JSON Editor (config_train.json)", value=json.dumps(config_train, indent=4), height=250)
+        updated_config_str = st.text_area(f"JSON Editor ({train_config_filename})", value=json.dumps(config_train, indent=4), height=250)
         if st.button("💾 Save Training Configuration", use_container_width=True):
             try:
                 new_config = json.loads(updated_config_str)
-                save_config(method_path, new_config, config_type="train")
+                save_config(method_path, new_config, config_type="train", config_name=train_config_filename)
                 st.success("✅ Training configuration saved!")
                 st.rerun()
             except Exception as e: st.error(f"❌ Invalid JSON: {e}")
@@ -436,7 +469,7 @@ if navigation == "🚀 Training model":
             python_path = "python3"
         manual_train_cmd = [str(python_path), str(script_full_path)]
         if supports_config:
-            manual_train_cmd += ["--config", "config_train.json"]
+            manual_train_cmd += ["--config", train_config_filename]
 
         c1, c2 = st.columns(2)
         if c1.button("🚀 Start Training", use_container_width=True, disabled=st.session_state.process_manager.is_running):
@@ -482,15 +515,25 @@ elif navigation == "🔬 Testing model":
 
     # 🛠 1. Test Configuration
     st.subheader("🛠 Testing Configuration")
-    config_test = load_config(method_path, config_type="test")
+    test_config_filename = "config_test.json"
+    if selected_method == "Method_pix2pixHD":
+        test_profile = st.selectbox(
+            "Config Profile",
+            ["02", "03", "04", "default"],
+            index=2,
+            key="pix2pixhd_test_profile",
+            help="Separate testing config per script generation to prevent mixing.",
+        )
+        test_config_filename = resolve_pix2pixhd_config_filename("test", test_profile)
+    config_test = load_config(method_path, config_type="test", config_name=test_config_filename)
     if not config_test: config_test = {"batch_size": 1}
     
     with st.expander("📝 Edit Parameters", expanded=True):
-        updated_config_str = st.text_area("JSON Editor (config_test.json)", value=json.dumps(config_test, indent=4), height=200)
+        updated_config_str = st.text_area(f"JSON Editor ({test_config_filename})", value=json.dumps(config_test, indent=4), height=200)
         if st.button("💾 Save Testing Configuration", use_container_width=True):
             try:
                 new_config = json.loads(updated_config_str)
-                save_config(method_path, new_config, config_type="test")
+                save_config(method_path, new_config, config_type="test", config_name=test_config_filename)
                 st.success("✅ Testing configuration saved!")
                 st.rerun()
             except Exception as e: st.error(f"❌ Invalid JSON: {e}")
@@ -630,7 +673,7 @@ elif navigation == "🔬 Testing model":
                     command = [
                         str(python_path),
                         str(special_script),
-                        "--config", "config_test.json",
+                        "--config", test_config_filename,
                         "--input_case_dir", str(case_dir),
                         "--output_dir", str(session_dir),
                         "--plan_key", str(plan_key),
@@ -667,7 +710,7 @@ elif navigation == "🔬 Testing model":
                         command = [
                             str(python_path),
                             str(special_script),
-                            "--config", "config_test.json",
+                            "--config", test_config_filename,
                             "--input_case_dir", manifest["input_case_dir"],
                             "--output_dir", str(selected_session),
                             "--gt_parquet", str(gt_path),
@@ -814,7 +857,7 @@ elif navigation == "🔬 Testing model":
                 python_path = "python3"
             manual_test_cmd = [str(python_path), str(test_script_path)]
             if supports_config:
-                manual_test_cmd += ["--config", "config_test.json"]
+                manual_test_cmd += ["--config", test_config_filename]
             if supports_run_path:
                 manual_test_cmd += ["--run_path", str(run_full_path)]
             
@@ -1311,6 +1354,127 @@ elif navigation == "🧹 Data Formatter":
                         num_parquet = len(list(output_parquet_dir.rglob("*.parquet")))
                         if num_parquet > 0:
                             st.success(f"📚 Successfully formatted **{num_parquet}** parquet files in `{selected_topo}/dataswarm_parquet`.")
+
+# --- PAGE: Format BW to COLORJET ---
+elif navigation == "🌈 Format BW to COLORJET":
+    st.header("🌈 Format BW to COLORJET")
+    st.markdown(
+        "Convert BW mask images inside a run's `test_results/predictions` and `test_results/targets` "
+        "into COLORJET images. The original BW image is preserved as `MASK_<filename>`."
+    )
+
+    formatter_script = PROJECT_ROOT / "Tool_utility" / "format_bw_to_colorjet.py"
+    if not formatter_script.exists():
+        st.error(f"❌ Utility script not found: {formatter_script}")
+    else:
+        st.subheader("📁 Select Run")
+        pix2pix_result_method_path = AI_RESULT_DIR / "Method_pix2pixHD"
+        runs = get_method_runs(pix2pix_result_method_path)
+        if not runs:
+            st.warning(f"No runs found under `{pix2pix_result_method_path / 'outputs'}`.")
+        else:
+            preferred_run = "outputs/run_HD_20260517_133538"
+            default_index = runs.index(preferred_run) if preferred_run in runs else 0
+            selected_run = st.selectbox("Run Folder", runs, index=default_index)
+            run_path = pix2pix_result_method_path / selected_run
+            test_results_path = run_path / "test_results"
+
+            c1, c2 = st.columns(2)
+            c1.info(f"📂 **Run:** `{run_path.relative_to(PROJECT_ROOT)}`")
+            c2.info(f"🧪 **test_results:** `{test_results_path.relative_to(PROJECT_ROOT)}`")
+
+            st.subheader("⚙️ Formatting Settings")
+            target_dirs = st.multiselect(
+                "Folders under test_results",
+                ["predictions", "targets"],
+                default=["predictions", "targets"],
+                help="Only these folders will be processed. inputs are intentionally not touched.",
+            )
+            overwrite_colorjet = st.checkbox(
+                "Regenerate COLORJET if MASK_ backup already exists",
+                value=True,
+                help="Use this when you rerun the formatter and want to rebuild the normal filename from MASK_<filename>.",
+            )
+            dry_run = st.checkbox(
+                "Dry run only",
+                value=True,
+                help="Preview actions without renaming or overwriting files.",
+            )
+
+            if test_results_path.exists():
+                preview_rows = []
+                for dirname in target_dirs:
+                    d = test_results_path / dirname
+                    if d.exists():
+                        normal_count = len([p for p in d.glob("*.png") if not p.name.startswith("MASK_")])
+                        mask_count = len(list(d.glob("MASK_*.png")))
+                    else:
+                        normal_count = 0
+                        mask_count = 0
+                    preview_rows.append({"folder": dirname, "normal_png": normal_count, "mask_backup": mask_count})
+                if preview_rows:
+                    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+            else:
+                st.warning(f"`test_results` not found in selected run: {test_results_path}")
+
+            render_manual_terminal_command(
+                [
+                    get_python_executable(),
+                    formatter_script,
+                    "--run_path",
+                    run_path,
+                    "--dirs",
+                    *target_dirs,
+                    *(["--overwrite"] if overwrite_colorjet else []),
+                    *(["--dry_run"] if dry_run else []),
+                ],
+                "bw_to_colorjet",
+            )
+
+            if st.button(
+                "🚀 Start Format BW to COLORJET",
+                use_container_width=True,
+                disabled=st.session_state.process_manager.is_running or not target_dirs or not test_results_path.exists(),
+            ):
+                python_path = pathlib.Path(get_python_executable())
+                if not python_path.exists():
+                    python_path = "python3"
+
+                command = [
+                    str(python_path),
+                    str(formatter_script),
+                    "--run_path",
+                    str(run_path),
+                    "--dirs",
+                    *target_dirs,
+                ]
+                if overwrite_colorjet:
+                    command.append("--overwrite")
+                if dry_run:
+                    command.append("--dry_run")
+
+                st.session_state.bw_to_colorjet_logs = ""
+                st.session_state.process_manager.start_process(command, str(PROJECT_ROOT))
+                st.rerun()
+
+            if st.session_state.process_manager.is_running:
+                st.info("🔥 Formatting BW masks to COLORJET...")
+                log_container = st.empty()
+                if "bw_to_colorjet_logs" not in st.session_state:
+                    st.session_state.bw_to_colorjet_logs = ""
+                new_output = "".join(list(st.session_state.process_manager.get_output()))
+                if new_output:
+                    st.session_state.bw_to_colorjet_logs += new_output
+                log_container.code(st.session_state.bw_to_colorjet_logs)
+                time.sleep(1)
+                st.rerun()
+            else:
+                if "bw_to_colorjet_logs" in st.session_state and st.session_state.bw_to_colorjet_logs:
+                    st.subheader("Formatter Output")
+                    st.code(st.session_state.bw_to_colorjet_logs)
+                    if st.button("🧹 Clear Format BW to COLORJET Logs"):
+                        st.session_state.bw_to_colorjet_logs = ""
+                        st.rerun()
 
 # --- PAGE: Prepare Data for UNet ---
 elif navigation == "🧰 Prepare Data for UNet":

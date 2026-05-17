@@ -151,6 +151,7 @@ def _resolve_triplet_paths(result_dir, image_name):
 
 def _show_summary_table(result_dir, title="Metrics"):
     summary_path = pathlib.Path(result_dir) / "test_evaluation_summary.csv"
+    per_image_path = pathlib.Path(result_dir) / "test_evaluation_per_image.csv"
     threshold_path = pathlib.Path(result_dir) / "test_threshold_metrics.csv"
     if summary_path.exists():
         try:
@@ -164,6 +165,12 @@ def _show_summary_table(result_dir, title="Metrics"):
             st.dataframe(pd.read_csv(threshold_path), use_container_width=True)
         except Exception as e:
             st.warning(f"Could not read {threshold_path.name}: {e}")
+    if per_image_path.exists():
+        try:
+            with st.expander(f"{title} per-image metrics", expanded=False):
+                st.dataframe(pd.read_csv(per_image_path), use_container_width=True, height=420)
+        except Exception as e:
+            st.warning(f"Could not read {per_image_path.name}: {e}")
 
 def _show_single_mask_result(run_path, result_dir, title):
     result_dir = pathlib.Path(result_dir)
@@ -176,7 +183,10 @@ def _show_single_mask_result(run_path, result_dir, title):
 
     st.subheader(title)
     _show_summary_table(result_dir, title=title)
-    pred_images = sorted(list(pred_dir.glob("*.png")), key=lambda x: x.name)
+    pred_images = sorted(
+        [p for p in pred_dir.glob("*.png") if not p.name.startswith("MASK_")],
+        key=lambda x: x.name,
+    )
     jet_map = _get_density_jet_map_for_run(run_path)
     if not pred_images:
         st.info("No prediction images found.")
@@ -218,8 +228,11 @@ def _show_compare_mask_results(run_path, result_a, label_a, result_b, label_b):
     with c2:
         _show_summary_table(result_b, title=label_b)
 
-    pred_images = sorted(list(pred_a_dir.glob("*.png")), key=lambda x: x.name)
-    pred_b_names = {p.name for p in pred_b_dir.glob("*.png")}
+    pred_images = sorted(
+        [p for p in pred_a_dir.glob("*.png") if not p.name.startswith("MASK_")],
+        key=lambda x: x.name,
+    )
+    pred_b_names = {p.name for p in pred_b_dir.glob("*.png") if not p.name.startswith("MASK_")}
     pred_images = [p for p in pred_images if p.name in pred_b_names]
     if not pred_images:
         st.info("No matching prediction images found between both checkpoints.")
@@ -260,15 +273,34 @@ def show_test_evaluation(run_dir):
     if score_path.exists():
         try:
             df_score = pd.read_csv(score_path)
-            # Find common error metrics (Added ADE/FDE)
-            m_data = df_score[df_score['metric'].str.contains('MAE|MSE|RMSE|L1|mse|mae|ade|fde', case=False, na=False)]
-            if not m_data.empty:
-                # Use st.columns for metric cards
-                m_cols = st.columns(len(m_data))
-                for idx, row in enumerate(m_data.itertuples()):
-                    m_cols[idx].metric(label=row.metric.upper(), value=f"{float(row.value):.4f}")
+            # Show key metrics first (supports both legacy and new test scripts).
+            preferred_metrics = [
+                "MAE", "MSE", "RMSE", "SSIM", "PSNR", "LPIPS",
+                "L1", "ADE", "FDE",
+            ]
+            available = {str(m).strip().lower(): (m, v) for m, v in zip(df_score["metric"], df_score["value"])}
+            selected_rows = []
+            for key in preferred_metrics:
+                found = available.get(key.lower())
+                if found:
+                    selected_rows.append(found)
+
+            if selected_rows:
+                # Keep cards readable by rendering max 4 per row.
+                for start in range(0, len(selected_rows), 4):
+                    row_chunk = selected_rows[start:start + 4]
+                    row_cols = st.columns(len(row_chunk))
+                    for idx, (metric_name, metric_value) in enumerate(row_chunk):
+                        try:
+                            value_txt = f"{float(metric_value):.4f}"
+                        except Exception:
+                            value_txt = str(metric_value)
+                        row_cols[idx].metric(label=str(metric_name), value=value_txt)
+
+                with st.expander("Show All Metrics Table", expanded=False):
+                    st.dataframe(df_score, use_container_width=True)
             else:
-                st.dataframe(df_score)
+                st.dataframe(df_score, use_container_width=True)
         except Exception as e:
             st.error(f"Error loading score file: {e}")
     elif txt_score_path.exists():
@@ -323,7 +355,10 @@ def show_test_evaluation(run_dir):
     # --- Display Logic ---
     if pred_dir.exists() and input_dir.exists() and target_dir.exists():
         st.subheader("🖼 Result Comparison")
-        pred_images = sorted(list(pred_dir.glob("*.png")), key=lambda x: x.name)
+        pred_images = sorted(
+            [p for p in pred_dir.glob("*.png") if not p.name.startswith("MASK_")],
+            key=lambda x: x.name,
+        )
         jet_map = _get_density_jet_map_for_run(run_path)
         if pred_images:
             max_samples = 50
