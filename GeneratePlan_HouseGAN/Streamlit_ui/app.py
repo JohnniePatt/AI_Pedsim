@@ -325,6 +325,141 @@ def page_dashboard():
         f"คิดเป็นประมาณ {unsimulated_routes} route."
     )
 
+    csv_path = SCENARIO_ROOT / "route_information" / "all_route_information.csv"
+    if csv_path.exists():
+        try:
+            import matplotlib.pyplot as plt
+            
+            target_keys = set()
+            for plan_name in plans:
+                summary = read_json(summary_path(plan_name), {})
+                routes = summary.get("routes", [])
+                if routes:
+                    for r in routes:
+                        sn, en = r.get("start_node"), r.get("end_node")
+                        if sn and en:
+                            target_keys.add((plan_name, tuple(sorted([str(sn), str(en)]))))
+                else:
+                    plan_dir = SCENARIO_ROOT / "geo" / plan_name
+                    adjacency = build_adjacency_from_plan(plan_dir)
+                    if adjacency:
+                        first = next(iter(adjacency))
+                        if len(shortest_paths_from(adjacency, first)) == len(adjacency):
+                            all_paths = {node: shortest_paths_from(adjacency, node) for node in adjacency}
+                            diameter = max(len(path) - 1 for paths in all_paths.values() for path in paths.values())
+                            periphery = [
+                                node
+                                for node, paths in all_paths.items()
+                                if max(len(path) - 1 for path in paths.values()) == diameter
+                            ]
+                            seen = set()
+                            for i, start in enumerate(periphery):
+                                for end in periphery[i + 1 :]:
+                                    if len(all_paths[start][end]) - 1 != diameter:
+                                        continue
+                                    pair = tuple(sorted([str(start), str(end)]))
+                                    if pair not in seen:
+                                        seen.add(pair)
+                                        target_keys.add((plan_name, pair))
+
+            df_route = pd.read_csv(csv_path, usecols=["plan", "start_node", "end_node", "topology_centerline_distance_m"])
+            df_route = df_route.dropna(subset=["topology_centerline_distance_m"])
+            
+            df_route["pair_key"] = df_route.apply(lambda row: tuple(sorted([str(row["start_node"]), str(row["end_node"])])), axis=1)
+            mask = df_route.apply(lambda row: (row["plan"], row["pair_key"]) in target_keys, axis=1)
+            df_filtered = df_route[mask].drop_duplicates(subset=["plan", "pair_key"])
+
+            df_dist = df_filtered.sort_values("topology_centerline_distance_m").reset_index(drop=True)
+            df_dist["sorted_index"] = df_dist.index + 1
+
+            fig, ax = plt.subplots(figsize=(12, 4.6))
+            ax.plot(
+                df_dist["sorted_index"],
+                df_dist["topology_centerline_distance_m"],
+                color="#2563eb",
+                linewidth=1.8,
+            )
+            ax.set_xlabel("Total routes")
+            ax.set_ylabel("topology_centerline_distance_m (m)")
+            ax.set_title("Distance Profile (Filtered by actual simulated/estimated routes)")
+            ax.grid(True, alpha=0.28)
+            fig.tight_layout()
+
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+            
+            if not df_dist.empty:
+                fig_box, ax_box = plt.subplots(figsize=(12, 2.5))
+                ax_box.boxplot(
+                    df_dist["topology_centerline_distance_m"],
+                    vert=False,
+                    patch_artist=True,
+                    boxprops=dict(facecolor="#93c5fd", color="#2563eb", linewidth=1.5),
+                    medianprops=dict(color="#1e3a8a", linewidth=2),
+                    whiskerprops=dict(color="#2563eb", linewidth=1.5),
+                    capprops=dict(color="#2563eb", linewidth=1.5),
+                    flierprops=dict(marker="o", markerfacecolor="#bfdbfe", markeredgecolor="#2563eb", alpha=0.6)
+                )
+                ax_box.set_xlabel("topology_centerline_distance_m (m)")
+                ax_box.set_title("Distance Distribution (Box Plot)")
+                ax_box.set_yticks([])
+                ax_box.grid(True, alpha=0.28, axis="x")
+                fig_box.tight_layout()
+                
+                st.pyplot(fig_box, use_container_width=True)
+                plt.close(fig_box)
+
+                try:
+                    fig_kde, ax_kde = plt.subplots(figsize=(12, 3.5))
+                    # Histogram
+                    ax_kde.hist(
+                        df_dist["topology_centerline_distance_m"], 
+                        bins=30, 
+                        density=True, 
+                        color="#dbeafe", 
+                        edgecolor="#93c5fd", 
+                        alpha=0.8
+                    )
+                    # KDE Curve (Bell Curve)
+                    df_dist["topology_centerline_distance_m"].plot.kde(
+                        ax=ax_kde, 
+                        color="#2563eb", 
+                        linewidth=2
+                    )
+                    kde_lines = ax_kde.get_lines()
+                    if kde_lines:
+                        kde_x, kde_y = kde_lines[0].get_data()
+                        ax_kde.fill_between(kde_x, kde_y, color="#2563eb", alpha=0.1)
+                        
+                        x_min = df_dist["topology_centerline_distance_m"].min()
+                        x_max = df_dist["topology_centerline_distance_m"].max()
+                        padding = (x_max - x_min) * 0.1
+                        ax_kde.set_xlim(max(0, x_min - padding), x_max + padding)
+                    
+                    ax_kde.set_xlabel("topology_centerline_distance_m (m)")
+                    ax_kde.set_ylabel("Density")
+                    ax_kde.set_title("Distance Distribution (Density Curve & Histogram)")
+                    ax_kde.grid(True, alpha=0.28)
+                    fig_kde.tight_layout()
+                    
+                    st.pyplot(fig_kde, use_container_width=True)
+                    plt.close(fig_kde)
+                except Exception as kde_err:
+                    st.caption(f"Cannot load Density Curve: {kde_err}")
+
+                total_filtered_routes = len(df_dist)
+                min_dist = df_dist["topology_centerline_distance_m"].min()
+                max_dist = df_dist["topology_centerline_distance_m"].max()
+                mean_dist = df_dist["topology_centerline_distance_m"].mean()
+                
+                st.caption("### Graph Summary")
+                sc1, sc2, sc3 = st.columns(3)
+                sc1.metric("Graph Routes Count", f"{total_filtered_routes:,.0f}")
+                sc2.metric("Min Distance", f"{min_dist:,.2f} m")
+                sc3.metric("Max Distance", f"{max_dist:,.2f} m")
+        except Exception as e:
+            st.caption(f"Cannot load Distance Profile graph: {e}")
+
     latest_images = []
     for folder in ["trajectory_line", "heatmap_density", "heatmap_speed", "spawn_exit", "offset_area"]:
         root = SCENARIO_ROOT / folder
