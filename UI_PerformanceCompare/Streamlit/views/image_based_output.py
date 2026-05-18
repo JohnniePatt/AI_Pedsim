@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -97,6 +98,210 @@ def _scatter(df: pd.DataFrame, x_metric: str, y_metric: str):
     st.scatter_chart(chart_df, x=x_metric, y=y_metric, color="run", height=360)
 
 
+def _short_run_labels(run_labels: list[str]) -> dict[str, str]:
+    short_labels = [label.split(" / ")[-1] for label in run_labels]
+    if len(short_labels) == len(set(short_labels)):
+        return dict(zip(run_labels, short_labels))
+    return dict(zip(run_labels, run_labels))
+
+
+def _metric_compare_scores(
+    df: pd.DataFrame,
+    metric_options: list[str],
+    run_labels: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    score_rows = []
+    detail_rows = []
+
+    for metric in metric_options:
+        chart_df = df[["run", "file_name", metric]].dropna()
+        if chart_df.empty:
+            continue
+
+        pivot = chart_df.pivot_table(
+            index="file_name",
+            columns="run",
+            values=metric,
+            aggfunc="mean",
+        )
+        compared_runs = [label for label in run_labels if label in pivot.columns]
+        if len(compared_runs) < 2:
+            continue
+
+        pivot = pivot[compared_runs].dropna()
+        if pivot.empty:
+            continue
+
+        lower_is_better = metric in LOWER_IS_BETTER
+        best_values = pivot.min(axis=1) if lower_is_better else pivot.max(axis=1)
+        winners = pivot.eq(best_values, axis=0)
+
+        metric_winners = []
+        for file_name, winner_flags in winners.iterrows():
+            winning_runs = winner_flags[winner_flags].index.tolist()
+            winner = winning_runs[0] if len(winning_runs) == 1 else "Tie"
+            row_values = pivot.loc[file_name].to_dict()
+            metric_winners.append(winner)
+            detail_row = {
+                "metric": metric,
+                "file_name": file_name,
+                "winner": winner,
+                "best_value": best_values.loc[file_name],
+                "direction": "lower" if lower_is_better else "higher",
+            }
+            detail_row.update({f"value__{run_label}": row_values[run_label] for run_label in compared_runs})
+            detail_rows.append(detail_row)
+
+        counts = pd.Series(metric_winners).value_counts()
+        winner_order = compared_runs + (["Tie"] if "Tie" in counts.index else [])
+        counts = counts.reindex(winner_order, fill_value=0)
+        total_images = int(counts.sum())
+        for winner, score in counts.items():
+            score_rows.append(
+                {
+                    "metric": metric,
+                    "winner": winner,
+                    "score": int(score),
+                    "total_images": total_images,
+                    "win_rate": float(score) / total_images if total_images else 0.0,
+                }
+            )
+
+    return pd.DataFrame(score_rows), pd.DataFrame(detail_rows)
+
+
+def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, str]):
+    metric_scores = score_df[score_df["metric"] == metric].sort_values("score", ascending=False)
+    if metric_scores.empty:
+        st.info(f"No compare data for {metric}.")
+        return
+
+    chart_df = metric_scores.copy()
+    chart_df["winner_label"] = chart_df["winner"].map(lambda label: display_labels.get(str(label), str(label)))
+    chart_df["score"] = chart_df["score"].astype(int)
+    total = int(chart_df["score"].sum())
+    if total <= 0:
+        st.info(f"No compare data for {metric}.")
+        return
+
+    chart_df["win_rate"] = (chart_df["score"] / total * 100).round(2)
+    chart_df = chart_df[chart_df["score"] > 0]
+
+    st.markdown(f"**{metric}**")
+    chart = (
+        alt.Chart(chart_df)
+        .mark_arc(innerRadius=58, outerRadius=92)
+        .encode(
+            theta=alt.Theta("score:Q", stack=True),
+            color=alt.Color(
+                "winner_label:N",
+                title=None,
+                scale=alt.Scale(
+                    range=[
+                        "#0f766e",
+                        "#2563eb",
+                        "#d97706",
+                        "#7c3aed",
+                        "#dc2626",
+                        "#0891b2",
+                        "#4b5563",
+                        "#65a30d",
+                    ]
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("winner_label:N", title="Winner"),
+                alt.Tooltip("score:Q", title="Score"),
+                alt.Tooltip("total_images:Q", title="Images"),
+                alt.Tooltip("win_rate:Q", title="Win rate (%)"),
+            ],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_runs: list[RunInfo]):
+    st.markdown("### Metric compare")
+
+    run_labels = [run.label for run in selected_runs]
+    if len(run_labels) < 2:
+        st.info("Select at least two runs to compare metric winners.")
+        return
+
+    score_df, detail_df = _metric_compare_scores(df, metric_options, run_labels)
+    if score_df.empty:
+        st.info("No matching per-image metric rows found for the selected runs.")
+        return
+
+    display_labels = _short_run_labels(run_labels)
+    display_labels["Tie"] = "Tie"
+
+    st.caption("Each image gives 1 point per metric to the winning run. MAE, MSE, RMSE and LPIPS use lower-is-better; SSIM and PSNR use higher-is-better.")
+
+    champion_rows = []
+    for metric in metric_options:
+        metric_scores = score_df[score_df["metric"] == metric]
+        if metric_scores.empty:
+            continue
+        leader = metric_scores.sort_values(["score", "winner"], ascending=[False, True]).iloc[0]
+        champion_rows.append(
+            {
+                "metric": metric,
+                "winner": display_labels.get(str(leader["winner"]), str(leader["winner"])),
+                "score": int(leader["score"]),
+                "total_images": int(leader["total_images"]),
+                "win_rate": round(float(leader["win_rate"]) * 100, 2),
+            }
+        )
+
+    if champion_rows:
+        st.dataframe(pd.DataFrame(champion_rows), use_container_width=True, height=250)
+
+    for start in range(0, len(metric_options), 3):
+        cols = st.columns(3)
+        for col, metric in zip(cols, metric_options[start:start + 3]):
+            with col:
+                _donut_chart(score_df, metric, display_labels)
+
+    score_view = score_df.copy()
+    score_view["winner"] = score_view["winner"].map(lambda label: display_labels.get(str(label), str(label)))
+    score_view["win_rate"] = (score_view["win_rate"] * 100).round(2)
+
+    st.markdown("#### Score by metric")
+    st.dataframe(
+        score_view.sort_values(["metric", "score"], ascending=[True, False]),
+        use_container_width=True,
+        height=260,
+    )
+
+    if not detail_df.empty:
+        detail_view = detail_df.copy()
+        detail_view["winner"] = detail_view["winner"].map(lambda label: display_labels.get(str(label), str(label)))
+        detail_metric = st.selectbox(
+            "Per-image winner metric",
+            metric_options,
+            index=metric_options.index("MAE") if "MAE" in metric_options else 0,
+        )
+        detail_view = detail_view[detail_view["metric"] == detail_metric].copy()
+        value_rename = {
+            f"value__{run_label}": display_labels.get(run_label, run_label)
+            for run_label in run_labels
+            if f"value__{run_label}" in detail_view.columns
+        }
+        detail_view = detail_view.rename(columns=value_rename)
+        ordered_cols = [
+            "file_name",
+            *value_rename.values(),
+            "winner",
+            "best_value",
+            "direction",
+        ]
+        ordered_cols = [col for col in ordered_cols if col in detail_view.columns]
+        st.markdown("#### Per-image winners")
+        st.dataframe(detail_view[ordered_cols], use_container_width=True, height=360)
+
+
 def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
     frames = []
     for run in selected_runs:
@@ -190,8 +395,9 @@ def render_image_based_output():
     st.dataframe(combined[table_cols], use_container_width=True, height=360)
 
     st.markdown("### Metric Graphs")
-    graph_col1, graph_col2 = st.columns([1, 1])
     metric_options = [m for m in METRIC_ORDER if m in combined.columns]
+
+    graph_col1, graph_col2 = st.columns([1, 1])
     with graph_col1:
         hist_metric = st.selectbox("Distribution metric", metric_options, index=metric_options.index("RMSE") if "RMSE" in metric_options else 0)
         _histogram(combined, hist_metric)
@@ -200,6 +406,8 @@ def render_image_based_output():
         y_default = metric_options.index("SSIM") if "SSIM" in metric_options else min(1, len(metric_options) - 1)
         y_metric = st.selectbox("Scatter Y", metric_options, index=y_default)
         _scatter(combined, x_metric, y_metric)
+
+    _show_metric_compare(combined, metric_options, selected_runs)
 
     st.markdown("### Worst / Best Case Viewer")
     rank_metric = st.selectbox("Rank by metric", metric_options, index=metric_options.index("LPIPS") if "LPIPS" in metric_options else 0)

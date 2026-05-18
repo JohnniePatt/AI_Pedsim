@@ -8,9 +8,9 @@ APP_DIR = pathlib.Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from pages.image_based_output import render_image_based_output
-from pages.summary_output import render_summary_output
-from pages.time_series_output import render_time_series_output
+from views.image_based_output import render_image_based_output
+from views.summary_output import render_summary_output
+from views.time_series_output import render_time_series_output
 
 
 st.set_page_config(
