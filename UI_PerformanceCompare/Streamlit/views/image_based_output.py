@@ -19,6 +19,16 @@ from utils.result_scanner import RunInfo, discover_runs, get_run_by_label
 
 LOWER_IS_BETTER = {"MAE", "MSE", "RMSE", "LPIPS"}
 HIGHER_IS_BETTER = {"SSIM", "PSNR"}
+RUN_COLOR_RANGE = [
+    "#e11d48",
+    "#2563eb",
+    "#16a34a",
+    "#f97316",
+    "#7c3aed",
+    "#0891b2",
+    "#ca8a04",
+    "#4b5563",
+]
 
 
 def _format_metric(value: float, metric: str) -> str:
@@ -196,18 +206,7 @@ def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, 
             color=alt.Color(
                 "winner_label:N",
                 title=None,
-                scale=alt.Scale(
-                    range=[
-                        "#0f766e",
-                        "#2563eb",
-                        "#d97706",
-                        "#7c3aed",
-                        "#dc2626",
-                        "#0891b2",
-                        "#4b5563",
-                        "#65a30d",
-                    ]
-                ),
+                scale=alt.Scale(range=RUN_COLOR_RANGE),
             ),
             tooltip=[
                 alt.Tooltip("winner_label:N", title="Winner"),
@@ -300,6 +299,54 @@ def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_r
         ordered_cols = [col for col in ordered_cols if col in detail_view.columns]
         st.markdown("#### Per-image winners")
         st.dataframe(detail_view[ordered_cols], use_container_width=True, height=360)
+
+
+def _sample_metric_scatter(df: pd.DataFrame, metric: str, sample_order: dict[str, int]):
+    chart_df = df[["run", "file_name", metric]].dropna().copy()
+    if chart_df.empty:
+        st.info(f"No sample scatter data for {metric}.")
+        return
+
+    chart_df["sample"] = chart_df["file_name"].map(sample_order)
+    chart_df = chart_df.dropna(subset=["sample"])
+    chart_df["sample"] = chart_df["sample"].astype(int)
+
+    st.markdown(f"**{metric} by sample**")
+    chart = (
+        alt.Chart(chart_df)
+        .mark_circle(size=38, opacity=0.72)
+        .encode(
+            x=alt.X("sample:Q", title="Sample"),
+            y=alt.Y(f"{metric}:Q", title=metric),
+            color=alt.Color("run:N", title="Run", scale=alt.Scale(range=RUN_COLOR_RANGE)),
+            tooltip=[
+                alt.Tooltip("sample:Q", title="Sample"),
+                alt.Tooltip("file_name:N", title="File"),
+                alt.Tooltip("run:N", title="Run"),
+                alt.Tooltip(f"{metric}:Q", title=metric, format=".6f"),
+            ],
+        )
+        .interactive()
+        .properties(height=280)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _show_sample_metric_scatters(df: pd.DataFrame, metric_options: list[str]):
+    st.markdown("### Metric sample scatter")
+    st.caption("X is the sample index from each image file. Y is the selected metric value, with points colored by run.")
+
+    file_names = sorted(df["file_name"].dropna().unique().tolist())
+    sample_order = {file_name: idx + 1 for idx, file_name in enumerate(file_names)}
+    if not sample_order:
+        st.info("No samples found for metric scatter plots.")
+        return
+
+    for start in range(0, len(metric_options), 2):
+        cols = st.columns(2)
+        for col, metric in zip(cols, metric_options[start:start + 2]):
+            with col:
+                _sample_metric_scatter(df, metric, sample_order)
 
 
 def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
@@ -408,6 +455,7 @@ def render_image_based_output():
         _scatter(combined, x_metric, y_metric)
 
     _show_metric_compare(combined, metric_options, selected_runs)
+    _show_sample_metric_scatters(combined, metric_options)
 
     st.markdown("### Worst / Best Case Viewer")
     rank_metric = st.selectbox("Rank by metric", metric_options, index=metric_options.index("LPIPS") if "LPIPS" in metric_options else 0)
