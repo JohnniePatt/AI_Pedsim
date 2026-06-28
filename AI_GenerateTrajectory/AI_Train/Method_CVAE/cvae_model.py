@@ -58,11 +58,12 @@ class ConditionEncoder(nn.Module):
 
 
 class PosteriorEncoder(nn.Module):
-    def __init__(self, base_filters, latent_dim):
+    def __init__(self, base_filters, latent_dim, target_channels=1):
         super().__init__()
         f = int(base_filters)
+        target_channels = int(target_channels)
         self.net = nn.Sequential(
-            DownBlock(4, f),
+            DownBlock(3 + target_channels, f),
             DownBlock(f, f * 2),
             DownBlock(f * 2, f * 4),
             DownBlock(f * 4, f * 8),
@@ -72,14 +73,14 @@ class PosteriorEncoder(nn.Module):
         self.mu = nn.Linear(f * 8, int(latent_dim))
         self.logvar = nn.Linear(f * 8, int(latent_dim))
 
-    def forward(self, image_a, mask_b):
-        x = torch.cat([image_a, mask_b], dim=1)
+    def forward(self, image_a, target_b):
+        x = torch.cat([image_a, target_b], dim=1)
         x = self.net(x).flatten(1)
         return self.mu(x), self.logvar(x)
 
 
 class Decoder(nn.Module):
-    def __init__(self, image_size, base_filters, latent_dim, dropout=0.1):
+    def __init__(self, image_size, base_filters, latent_dim, dropout=0.1, target_channels=1):
         super().__init__()
         f = int(base_filters)
         self.image_size = int(image_size)
@@ -91,7 +92,7 @@ class Decoder(nn.Module):
         self.u2 = UpBlock(f * 4 + f * 4, f * 2)
         self.u1 = UpBlock(f * 2 + f * 2, f)
         self.u0 = UpBlock(f + f, max(f // 2, 16))
-        self.out = nn.Conv2d(max(f // 2, 16), 1, 3, padding=1)
+        self.out = nn.Conv2d(max(f // 2, 16), int(target_channels), 3, padding=1)
 
     def forward(self, bot, e1, e2, e3, e4, z):
         z_map = self.z_proj(z).view(z.shape[0], self.f * 4, self.bot_side, self.bot_side)
@@ -109,17 +110,30 @@ class Decoder(nn.Module):
 
 
 class CVAE(nn.Module):
-    def __init__(self, image_size, base_filters, latent_dim, dropout=0.1):
+    def __init__(self, image_size, base_filters, latent_dim, dropout=0.1, target_channels=1):
         super().__init__()
         self.cond_encoder = ConditionEncoder(base_filters)
-        self.posterior_encoder = PosteriorEncoder(base_filters, latent_dim)
-        self.decoder = Decoder(image_size, base_filters, latent_dim, dropout=dropout)
+        self.target_channels = int(target_channels)
+        self.posterior_encoder = PosteriorEncoder(base_filters, latent_dim, target_channels=self.target_channels)
+        self.decoder = Decoder(
+            image_size,
+            base_filters,
+            latent_dim,
+            dropout=dropout,
+            target_channels=self.target_channels,
+        )
         self.latent_dim = int(latent_dim)
 
-    def forward_train(self, image_a, mask_b):
+    def forward_train(self, image_a, target_b, latent_mode="posterior"):
         bot, e1, e2, e3, e4 = self.cond_encoder(image_a)
-        mu, logvar = self.posterior_encoder(image_a, mask_b)
-        z = reparameterize(mu, logvar)
+        mu, logvar = self.posterior_encoder(image_a, target_b)
+        latent_mode = str(latent_mode).lower()
+        if latent_mode in {"zero", "zeros", "infer", "inference"}:
+            z = torch.zeros_like(mu)
+        elif latent_mode in {"random", "prior"}:
+            z = torch.randn_like(mu)
+        else:
+            z = reparameterize(mu, logvar)
         logits = self.decoder(bot, e1, e2, e3, e4, z)
         return logits, mu, logvar
 

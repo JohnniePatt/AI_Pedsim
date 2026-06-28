@@ -1,5 +1,4 @@
-﻿import argparse
-import json
+import argparse
 import pathlib
 import subprocess
 import sys
@@ -9,9 +8,9 @@ import torch
 from tqdm import tqdm
 
 from cvae_config import build_train_config, make_run_dirs, save_run_snapshot, write_progress, write_summary_csv
-from cvae_data import make_dataset
+from cvae_data import make_density_dataset
 from cvae_io import save_triptych_sample
-from cvae_losses import LossComputer, dice_from_probs, iou_from_probs
+from cvae_losses import DensityLossComputer, tensor_density_metrics
 from cvae_model import CVAE
 
 
@@ -33,53 +32,76 @@ def print_system(device):
     print("=" * 70)
 
 
+def configure_torch_backend(cfg):
+    use_cudnn = bool(cfg.get("use_cudnn", True))
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.enabled = use_cudnn
+        print(f"[SYSTEM] cuDNN enabled: {torch.backends.cudnn.enabled}")
+
+
+def metric_arrays(batch_b, pred):
+    true_np = batch_b.detach().cpu().numpy()
+    pred_np = pred.detach().cpu().numpy()
+    rows = []
+    for i in range(true_np.shape[0]):
+        rows.append(tensor_density_metrics(true_np[i], pred_np[i]))
+    return rows
+
+
+def average_metric_rows(rows):
+    if not rows:
+        return {"mae": 0.0, "mse": 0.0, "rmse": 0.0, "psnr": 0.0, "ssim": 0.0}
+    return {key: float(np.mean([row[key] for row in rows])) for key in rows[0]}
+
+
 def run_epoch(model, loader, optimizer, loss_comp, device, train, epoch, total_epochs, kl_weight):
     model.train(train)
     phase = "Train" if train else "Val"
-    totals = {"total": 0.0, "l1": 0.0, "bce": 0.0, "dice_loss": 0.0, "edge": 0.0, "kl": 0.0, "dice_coef": 0.0, "iou_coef": 0.0}
+    latent_mode = str(loss_comp.cfg.get("train_latent_mode", "posterior" if train else "zero"))
+    totals = {"total": 0.0, "l1": 0.0, "mse_loss": 0.0, "edge": 0.0, "kl": 0.0}
+    metric_rows = []
     batches = 0
     progress = tqdm(loader, desc=f"{phase} {epoch:03d}/{total_epochs:03d}", leave=False, dynamic_ncols=True)
     for batch_a, batch_b, _ in progress:
         batch_a = batch_a.to(device, non_blocking=True)
         batch_b = batch_b.to(device, non_blocking=True)
         with torch.set_grad_enabled(train):
-            logits, mu, logvar = model.forward_train(batch_a, batch_b)
-            loss_total, loss_l1, loss_bce, loss_dice, loss_edge, loss_kl = loss_comp.compute(
+            logits, mu, logvar = model.forward_train(batch_a, batch_b, latent_mode=latent_mode)
+            loss_total, loss_l1, loss_mse, loss_edge, loss_kl = loss_comp.compute(
                 logits, batch_b, mu, logvar, kl_weight
             )
-            probs = torch.sigmoid(logits)
-            dice = dice_from_probs(batch_b, probs)
-            iou = iou_from_probs(batch_b, probs)
+            pred = torch.sigmoid(logits)
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 loss_total.backward()
                 optimizer.step()
         totals["total"] += float(loss_total.detach().cpu())
         totals["l1"] += float(loss_l1.detach().cpu())
-        totals["bce"] += float(loss_bce.detach().cpu())
-        totals["dice_loss"] += float(loss_dice.detach().cpu())
+        totals["mse_loss"] += float(loss_mse.detach().cpu())
         totals["edge"] += float(loss_edge.detach().cpu())
         totals["kl"] += float(loss_kl.detach().cpu())
-        totals["dice_coef"] += float(dice.detach().cpu())
-        totals["iou_coef"] += float(iou.detach().cpu())
+        metric_rows.extend(metric_arrays(batch_b, pred))
         batches += 1
+        avg_metrics = average_metric_rows(metric_rows)
         progress.set_postfix(
             total=f"{totals['total'] / batches:.4f}",
-            dice=f"{totals['dice_coef'] / batches:.4f}",
-            iou=f"{totals['iou_coef'] / batches:.4f}",
+            mae=f"{avg_metrics['mae']:.4f}",
+            ssim=f"{avg_metrics['ssim']:.4f}",
             kl=f"{totals['kl'] / batches:.4f}",
         )
-    return {k: v / max(batches, 1) for k, v in totals.items()}
+    out = {key: value / max(batches, 1) for key, value in totals.items()}
+    out.update({f"metric_{key}": value for key, value in average_metric_rows(metric_rows).items()})
+    return out
 
 
-def save_checkpoint(path, model, optimizer, epoch, cfg, best_val_dice, best_val_loss):
+def save_checkpoint(path, model, optimizer, epoch, cfg, best_val_mae, best_val_loss):
     torch.save(
         {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "config": cfg,
-            "best_val_dice": best_val_dice,
+            "best_val_mae": best_val_mae,
             "best_val_loss": best_val_loss,
         },
         path,
@@ -92,12 +114,17 @@ def save_epoch_samples(model, samples, sample_dir, epoch, device):
         for idx, (a, b) in enumerate(samples):
             a = a.to(device).unsqueeze(0)
             pred = torch.sigmoid(model.forward_infer(a))[0]
-            save_triptych_sample(a[0].detach().cpu(), pred.detach().cpu(), b.detach().cpu(), sample_dir / f"epoch_{epoch:04d}_sample_{idx:02d}.png")
+            save_triptych_sample(
+                a[0].detach().cpu(),
+                pred.detach().cpu(),
+                b.detach().cpu(),
+                sample_dir / f"epoch_{epoch:04d}_sample_{idx:02d}.png",
+            )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Train PyTorch CVAE for trajectory-line masks.")
-    parser.add_argument("--config", type=str, default="config_train.json")
+def main(default_config, target_representation, target_channels, test_script_name):
+    parser = argparse.ArgumentParser(description=f"Train CVAE density map ({target_representation}).")
+    parser.add_argument("--config", type=str, default=default_config)
     args = parser.parse_args()
 
     script_dir = pathlib.Path(__file__).parent.resolve()
@@ -108,6 +135,9 @@ def main():
             config_path = script_dir / args.config
 
     cfg = build_train_config(config_path)
+    cfg["target_representation"] = str(cfg.get("target_representation", target_representation))
+    cfg["target_channels"] = int(cfg.get("target_channels", target_channels))
+    cfg["metric_mode"] = str(cfg.get("metric_mode", "rgb" if cfg["target_channels"] == 3 else "density_scalar"))
     dataset_root = pathlib.Path(cfg["DATASET_ROOT"])
     if not dataset_root.exists():
         raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
@@ -115,29 +145,70 @@ def main():
     torch.manual_seed(int(cfg.get("seed", 42)))
     np.random.seed(int(cfg.get("seed", 42)))
     device = get_device()
+    configure_torch_backend(cfg)
     print_system(device)
 
     run_dirs = make_run_dirs(script_dir, method_name="Method_CVAE")
     cfg = save_run_snapshot(cfg, config_path, run_dirs)
     print(f"[CONFIG] Loaded: {config_path}")
     print(f"[CONFIG] Dataset: {dataset_root}")
+    print(f"[CONFIG] Target: {cfg['target_representation']} channels={cfg['target_channels']}")
     print(f"[RUN] {run_dirs['CURRENT_RUN_DIR']}")
 
-    train_loader, train_pairs = make_dataset(dataset_root, "train", cfg["batch_size"], cfg["image_size"], True, seed=cfg.get("seed", 42), num_workers=cfg.get("num_workers", 0))
-    val_loader, val_pairs = make_dataset(dataset_root, "validation", cfg["batch_size"], cfg["image_size"], False, seed=cfg.get("seed", 42), num_workers=cfg.get("num_workers", 0))
-    test_loader, test_pairs = make_dataset(dataset_root, "test", cfg["batch_size"], cfg["image_size"], False, seed=cfg.get("seed", 42), num_workers=0)
+    train_loader, train_pairs = make_density_dataset(
+        dataset_root,
+        "train",
+        cfg["batch_size"],
+        cfg["image_size"],
+        True,
+        target_representation=cfg["target_representation"],
+        seed=cfg.get("seed", 42),
+        num_workers=cfg.get("num_workers", 0),
+    )
+    val_loader, val_pairs = make_density_dataset(
+        dataset_root,
+        "validation",
+        cfg["batch_size"],
+        cfg["image_size"],
+        False,
+        target_representation=cfg["target_representation"],
+        seed=cfg.get("seed", 42),
+        num_workers=cfg.get("num_workers", 0),
+    )
+    test_loader, test_pairs = make_density_dataset(
+        dataset_root,
+        "test",
+        cfg["batch_size"],
+        cfg["image_size"],
+        False,
+        target_representation=cfg["target_representation"],
+        seed=cfg.get("seed", 42),
+        num_workers=0,
+    )
     print(f"[DATA] train={len(train_pairs)} validation={len(val_pairs)} test={len(test_pairs)}")
 
-    model = CVAE(cfg["image_size"], cfg["base_filters"], cfg["latent_dim"], dropout=cfg.get("dropout", 0.1)).to(device)
+    model = CVAE(
+        cfg["image_size"],
+        cfg["base_filters"],
+        cfg["latent_dim"],
+        dropout=cfg.get("dropout", 0.1),
+        target_channels=cfg["target_channels"],
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=int(cfg.get("reduce_lr_patience", 5)), min_lr=1e-7)
-    loss_comp = LossComputer(cfg, device)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=int(cfg.get("reduce_lr_patience", 5)),
+        min_lr=1e-7,
+    )
+    loss_comp = DensityLossComputer(cfg, device)
 
     with open(run_dirs["CHECKPOINT_DIR"] / "model_architecture.txt", "w", encoding="utf-8") as f:
         f.write(str(model))
 
     resume_path = str(cfg.get("resume_checkpoint_path", "-"))
-    best_val_dice = -1.0
+    best_val_mae = float("inf")
     best_val_loss = float("inf")
     start_epoch = 1
     if resume_path not in ("-", "", "None", "none", None):
@@ -148,7 +219,7 @@ def main():
         model.load_state_dict(checkpoint["model_state_dict"])
         if "optimizer_state_dict" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        best_val_dice = float(checkpoint.get("best_val_dice", best_val_dice))
+        best_val_mae = float(checkpoint.get("best_val_mae", best_val_mae))
         best_val_loss = float(checkpoint.get("best_val_loss", best_val_loss))
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
         print(f"[RESUME] Loaded {resume}")
@@ -178,75 +249,63 @@ def main():
             val_metrics = run_epoch(model, val_loader, optimizer, loss_comp, device, False, epoch, int(cfg["epochs"]), kl_weight)
         scheduler.step(val_metrics["total"])
 
-        row = {
-            "epoch": epoch,
-            "train_total": train_metrics["total"],
-            "train_l1": train_metrics["l1"],
-            "train_bce": train_metrics["bce"],
-            "train_dice_loss": train_metrics["dice_loss"],
-            "train_edge": train_metrics["edge"],
-            "train_kl": train_metrics["kl"],
-            "dice_coef": train_metrics["dice_coef"],
-            "iou_coef": train_metrics["iou_coef"],
-            "val_total": val_metrics["total"],
-            "val_l1": val_metrics["l1"],
-            "val_bce": val_metrics["bce"],
-            "val_dice_loss": val_metrics["dice_loss"],
-            "val_edge": val_metrics["edge"],
-            "val_kl": val_metrics["kl"],
-            "val_dice_coef": val_metrics["dice_coef"],
-            "val_iou_coef": val_metrics["iou_coef"],
-            "kl_weight": kl_weight,
-            "learning_rate": optimizer.param_groups[0]["lr"],
-        }
+        row = {"epoch": epoch, "kl_weight": kl_weight, "learning_rate": optimizer.param_groups[0]["lr"]}
+        row.update({f"train_{key}": value for key, value in train_metrics.items()})
+        row.update({f"val_{key}": value for key, value in val_metrics.items()})
         history_rows.append(row)
         write_summary_csv(run_dirs["LOG_DIR"] / "training_history.csv", history_rows)
         write_progress(progress_path, epoch, int(cfg["epochs"]), train_metrics["total"], val_metrics["total"])
 
         print(
             f"[EPOCH {epoch:03d}/{int(cfg['epochs']):03d}] "
-            f"train_total={train_metrics['total']:.4f} train_dice={train_metrics['dice_coef']:.4f} "
-            f"val_total={val_metrics['total']:.4f} val_dice={val_metrics['dice_coef']:.4f} "
-            f"kl_w={kl_weight:.4f} lr={optimizer.param_groups[0]['lr']:.2e}"
+            f"train_total={train_metrics['total']:.4f} train_mae={train_metrics['metric_mae']:.4f} "
+            f"val_total={val_metrics['total']:.4f} val_mae={val_metrics['metric_mae']:.4f} "
+            f"val_ssim={val_metrics['metric_ssim']:.4f} kl_w={kl_weight:.4f} "
+            f"lr={optimizer.param_groups[0]['lr']:.2e}"
         )
 
         if epoch % int(cfg.get("sample_every_epochs", 1)) == 0 and fixed_samples:
             save_epoch_samples(model, fixed_samples, run_dirs["SAMPLE_DIR"], epoch, device)
 
-        improved_dice = val_metrics["dice_coef"] > best_val_dice
+        improved_mae = val_metrics["metric_mae"] < best_val_mae
         improved_loss = val_metrics["total"] < best_val_loss
-        if improved_dice:
-            best_val_dice = val_metrics["dice_coef"]
+        if improved_mae:
+            best_val_mae = val_metrics["metric_mae"]
             patience_counter = 0
-            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best_dice.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
-            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
-            print(f"[CKPT] Saved best_dice.pt val_dice={best_val_dice:.4f}")
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best_mae.pt", model, optimizer, epoch, cfg, best_val_mae, best_val_loss)
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best.pt", model, optimizer, epoch, cfg, best_val_mae, best_val_loss)
+            print(f"[CKPT] Saved best_mae.pt val_mae={best_val_mae:.6f}")
         else:
             patience_counter += 1
         if improved_loss:
             best_val_loss = val_metrics["total"]
-            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best_loss.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
-            print(f"[CKPT] Saved best_loss.pt val_total={best_val_loss:.4f}")
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "best_loss.pt", model, optimizer, epoch, cfg, best_val_mae, best_val_loss)
+            print(f"[CKPT] Saved best_loss.pt val_total={best_val_loss:.6f}")
 
         if epoch % int(cfg.get("checkpoint_every_epochs", 10)) == 0:
-            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / f"epoch_{epoch:04d}.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
+            save_checkpoint(run_dirs["CHECKPOINT_DIR"] / f"epoch_{epoch:04d}.pt", model, optimizer, epoch, cfg, best_val_mae, best_val_loss)
         if patience_counter >= int(cfg.get("early_stopping_patience", 10)):
-            print(f"[EARLY STOP] No val_dice improvement for {patience_counter} epochs.")
+            print(f"[EARLY STOP] No val_mae improvement for {patience_counter} epochs.")
             break
 
-    save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "final.pt", model, optimizer, epoch, cfg, best_val_dice, best_val_loss)
+    save_checkpoint(run_dirs["CHECKPOINT_DIR"] / "final.pt", model, optimizer, epoch, cfg, best_val_mae, best_val_loss)
     print(f"[DONE] Training finished: {run_dirs['CURRENT_RUN_DIR']}")
 
     if bool(cfg.get("run_test_after_train", True)):
-        test_script = script_dir / "test_cvae_trajectoryLine.py"
-        for checkpoint_mode in cfg.get("test_checkpoint_modes", ["best_dice", "best_loss"]):
+        test_script = script_dir / test_script_name
+        for checkpoint_mode in cfg.get("test_checkpoint_modes", ["best_mae", "best_loss"]):
             checkpoint_path = run_dirs["CHECKPOINT_DIR"] / f"{checkpoint_mode}.pt"
             if not checkpoint_path.exists():
                 continue
-            cmd = [sys.executable, str(test_script), "--run_path", str(run_dirs["CURRENT_RUN_DIR"]), "--checkpoint_mode", checkpoint_mode, "--output_name", checkpoint_mode]
+            cmd = [
+                sys.executable,
+                str(test_script),
+                "--run_path",
+                str(run_dirs["CURRENT_RUN_DIR"]),
+                "--checkpoint_mode",
+                checkpoint_mode,
+                "--output_name",
+                checkpoint_mode,
+            ]
             print(f"[TEST] Running: {' '.join(cmd)}")
             subprocess.run(cmd, check=False)
-
-
-if __name__ == "__main__":
-    main()

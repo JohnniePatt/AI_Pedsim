@@ -80,6 +80,7 @@ def resolve_run_path(run_path: str) -> pathlib.Path:
     candidates = [
         project_root / run_path,
         project_root / "AI_GenerateTrajectory" / "AI_Result" / "Method_pix2pixHD" / "outputs" / run_path,
+        project_root / "AI_GenerateTrajectory" / "AI_Result" / "Method_CVAE" / "outputs" / run_path,
     ]
     for candidate in candidates:
         if candidate.exists():

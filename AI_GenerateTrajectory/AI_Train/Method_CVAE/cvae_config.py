@@ -1,4 +1,4 @@
-﻿import csv
+import csv
 import json
 import pathlib
 from datetime import datetime
@@ -33,14 +33,23 @@ def build_train_config(config_path: pathlib.Path) -> dict:
         "latent_dim": 32,
         "base_filters": 32,
         "dropout": 0.1,
-        "l1_loss_weight": 0.5,
-        "mask_bce_loss_weight": 0.5,
-        "mask_dice_loss_weight": 2.0,
-        "edge_loss_weight": 1.0,
-        "foreground_weight": 8.0,
+        "use_cudnn": False,
+        "target_representation": "bw",
+        "target_channels": 1,
+        "metric_mode": "density_scalar",
+        "l1_loss_weight": 1.0,
+        "mse_loss_weight": 0.25,
+        "edge_loss_weight": 0.5,
+        "density_foreground_weight": 30.0,
+        "density_intensity_weight": 10.0,
+        "density_foreground_threshold": 1.0 / 255.0,
+        "foreground_l1_loss_weight": 0.0,
+        "mass_loss_weight": 0.0,
+        "gamma_l1_loss_weight": 0.0,
+        "density_gamma_loss": 1.0,
+        "train_latent_mode": "posterior",
         "kl_weight": 0.01,
         "kl_anneal_epochs": 10,
-        "mask_threshold": 0.65,
         "sample_count": 4,
         "sample_every_epochs": 1,
         "checkpoint_every_epochs": 10,
@@ -49,11 +58,12 @@ def build_train_config(config_path: pathlib.Path) -> dict:
         "num_workers": 4,
         "resume_checkpoint_path": "-",
         "run_test_after_train": True,
-        "test_checkpoint_modes": ["best_dice", "best_loss"],
-        "dataset_root": "../Dataset/Data_ImageUNet/Trajectory_line_mask_dataset/Topo_HouseGAN",
+        "test_checkpoint_modes": ["best_mae", "best_loss"],
+        "dataset_root": "../Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN",
     }
     cfg.update(load_json_config(config_path))
     cfg["image_size"] = int(((int(cfg["image_size"]) + 31) // 32) * 32)
+    cfg["target_channels"] = int(cfg["target_channels"])
     cfg["BASE_DIR"] = str(script_dir)
     cfg["PROJECT_ROOT"] = str(project_root)
     cfg["DATASET_ROOT"] = str(resolve_path(cfg["dataset_root"], project_root))
@@ -87,6 +97,7 @@ def save_run_snapshot(cfg: dict, config_path: pathlib.Path, run_dirs: dict[str, 
     snapshot.update({k: str(v) for k, v in run_dirs.items()})
     snapshot["run_name"] = current_run_dir.name
     snapshot["framework"] = "pytorch"
+    snapshot["task"] = "density_map_cvae"
     with open(current_run_dir / "run_config_snapshot.json", "w", encoding="utf-8") as f:
         json.dump(snapshot, f, indent=4)
     if config_path.exists():
@@ -127,10 +138,12 @@ class TestConfig:
         self.latent_dim = 32
         self.base_filters = 32
         self.dropout = 0.1
-        self.mask_threshold = 0.65
-        self.export_thresholds = [0.5, 0.6, 0.65, 0.7, 0.8]
+        self.use_cudnn = False
+        self.target_representation = "bw"
+        self.target_channels = 1
+        self.metric_mode = "density_scalar"
         self.num_samples = 1
-        self.DATASET_ROOT = resolve_path("../Dataset/Data_ImageUNet/Trajectory_line_mask_dataset/Topo_HouseGAN", project_root)
+        self.DATASET_ROOT = resolve_path("../Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN", project_root)
 
         rp = pathlib.Path(run_path)
         if not rp.is_absolute():
@@ -163,6 +176,7 @@ class TestConfig:
                         key = "DATASET_ROOT"
                     setattr(self, key, value)
 
+        self.target_channels = int(getattr(self, "target_channels", 1))
         self.CHECKPOINT_DIR = self.CURRENT_RUN_DIR / "checkpoints"
         self.TEST_RESULT_DIR = self.CURRENT_RUN_DIR / "test_results"
         self.FINAL_EVALUATION_DIR = self.CURRENT_RUN_DIR / "final_evaluation"

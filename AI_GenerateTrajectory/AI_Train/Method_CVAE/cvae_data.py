@@ -1,4 +1,4 @@
-﻿import pathlib
+import pathlib
 
 import numpy as np
 import torch
@@ -7,7 +7,6 @@ from torch.utils.data import DataLoader, Dataset
 
 
 BILINEAR = Image.Resampling.BILINEAR if hasattr(Image, "Resampling") else Image.BILINEAR
-NEAREST = Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST
 
 
 def list_pair_files(dataset_root, subset, image_size=None):
@@ -37,14 +36,19 @@ def list_pair_files(dataset_root, subset, image_size=None):
     return dir_a, dir_b, pairs
 
 
-class CVAETrajectoryDataset(Dataset):
-    def __init__(self, dataset_root, subset: str, image_size: int):
+class CVAEDensityMapDataset(Dataset):
+    def __init__(self, dataset_root, subset: str, image_size: int, target_representation: str = "bw"):
         self.dataset_root = pathlib.Path(dataset_root)
         self.subset = subset
         self.image_size = int(image_size)
+        self.target_representation = str(target_representation).lower()
         self.dir_a, self.dir_b, self.pairs = list_pair_files(self.dataset_root, subset, self.image_size)
         if not self.pairs:
             raise RuntimeError(f"[DATASET] {subset} split is empty at {self.dir_a}")
+
+    @property
+    def target_channels(self):
+        return 3 if self.target_representation in {"color", "colorjet", "rgb", "jet"} else 1
 
     def __len__(self):
         return len(self.pairs)
@@ -53,16 +57,23 @@ class CVAETrajectoryDataset(Dataset):
         a_path = self.pairs[index]
         b_path = self.dir_b / a_path.name
         a = Image.open(a_path).convert("RGB").resize((self.image_size, self.image_size), BILINEAR)
-        b = Image.open(b_path).convert("L").resize((self.image_size, self.image_size), NEAREST)
         a_arr = np.asarray(a, dtype=np.float32) / 255.0
-        b_arr = (np.asarray(b, dtype=np.float32) >= 128).astype(np.float32)
         a_tensor = torch.from_numpy(a_arr).permute(2, 0, 1).contiguous()
-        b_tensor = torch.from_numpy(b_arr[None, ...]).contiguous()
+        b_tensor = load_density_target(b_path, self.image_size, self.target_representation)
         return a_tensor, b_tensor, a_path.name
 
 
-def make_dataset(dataset_root, subset, batch_size, image_size, shuffle, seed=42, num_workers=0):
-    dataset = CVAETrajectoryDataset(dataset_root, subset, image_size)
+def make_density_dataset(
+    dataset_root,
+    subset,
+    batch_size,
+    image_size,
+    shuffle,
+    target_representation="bw",
+    seed=42,
+    num_workers=0,
+):
+    dataset = CVAEDensityMapDataset(dataset_root, subset, image_size, target_representation=target_representation)
     generator = torch.Generator()
     generator.manual_seed(int(seed))
     loader = DataLoader(
@@ -77,25 +88,21 @@ def make_dataset(dataset_root, subset, batch_size, image_size, shuffle, seed=42,
     return loader, [(str(p), str(dataset.dir_b / p.name)) for p in dataset.pairs]
 
 
-def list_test_pairs(dataset_root):
-    return list_pair_files(dataset_root, "test", image_size="original")
-
-
 def load_image(path, image_size, method="bicubic"):
-    resample = NEAREST if method == "nearest" else BILINEAR
     img = Image.open(path)
     orig_w, orig_h = img.size
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    img = img.resize((int(image_size), int(image_size)), resample)
+    img = img.convert("RGB").resize((int(image_size), int(image_size)), BILINEAR)
     arr = np.asarray(img, dtype=np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
     return tensor, orig_w, orig_h
 
 
-def load_mask(path, image_size):
-    img = Image.open(path).convert("L")
-    orig_w, orig_h = img.size
-    img = img.resize((int(image_size), int(image_size)), NEAREST)
-    arr = (np.asarray(img, dtype=np.float32) >= 128).astype(np.float32)
-    return torch.from_numpy(arr[None, ...]).contiguous(), orig_w, orig_h
+def load_density_target(path, image_size, target_representation="bw"):
+    target_representation = str(target_representation).lower()
+    if target_representation in {"color", "colorjet", "rgb", "jet"}:
+        img = Image.open(path).convert("RGB").resize((int(image_size), int(image_size)), BILINEAR)
+        arr = np.asarray(img, dtype=np.float32) / 255.0
+        return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+    img = Image.open(path).convert("L").resize((int(image_size), int(image_size)), BILINEAR)
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr[None, ...]).contiguous()

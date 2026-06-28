@@ -149,6 +149,35 @@ def _resolve_triplet_paths(result_dir, image_name):
     target_path = result_dir / "targets" / image_name
     return input_path, pred_path, target_path
 
+def _is_cvae_run(run_path):
+    return "Method_CVAE" in pathlib.Path(run_path).parts
+
+def _has_mask_backups(result_dir):
+    result_dir = pathlib.Path(result_dir)
+    return (
+        any((result_dir / "predictions").glob("MASK_*.png"))
+        or any((result_dir / "targets").glob("MASK_*.png"))
+    )
+
+def _select_display_path(image_dir, image_name, use_mask):
+    image_dir = pathlib.Path(image_dir)
+    if use_mask:
+        mask_path = image_dir / f"MASK_{image_name}"
+        if mask_path.exists():
+            return mask_path
+    return image_dir / image_name
+
+def _mask_display_selector(result_dir, key_prefix):
+    if not _has_mask_backups(result_dir):
+        return False
+    option = st.radio(
+        "Image display format",
+        options=["Normal / ColorJet", "MASK / grayscale"],
+        horizontal=True,
+        key=f"{key_prefix}_{abs(hash(str(pathlib.Path(result_dir))))}",
+    )
+    return option.startswith("MASK")
+
 def _show_summary_table(result_dir, title="Metrics"):
     summary_path = pathlib.Path(result_dir) / "test_evaluation_summary.csv"
     per_image_path = pathlib.Path(result_dir) / "test_evaluation_per_image.csv"
@@ -183,6 +212,7 @@ def _show_single_mask_result(run_path, result_dir, title):
 
     st.subheader(title)
     _show_summary_table(result_dir, title=title)
+    use_mask_display = _mask_display_selector(result_dir, "single_mask_display")
     pred_images = sorted(
         [p for p in pred_dir.glob("*.png") if not p.name.startswith("MASK_")],
         key=lambda x: x.name,
@@ -195,17 +225,19 @@ def _show_single_mask_result(run_path, result_dir, title):
     max_samples = 50
     h_col1, h_col2, h_col3, h_col4 = st.columns(4)
     h_col1.caption("INPUT (Scenario)")
-    h_col2.caption("PREDICTION (AI)")
-    h_col3.caption("TARGET (Reality)")
+    h_col2.caption("PREDICTION (AI MASK)" if use_mask_display else "PREDICTION (AI)")
+    h_col3.caption("TARGET (Reality MASK)" if use_mask_display else "TARGET (Reality)")
     h_col4.caption("TARGET (Reality color jet)")
     for idx, p_path in enumerate(pred_images[:max_samples]):
         i_path, _, t_path = _resolve_triplet_paths(result_dir, p_path.name)
+        pred_display_path = _select_display_path(pred_dir, p_path.name, use_mask_display)
+        target_display_path = _select_display_path(target_dir, p_path.name, use_mask_display)
         jet_path = jet_map.get(idx)
-        if i_path.exists() and t_path.exists():
+        if i_path.exists() and pred_display_path.exists() and target_display_path.exists():
             r_col1, r_col2, r_col3, r_col4 = st.columns(4)
             r_col1.image(str(i_path), use_container_width=True)
-            r_col2.image(str(p_path), use_container_width=True)
-            r_col3.image(str(t_path), use_container_width=True)
+            r_col2.image(str(pred_display_path), use_container_width=True)
+            r_col3.image(str(target_display_path), use_container_width=True)
             if jet_path and jet_path.exists():
                 r_col4.image(str(jet_path), use_container_width=True)
             else:
@@ -319,8 +351,17 @@ def show_test_evaluation(run_dir):
     
     st.divider()
 
+    pred_dir = test_results_dir / "predictions"
+    input_dir = test_results_dir / "inputs"
+    target_dir = test_results_dir / "targets"
+    has_root_grid = pred_dir.exists() and input_dir.exists() and target_dir.exists()
+
     nested_mask_results = []
-    for result_name in ["best_dice", "best_loss", "final"]:
+    is_cvae = _is_cvae_run(run_path)
+    checkpoint_order = ["best_mae", "best_loss", "final"] if is_cvae else ["best_dice", "best_loss", "final"]
+    compare_a = "best_mae" if is_cvae else "best_dice"
+    checkpoint_label = "CVAE checkpoint result" if is_cvae else "UNet checkpoint result"
+    for result_name in checkpoint_order:
         candidate = test_results_dir / result_name
         if (candidate / "predictions").exists():
             nested_mask_results.append((result_name, candidate))
@@ -328,32 +369,37 @@ def show_test_evaluation(run_dir):
     if nested_mask_results:
         result_map = dict(nested_mask_results)
         options = []
-        if "best_dice" in result_map and "best_loss" in result_map:
-            options.append("Compare: best_dice vs best_loss")
+        if compare_a in result_map and "best_loss" in result_map:
+            options.append(f"Compare: {compare_a} vs best_loss")
         options.extend([name for name, _ in nested_mask_results])
-        selected_result = st.selectbox("UNet checkpoint result", options=options)
-        if selected_result.startswith("Compare"):
-            _show_compare_mask_results(
-                run_path,
-                result_map["best_dice"],
-                "best_dice",
-                result_map["best_loss"],
-                "best_loss",
-            )
-        else:
-            _show_single_mask_result(run_path, result_map[selected_result], f"Result Comparison: {selected_result}")
-        return
+
+        nested_container = st.expander("Checkpoint-specific results", expanded=False) if has_root_grid else st.container()
+        with nested_container:
+            selected_result = st.selectbox(checkpoint_label, options=options)
+            if selected_result.startswith("Compare"):
+                _show_compare_mask_results(
+                    run_path,
+                    result_map[compare_a],
+                    compare_a,
+                    result_map["best_loss"],
+                    "best_loss",
+                )
+            else:
+                _show_single_mask_result(run_path, result_map[selected_result], f"Result Comparison: {selected_result}")
+
+        if not has_root_grid:
+            return
+
+        st.divider()
+        st.caption("Published final result view. For CVAE this is the Pix2PixHD-style export from the checkpoint selected by the test script.")
 
     # 2. Comparison Grid (Inputs vs Predictions vs Targets - Pix2Pix Style)
-    pred_dir = test_results_dir / "predictions"
-    input_dir = test_results_dir / "inputs"
-    target_dir = test_results_dir / "targets"
 
     # 3. Trajectory Plot (Recursive Generation - LSTM style)
     traj_dir = test_results_dir / "trajectories"
 
     # --- Display Logic ---
-    if pred_dir.exists() and input_dir.exists() and target_dir.exists():
+    if has_root_grid:
         st.subheader("🖼 Result Comparison")
         pred_images = sorted(
             [p for p in pred_dir.glob("*.png") if not p.name.startswith("MASK_")],
@@ -363,6 +409,9 @@ def show_test_evaluation(run_dir):
         if pred_images:
             max_samples = 50
             samples_to_show = pred_images[:max_samples]
+            use_mask_display = _mask_display_selector(test_results_dir, "root_mask_display")
+            if use_mask_display:
+                st.caption("Showing MASK_ grayscale backups for prediction and target images.")
             with st.container():
                 h_col1, h_col2, h_col3, h_col4 = st.columns(4)
                 h_col1.caption("⬅️ INPUT (Scenario)")
@@ -396,11 +445,13 @@ def show_test_evaluation(run_dir):
                         idx_match = re.search(r"(\d+)", pathlib.Path(stem).stem)
                         jet_path = jet_map.get(int(idx_match.group(1))) if idx_match else None
 
-                    if i_path.exists() and t_path.exists():
+                    pred_display_path = _select_display_path(pred_dir, p_path.name, use_mask_display)
+                    target_display_path = _select_display_path(target_dir, p_path.name, use_mask_display)
+                    if i_path.exists() and pred_display_path.exists() and target_display_path.exists():
                         r_col1, r_col2, r_col3, r_col4 = st.columns(4)
                         r_col1.image(str(i_path), use_container_width=True)
-                        r_col2.image(str(p_path), use_container_width=True)
-                        r_col3.image(str(t_path), use_container_width=True)
+                        r_col2.image(str(pred_display_path), use_container_width=True)
+                        r_col3.image(str(target_display_path), use_container_width=True)
                         if jet_path and jet_path.exists():
                             r_col4.image(str(jet_path), use_container_width=True)
                         else:

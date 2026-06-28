@@ -1368,15 +1368,30 @@ elif navigation == "🌈 Format BW to COLORJET":
         st.error(f"❌ Utility script not found: {formatter_script}")
     else:
         st.subheader("📁 Select Run")
-        pix2pix_result_method_path = AI_RESULT_DIR / "Method_pix2pixHD"
-        runs = get_method_runs(pix2pix_result_method_path)
+        formatter_methods = ["Method_pix2pixHD", "Method_CVAE"]
+        existing_formatter_methods = [
+            method for method in formatter_methods
+            if (AI_RESULT_DIR / method / "outputs").exists()
+        ] or formatter_methods
+        selected_formatter_method = st.selectbox(
+            "Result Method",
+            existing_formatter_methods,
+            index=0,
+            help="Choose which method's test_results should be converted from BW grayscale to COLORJET.",
+        )
+        result_method_path = AI_RESULT_DIR / selected_formatter_method
+        runs = get_method_runs(result_method_path)
         if not runs:
-            st.warning(f"No runs found under `{pix2pix_result_method_path / 'outputs'}`.")
+            st.warning(f"No runs found under `{result_method_path / 'outputs'}`.")
         else:
-            preferred_run = "outputs/run_HD_20260517_133538"
+            preferred_run = (
+                "outputs/run_HD_20260517_133538"
+                if selected_formatter_method == "Method_pix2pixHD"
+                else "outputs/run_CVAE_20260627_193237"
+            )
             default_index = runs.index(preferred_run) if preferred_run in runs else 0
             selected_run = st.selectbox("Run Folder", runs, index=default_index)
-            run_path = pix2pix_result_method_path / selected_run
+            run_path = result_method_path / selected_run
             test_results_path = run_path / "test_results"
 
             c1, c2 = st.columns(2)
