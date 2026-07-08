@@ -1368,7 +1368,7 @@ elif navigation == "🌈 Format BW to COLORJET":
         st.error(f"❌ Utility script not found: {formatter_script}")
     else:
         st.subheader("📁 Select Run")
-        formatter_methods = ["Method_pix2pixHD", "Method_CVAE"]
+        formatter_methods = ["Method_pix2pixHD", "Method_CVAE", "Method_PlainUnet"]
         existing_formatter_methods = [
             method for method in formatter_methods
             if (AI_RESULT_DIR / method / "outputs").exists()
@@ -1388,6 +1388,8 @@ elif navigation == "🌈 Format BW to COLORJET":
                 "outputs/run_HD_20260517_133538"
                 if selected_formatter_method == "Method_pix2pixHD"
                 else "outputs/run_CVAE_20260627_193237"
+                if selected_formatter_method == "Method_CVAE"
+                else ""
             )
             default_index = runs.index(preferred_run) if preferred_run in runs else 0
             selected_run = st.selectbox("Run Folder", runs, index=default_index)

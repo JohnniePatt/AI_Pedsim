@@ -3,6 +3,7 @@ import pandas as pd
 import pathlib
 import json
 import re
+import numpy as np
 from PIL import Image
 
 
@@ -168,15 +169,32 @@ def _select_display_path(image_dir, image_name, use_mask):
     return image_dir / image_name
 
 def _mask_display_selector(result_dir, key_prefix):
-    if not _has_mask_backups(result_dir):
-        return False
-    option = st.radio(
-        "Image display format",
-        options=["Normal / ColorJet", "MASK / grayscale"],
-        horizontal=True,
-        key=f"{key_prefix}_{abs(hash(str(pathlib.Path(result_dir))))}",
-    )
-    return option.startswith("MASK")
+    c1, c2 = st.columns([3, 2])
+    
+    with c1:
+        if _has_mask_backups(result_dir):
+            option = st.radio(
+                "Image display format",
+                options=["Normal / ColorJet", "MASK / grayscale"],
+                horizontal=True,
+                key=f"{key_prefix}_fmt_{abs(hash(str(pathlib.Path(result_dir))))}",
+            )
+            use_mask = option.startswith("MASK")
+        else:
+            st.caption("Image display format")
+            st.markdown("Normal / ColorJet")
+            use_mask = False
+            
+    with c2:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        show_layout = st.checkbox(
+            "Show layout outlines",
+            value=True,
+            key=f"{key_prefix}_lyt_{abs(hash(str(pathlib.Path(result_dir))))}",
+            help="Overlay the room layout walls outline on predictions and targets."
+        )
+        
+    return use_mask, show_layout
 
 def _show_summary_table(result_dir, title="Metrics"):
     summary_path = pathlib.Path(result_dir) / "test_evaluation_summary.csv"
@@ -201,6 +219,45 @@ def _show_summary_table(result_dir, title="Metrics"):
         except Exception as e:
             st.warning(f"Could not read {per_image_path.name}: {e}")
 
+def _get_layout_borders(input_path, thickness=1):
+    """
+    Extract a 1-pixel binary mask along the inner boundary of the walkable area.
+    This corresponds to the wall outline drawn on the inside edge of the rooms.
+    Since all doorways in the dataset are at least 2 pixels wide, a 1-pixel erosion
+    keeps the center of the doorways open, ensuring they are never blocked!
+    """
+    try:
+        img = Image.open(input_path).convert("RGB")
+        arr = np.array(img)
+        walkable = (arr[:, :, 0] > 50) | (arr[:, :, 1] > 50) | (arr[:, :, 2] > 50)
+        
+        current = walkable.copy()
+        for _ in range(thickness):
+            eroded = current.copy()
+            eroded[1:, :] &= current[:-1, :]
+            eroded[:-1, :] &= current[1:, :]
+            eroded[:, 1:] &= current[:, :-1]
+            eroded[:, :-1] &= current[:, 1:]
+            current = eroded
+            
+        borders = walkable & ~current
+        return borders
+    except Exception:
+        return None
+
+def _overlay_borders(image_path, borders, color=[220, 220, 220]):
+    """
+    Read an image, overlay the binary borders mask on top of it, and return a PIL Image.
+    """
+    try:
+        img = Image.open(image_path)
+        img_rgb = img.convert("RGB")
+        arr = np.array(img_rgb)
+        arr[borders] = color
+        return Image.fromarray(arr)
+    except Exception:
+        return image_path
+
 def _show_single_mask_result(run_path, result_dir, title):
     result_dir = pathlib.Path(result_dir)
     pred_dir = result_dir / "predictions"
@@ -212,7 +269,7 @@ def _show_single_mask_result(run_path, result_dir, title):
 
     st.subheader(title)
     _show_summary_table(result_dir, title=title)
-    use_mask_display = _mask_display_selector(result_dir, "single_mask_display")
+    use_mask_display, show_layout = _mask_display_selector(result_dir, "single_mask_display")
     pred_images = sorted(
         [p for p in pred_dir.glob("*.png") if not p.name.startswith("MASK_")],
         key=lambda x: x.name,
@@ -234,10 +291,19 @@ def _show_single_mask_result(run_path, result_dir, title):
         target_display_path = _select_display_path(target_dir, p_path.name, use_mask_display)
         jet_path = jet_map.get(idx)
         if i_path.exists() and pred_display_path.exists() and target_display_path.exists():
+            borders = _get_layout_borders(i_path) if show_layout else None
+            if borders is not None:
+                color = [255, 255, 255] if use_mask_display else [220, 220, 220]
+                pred_img = _overlay_borders(pred_display_path, borders, color)
+                target_img = _overlay_borders(target_display_path, borders, color)
+            else:
+                pred_img = str(pred_display_path)
+                target_img = str(target_display_path)
+
             r_col1, r_col2, r_col3, r_col4 = st.columns(4)
             r_col1.image(str(i_path), use_container_width=True)
-            r_col2.image(str(pred_display_path), use_container_width=True)
-            r_col3.image(str(target_display_path), use_container_width=True)
+            r_col2.image(pred_img, use_container_width=True)
+            r_col3.image(target_img, use_container_width=True)
             if jet_path and jet_path.exists():
                 r_col4.image(str(jet_path), use_container_width=True)
             else:
@@ -260,6 +326,12 @@ def _show_compare_mask_results(run_path, result_a, label_a, result_b, label_b):
     with c2:
         _show_summary_table(result_b, title=label_b)
 
+    show_layout = st.checkbox(
+        "Show layout outlines",
+        value=True,
+        key=f"compare_lyt_{abs(hash(str(result_a)) + hash(str(result_b)))}"
+    )
+
     pred_images = sorted(
         [p for p in pred_a_dir.glob("*.png") if not p.name.startswith("MASK_")],
         key=lambda x: x.name,
@@ -279,11 +351,22 @@ def _show_compare_mask_results(run_path, result_a, label_a, result_b, label_b):
         i_path, _, t_path = _resolve_triplet_paths(result_a, p_a.name)
         p_b = pred_b_dir / p_a.name
         if i_path.exists() and t_path.exists() and p_b.exists():
+            borders = _get_layout_borders(i_path) if show_layout else None
+            if borders is not None:
+                color = [220, 220, 220]
+                p_a_img = _overlay_borders(p_a, borders, color)
+                p_b_img = _overlay_borders(p_b, borders, color)
+                t_img = _overlay_borders(t_path, borders, color)
+            else:
+                p_a_img = str(p_a)
+                p_b_img = str(p_b)
+                t_img = str(t_path)
+
             r_col1, r_col2, r_col3, r_col4 = st.columns(4)
             r_col1.image(str(i_path), use_container_width=True)
-            r_col2.image(str(p_a), use_container_width=True)
-            r_col3.image(str(p_b), use_container_width=True)
-            r_col4.image(str(t_path), use_container_width=True)
+            r_col2.image(p_a_img, use_container_width=True)
+            r_col3.image(p_b_img, use_container_width=True)
+            r_col4.image(t_img, use_container_width=True)
             st.divider()
 
 def show_test_evaluation(run_dir):
@@ -409,14 +492,14 @@ def show_test_evaluation(run_dir):
         if pred_images:
             max_samples = 50
             samples_to_show = pred_images[:max_samples]
-            use_mask_display = _mask_display_selector(test_results_dir, "root_mask_display")
+            use_mask_display, show_layout = _mask_display_selector(test_results_dir, "root_mask_display")
             if use_mask_display:
                 st.caption("Showing MASK_ grayscale backups for prediction and target images.")
             with st.container():
                 h_col1, h_col2, h_col3, h_col4 = st.columns(4)
                 h_col1.caption("⬅️ INPUT (Scenario)")
-                h_col2.caption("🤖 PREDICTION (AI)")
-                h_col3.caption("🎯 TARGET (Reality)")
+                h_col2.caption("🤖 PREDICTION (AI MASK)" if use_mask_display else "🤖 PREDICTION (AI)")
+                h_col3.caption("🎯 TARGET (Reality MASK)" if use_mask_display else "🎯 TARGET (Reality)")
                 h_col4.caption("TARGET (Reality color jet)")
                 for p_path in samples_to_show:
                     # Prefer new naming (original filename), fallback to old indexed naming.
@@ -448,10 +531,19 @@ def show_test_evaluation(run_dir):
                     pred_display_path = _select_display_path(pred_dir, p_path.name, use_mask_display)
                     target_display_path = _select_display_path(target_dir, p_path.name, use_mask_display)
                     if i_path.exists() and pred_display_path.exists() and target_display_path.exists():
+                        borders = _get_layout_borders(i_path) if show_layout else None
+                        if borders is not None:
+                            color = [255, 255, 255] if use_mask_display else [220, 220, 220]
+                            pred_img = _overlay_borders(pred_display_path, borders, color)
+                            target_img = _overlay_borders(target_display_path, borders, color)
+                        else:
+                            pred_img = str(pred_display_path)
+                            target_img = str(target_display_path)
+
                         r_col1, r_col2, r_col3, r_col4 = st.columns(4)
                         r_col1.image(str(i_path), use_container_width=True)
-                        r_col2.image(str(pred_display_path), use_container_width=True)
-                        r_col3.image(str(target_display_path), use_container_width=True)
+                        r_col2.image(pred_img, use_container_width=True)
+                        r_col3.image(target_img, use_container_width=True)
                         if jet_path and jet_path.exists():
                             r_col4.image(str(jet_path), use_container_width=True)
                         else:

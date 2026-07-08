@@ -1,0 +1,5 @@
+{
+    "image_size": 256,
+    "batch_size": 1,
+    "dataset_root": "../Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN"
+}
