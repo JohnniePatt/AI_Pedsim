@@ -151,11 +151,12 @@ TRAJECTORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROJECT_ROOT = TRAJECTORY_ROOT.parent
 AI_TRAIN_DIR = TRAJECTORY_ROOT / "AI_Train"
 AI_RESULT_DIR = TRAJECTORY_ROOT / "AI_Result"
+
 PYTHON_BIN_CANDIDATES = [
+    PROJECT_ROOT / ".venv_sim" / "bin" / "python3",
     PROJECT_ROOT.parent / "AI_Pedsim-env" / "bin" / "python3",
     PROJECT_ROOT / "AI_Pedsim-env" / "bin" / "python3",
 ]
-
 
 def get_python_executable() -> str:
     for python_bin in PYTHON_BIN_CANDIDATES:
@@ -246,6 +247,15 @@ if st.sidebar.button(
     help="Convert BW mask outputs in test_results predictions/targets into COLORJET images while keeping MASK_ backups"
 ):
     st.session_state.current_nav = "🌈 Format BW to COLORJET"
+    st.rerun()
+
+if st.sidebar.button(
+    "🔍 Upscale Inputs to 1024",
+    key="btn_upscale_inputs",
+    use_container_width=True,
+    help="Upscale run inputs/predictions/targets to 1024x1024 using clean dataset images."
+):
+    st.session_state.current_nav = "🔍 Upscale Inputs to 1024"
     st.rerun()
 
 if st.sidebar.button(
@@ -1368,7 +1378,7 @@ elif navigation == "🌈 Format BW to COLORJET":
         st.error(f"❌ Utility script not found: {formatter_script}")
     else:
         st.subheader("📁 Select Run")
-        formatter_methods = ["Method_pix2pixHD", "Method_CVAE", "Method_PlainUnet"]
+        formatter_methods = ["Method_pix2pixHD", "Method_pix2pixhd_No_D", "Method_CVAE", "Method_PlainUnet"]
         existing_formatter_methods = [
             method for method in formatter_methods
             if (AI_RESULT_DIR / method / "outputs").exists()
@@ -1400,12 +1410,25 @@ elif navigation == "🌈 Format BW to COLORJET":
             c1.info(f"📂 **Run:** `{run_path.relative_to(PROJECT_ROOT)}`")
             c2.info(f"🧪 **test_results:** `{test_results_path.relative_to(PROJECT_ROOT)}`")
 
+            # Scan test_results for predictions/targets (can be flat or nested)
+            detected_dirs = []
+            if test_results_path.exists():
+                for sub in ["predictions", "targets"]:
+                    if (test_results_path / sub).exists():
+                        detected_dirs.append(sub)
+                for checkpoint in ["best_loss", "best_dice", "best_mae", "final"]:
+                    for sub in ["predictions", "targets"]:
+                        if (test_results_path / checkpoint / sub).exists():
+                            detected_dirs.append(f"{checkpoint}/{sub}")
+            if not detected_dirs:
+                detected_dirs = ["predictions", "targets"]
+
             st.subheader("⚙️ Formatting Settings")
             target_dirs = st.multiselect(
                 "Folders under test_results",
-                ["predictions", "targets"],
-                default=["predictions", "targets"],
-                help="Only these folders will be processed. inputs are intentionally not touched.",
+                options=detected_dirs,
+                default=detected_dirs,
+                help="Only these folders containing predictions and targets will be processed. inputs are not touched.",
             )
             overwrite_colorjet = st.checkbox(
                 "Regenerate COLORJET if MASK_ backup already exists",
@@ -1491,6 +1514,96 @@ elif navigation == "🌈 Format BW to COLORJET":
                     st.code(st.session_state.bw_to_colorjet_logs)
                     if st.button("🧹 Clear Format BW to COLORJET Logs"):
                         st.session_state.bw_to_colorjet_logs = ""
+                        st.rerun()
+
+# --- PAGE: Upscale Inputs to 1024 ---
+elif navigation == "🔍 Upscale Inputs to 1024":
+    st.header("🔍 Upscale Inputs to 1024x1024")
+    st.markdown(
+        "Replace and upscale input layouts, predictions, and targets to 1024x1024 using clean, "
+        "high-resolution original dataset images. This resolves door blockage and wall fragmentation issues."
+    )
+
+    upscale_script = PROJECT_ROOT / "Tool_utility" / "upscale_test_inputs.py"
+    if not upscale_script.exists():
+        st.error(f"❌ Utility script not found: {upscale_script}")
+    else:
+        st.subheader("📁 Select Run to Upscale")
+        formatter_methods = ["Method_pix2pixHD", "Method_pix2pixhd_No_D", "Method_CVAE", "Method_PlainUnet"]
+        existing_formatter_methods = [
+            method for method in formatter_methods
+            if (AI_RESULT_DIR / method / "outputs").exists()
+        ] or formatter_methods
+        selected_formatter_method = st.selectbox(
+            "Result Method",
+            existing_formatter_methods,
+            index=0,
+            help="Choose which method's test_results should be upscaled to 1024x1024.",
+        )
+        result_method_path = AI_RESULT_DIR / selected_formatter_method
+        runs = get_method_runs(result_method_path)
+        if not runs:
+            st.warning(f"No runs found under `{result_method_path / 'outputs'}`.")
+        else:
+            selected_run = st.selectbox("Run Folder", runs, index=0)
+            run_path = result_method_path / selected_run
+            test_results_path = run_path / "test_results"
+
+            c1, c2 = st.columns(2)
+            c1.info(f"📂 **Run:** `{run_path.relative_to(PROJECT_ROOT)}`")
+            c2.info(f"🧪 **test_results:** `{test_results_path.relative_to(PROJECT_ROOT)}`")
+
+            render_manual_terminal_command(
+                [
+                    get_python_executable(),
+                    upscale_script,
+                    "--run_path",
+                    run_path,
+                    "--size",
+                    "1024",
+                ],
+                "upscale_inputs",
+            )
+
+            if st.button(
+                "🚀 Start Upscaling to 1024x1024",
+                use_container_width=True,
+                disabled=st.session_state.process_manager.is_running or not test_results_path.exists(),
+            ):
+                python_path = pathlib.Path(get_python_executable())
+                if not python_path.exists():
+                    python_path = "python3"
+
+                command = [
+                    str(python_path),
+                    str(upscale_script),
+                    "--run_path",
+                    str(run_path),
+                    "--size",
+                    "1024",
+                ]
+
+                st.session_state.upscale_logs = ""
+                st.session_state.process_manager.start_process(command, str(PROJECT_ROOT))
+                st.rerun()
+
+            if st.session_state.process_manager.is_running:
+                st.info("🔥 Upscaling images to 1024x1024...")
+                log_container = st.empty()
+                if "upscale_logs" not in st.session_state:
+                    st.session_state.upscale_logs = ""
+                new_output = "".join(list(st.session_state.process_manager.get_output()))
+                if new_output:
+                    st.session_state.upscale_logs += new_output
+                log_container.code(st.session_state.upscale_logs)
+                time.sleep(1)
+                st.rerun()
+            else:
+                if "upscale_logs" in st.session_state and st.session_state.upscale_logs:
+                    st.subheader("Upscaler Output")
+                    st.code(st.session_state.upscale_logs)
+                    if st.button("🧹 Clear Upscale Logs"):
+                        st.session_state.upscale_logs = ""
                         st.rerun()
 
 # --- PAGE: Prepare Data for UNet ---

@@ -23,14 +23,14 @@ def _get_density_jet_map_for_run(run_path):
     except Exception:
         return {}
 
-    dataset_root_raw = snapshot.get("DATASET_ROOT", "")
+    dataset_root_raw = snapshot.get("DATASET_ROOT", snapshot.get("dataset_root", ""))
     if not dataset_root_raw:
         return {}
 
     dataset_root = pathlib.Path(dataset_root_raw)
     if not dataset_root.is_absolute():
-        project_root = pathlib.Path(__file__).resolve().parents[3]
-        dataset_root = (project_root / dataset_root).resolve()
+        trajectory_root = pathlib.Path(__file__).resolve().parents[2]
+        dataset_root = (trajectory_root / dataset_root).resolve()
 
     test_a_dir = dataset_root / "A" / "test"
     if not test_a_dir.exists():
@@ -219,19 +219,66 @@ def _show_summary_table(result_dir, title="Metrics"):
         except Exception as e:
             st.warning(f"Could not read {per_image_path.name}: {e}")
 
+import scipy.ndimage
+
 def _get_layout_borders(input_path, thickness=1):
     """
     Extract a 1-pixel binary mask along the inner boundary of the walkable area.
     This corresponds to the wall outline drawn on the inside edge of the rooms.
-    Since all doorways in the dataset are at least 2 pixels wide, a 1-pixel erosion
-    keeps the center of the doorways open, ensuring they are never blocked!
+    To avoid door blockage and wall fragmentation caused by LANCZOS/BICUBIC interpolation 
+    on the low-res inputs, we try to load the original high-resolution, noise-free layout image, 
+    resize its walkable area mask to the target size using NEAREST interpolation, 
+    and then compute the clean inner borders on it.
     """
     try:
-        img = Image.open(input_path).convert("RGB")
-        arr = np.array(img)
-        walkable = (arr[:, :, 0] > 50) | (arr[:, :, 1] > 50) | (arr[:, :, 2] > 50)
+        input_path = pathlib.Path(input_path)
         
-        current = walkable.copy()
+        # Load the displayed image to get the target size
+        target_img = Image.open(input_path)
+        target_w, target_h = target_img.size
+        
+        orig_img_path = None
+        
+        # Traverse parent folders to locate run_config_snapshot.json and resolve dataset root
+        for parent in input_path.parents:
+            snapshot_path = parent / "run_config_snapshot.json"
+            if snapshot_path.exists():
+                try:
+                    with open(snapshot_path, "r", encoding="utf-8") as f:
+                        snapshot = json.load(f)
+                    dataset_root_raw = snapshot.get("DATASET_ROOT", snapshot.get("dataset_root", ""))
+                    if dataset_root_raw:
+                        dataset_root = pathlib.Path(dataset_root_raw)
+                        if not dataset_root.is_absolute():
+                            # TRAJECTORY_ROOT is parents[2] (AI_GenerateTrajectory)
+                            trajectory_root = pathlib.Path(__file__).resolve().parents[2]
+                            dataset_root = (trajectory_root / dataset_root).resolve()
+                        
+                        # Look for original high-res image in A/test/
+                        candidate = dataset_root / "A" / "test" / input_path.name
+                        if candidate.exists():
+                            orig_img_path = candidate
+                            break
+                except Exception:
+                    pass
+                    
+        # If original image is found, load it for a clean, sharp mask
+        if orig_img_path:
+            img = Image.open(orig_img_path).convert("RGB")
+        else:
+            # Fallback to the low-res inputs image if dataset can't be resolved
+            img = target_img.convert("RGB")
+            
+        arr = np.array(img)
+        # Walkable area is the colored region (red, green, blue)
+        walkable_highres = (arr[:, :, 0] > 50) | (arr[:, :, 1] > 50) | (arr[:, :, 2] > 50)
+        
+        # Resize to the target display size using NEAREST neighbor to avoid blur and closed doors
+        walkable_pil = Image.fromarray(walkable_highres.astype(np.uint8) * 255)
+        walkable_resized = np.array(walkable_pil.resize((target_w, target_h), Image.NEAREST)) > 128
+        
+        # Extract the inner borders from the resized walkable mask
+        current = walkable_resized.copy()
         for _ in range(thickness):
             eroded = current.copy()
             eroded[1:, :] &= current[:-1, :]
@@ -240,9 +287,10 @@ def _get_layout_borders(input_path, thickness=1):
             eroded[:, :-1] &= current[:, 1:]
             current = eroded
             
-        borders = walkable & ~current
+        borders = walkable_resized & ~current
         return borders
-    except Exception:
+    except Exception as e:
+        print(f"Error getting borders: {e}")
         return None
 
 def _overlay_borders(image_path, borders, color=[220, 220, 220]):
@@ -289,7 +337,30 @@ def _show_single_mask_result(run_path, result_dir, title):
         i_path, _, t_path = _resolve_triplet_paths(result_dir, p_path.name)
         pred_display_path = _select_display_path(pred_dir, p_path.name, use_mask_display)
         target_display_path = _select_display_path(target_dir, p_path.name, use_mask_display)
-        jet_path = jet_map.get(idx)
+        
+        # Dynamic filename-based lookup for matched heatmap density
+        jet_path = None
+        stem_name = pathlib.Path(p_path.name).stem
+        if stem_name.startswith("MASK_"):
+            stem_name = stem_name[5:]
+            
+        if "__" in stem_name:
+            plan_name, density_suffix = stem_name.split("__", 1)
+            project_root = pathlib.Path(__file__).resolve().parents[3]
+            jet_candidate = (
+                project_root
+                / "Geo_scenario"
+                / "Topo_HouseGAN"
+                / "heatmap_density"
+                / plan_name
+                / f"heatmap_density{density_suffix}.png"
+            )
+            if jet_candidate.exists():
+                jet_path = jet_candidate
+                
+        if jet_path is None:
+            jet_path = jet_map.get(idx)
+
         if i_path.exists() and pred_display_path.exists() and target_display_path.exists():
             borders = _get_layout_borders(i_path) if show_layout else None
             if borders is not None:
@@ -507,8 +578,12 @@ def show_test_evaluation(run_dir):
                     t_path = target_dir / p_path.name
                     jet_path = None
 
-                    if i_path.exists() and "__" in pathlib.Path(p_path.name).stem:
-                        stem_name = pathlib.Path(p_path.name).stem
+                    # Clean MASK_ prefix from filename for jet lookup
+                    stem_name = pathlib.Path(p_path.name).stem
+                    if stem_name.startswith("MASK_"):
+                        stem_name = stem_name[5:]
+
+                    if i_path.exists() and "__" in stem_name:
                         plan_name, density_suffix = stem_name.split("__", 1)
                         project_root = pathlib.Path(__file__).resolve().parents[3]
                         jet_candidate = (
