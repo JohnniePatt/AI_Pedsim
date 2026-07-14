@@ -42,12 +42,16 @@ def _format_metric(value: float, metric: str) -> str:
 def _default_runs(runs: list[RunInfo]) -> list[str]:
     if not runs:
         return []
-    image_ready = [
-        r for r in runs
-        if (r.path / "test_evaluation_per_image.csv").exists()
-        and (r.path / "test_results" / "predictions").exists()
+    preferred_labels = [
+        "Method_pix2pixHD / run_HD_20260517_133538_BestForBW",
+        "Method_PlainUnet / run_PlainUNet_20260708_211818",
+        "Method_pix2pixhd_No_D / run_HD_NoD_20260709_180550",
+        "Method_CVAE / run_CVAE_20260627_193237_config2"
     ]
-    labels = [r.label for r in (image_ready or runs)]
+    defaults = [label for label in preferred_labels if any(r.label == label for r in runs)]
+    if defaults:
+        return defaults
+    labels = [r.label for r in runs]
     return labels[: min(2, len(labels))]
 
 
@@ -79,33 +83,53 @@ def _summary_cards(run: RunInfo, per_image: pd.DataFrame):
         st.dataframe(summary, use_container_width=True)
 
 
-def _histogram(df: pd.DataFrame, metric: str):
+def _histogram(df: pd.DataFrame, metric: str, run_colors: dict[str, str]):
     chart_df = df[["run", metric]].dropna()
     if chart_df.empty:
         st.info(f"No data for {metric}.")
         return
 
-    bins = 24
-    min_v = float(chart_df[metric].min())
-    max_v = float(chart_df[metric].max())
-    if min_v == max_v:
-        st.info(f"{metric} has one repeated value.")
-        return
+    domain = list(run_colors.keys())
+    range_colors = list(run_colors.values())
+    color_scale = alt.Scale(domain=domain, range=range_colors)
 
-    chart_df = chart_df.copy()
-    chart_df["bin"] = pd.cut(chart_df[metric], bins=bins)
-    grouped = chart_df.groupby(["bin", "run"], observed=False).size().reset_index(name="count")
-    grouped["bin"] = grouped["bin"].astype(str)
-    pivot = grouped.pivot(index="bin", columns="run", values="count").fillna(0)
-    st.bar_chart(pivot, height=300)
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar(opacity=0.8)
+        .encode(
+            x=alt.X(f"{metric}:Q", bin=alt.Bin(maxbins=24), title=metric),
+            y=alt.Y("count()", stack=True, title="Count"),
+            color=alt.Color("run:N", scale=color_scale, title="Run"),
+            tooltip=[alt.Tooltip("run:N"), alt.Tooltip("count()")]
+        )
+        .properties(height=300)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
-def _scatter(df: pd.DataFrame, x_metric: str, y_metric: str):
+def _scatter(df: pd.DataFrame, x_metric: str, y_metric: str, run_colors: dict[str, str]):
     chart_df = df[["run", "file_name", x_metric, y_metric]].dropna()
     if chart_df.empty:
         st.info("No scatter data available for the selected metrics.")
         return
-    st.scatter_chart(chart_df, x=x_metric, y=y_metric, color="run", height=360)
+        
+    domain = list(run_colors.keys())
+    range_colors = list(run_colors.values())
+    color_scale = alt.Scale(domain=domain, range=range_colors)
+    
+    chart = (
+        alt.Chart(chart_df)
+        .mark_circle(size=60)
+        .encode(
+            x=alt.X(f"{x_metric}:Q", scale=alt.Scale(zero=False)),
+            y=alt.Y(f"{y_metric}:Q", scale=alt.Scale(zero=False)),
+            color=alt.Color("run:N", scale=color_scale, title="Run"),
+            tooltip=["file_name:N", "run:N", f"{x_metric}:Q", f"{y_metric}:Q"]
+        )
+        .properties(height=360)
+        .interactive()
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _short_run_labels(run_labels: list[str]) -> dict[str, str]:
@@ -180,7 +204,7 @@ def _metric_compare_scores(
     return pd.DataFrame(score_rows), pd.DataFrame(detail_rows)
 
 
-def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, str]):
+def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, str], run_colors: dict[str, str]):
     metric_scores = score_df[score_df["metric"] == metric].sort_values("score", ascending=False)
     if metric_scores.empty:
         st.info(f"No compare data for {metric}.")
@@ -197,6 +221,16 @@ def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, 
     chart_df["win_rate"] = (chart_df["score"] / total * 100).round(2)
     chart_df = chart_df[chart_df["score"] > 0]
 
+    # Map display_label (short label) to its chosen color
+    domain = []
+    range_colors = []
+    for raw_label, color in run_colors.items():
+        short_label = display_labels.get(raw_label, raw_label)
+        domain.append(short_label)
+        range_colors.append(color)
+
+    color_scale = alt.Scale(domain=domain, range=range_colors)
+
     st.markdown(f"**{metric}**")
     chart = (
         alt.Chart(chart_df)
@@ -206,7 +240,7 @@ def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, 
             color=alt.Color(
                 "winner_label:N",
                 title=None,
-                scale=alt.Scale(range=RUN_COLOR_RANGE),
+                scale=color_scale,
             ),
             tooltip=[
                 alt.Tooltip("winner_label:N", title="Winner"),
@@ -220,7 +254,7 @@ def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, 
     st.altair_chart(chart, use_container_width=True)
 
 
-def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_runs: list[RunInfo]):
+def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_runs: list[RunInfo], run_colors: dict[str, str]):
     st.markdown("### Metric compare")
 
     run_labels = [run.label for run in selected_runs]
@@ -261,7 +295,7 @@ def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_r
         cols = st.columns(3)
         for col, metric in zip(cols, metric_options[start:start + 3]):
             with col:
-                _donut_chart(score_df, metric, display_labels)
+                _donut_chart(score_df, metric, display_labels, run_colors)
 
     score_view = score_df.copy()
     score_view["winner"] = score_view["winner"].map(lambda label: display_labels.get(str(label), str(label)))
@@ -301,7 +335,7 @@ def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_r
         st.dataframe(detail_view[ordered_cols], use_container_width=True, height=360)
 
 
-def _sample_metric_scatter(df: pd.DataFrame, metric: str, sample_order: dict[str, int]):
+def _sample_metric_scatter(df: pd.DataFrame, metric: str, sample_order: dict[str, int], run_colors: dict[str, str]):
     chart_df = df[["run", "file_name", metric]].dropna().copy()
     if chart_df.empty:
         st.info(f"No sample scatter data for {metric}.")
@@ -311,6 +345,10 @@ def _sample_metric_scatter(df: pd.DataFrame, metric: str, sample_order: dict[str
     chart_df = chart_df.dropna(subset=["sample"])
     chart_df["sample"] = chart_df["sample"].astype(int)
 
+    domain = list(run_colors.keys())
+    range_colors = list(run_colors.values())
+    color_scale = alt.Scale(domain=domain, range=range_colors)
+
     st.markdown(f"**{metric} by sample**")
     chart = (
         alt.Chart(chart_df)
@@ -318,7 +356,7 @@ def _sample_metric_scatter(df: pd.DataFrame, metric: str, sample_order: dict[str
         .encode(
             x=alt.X("sample:Q", title="Sample"),
             y=alt.Y(f"{metric}:Q", title=metric),
-            color=alt.Color("run:N", title="Run", scale=alt.Scale(range=RUN_COLOR_RANGE)),
+            color=alt.Color("run:N", title="Run", scale=color_scale),
             tooltip=[
                 alt.Tooltip("sample:Q", title="Sample"),
                 alt.Tooltip("file_name:N", title="File"),
@@ -332,7 +370,7 @@ def _sample_metric_scatter(df: pd.DataFrame, metric: str, sample_order: dict[str
     st.altair_chart(chart, use_container_width=True)
 
 
-def _show_sample_metric_scatters(df: pd.DataFrame, metric_options: list[str]):
+def _show_sample_metric_scatters(df: pd.DataFrame, metric_options: list[str], run_colors: dict[str, str]):
     st.markdown("### Metric sample scatter")
     st.caption("X is the sample index from each image file. Y is the selected metric value, with points colored by run.")
 
@@ -346,7 +384,7 @@ def _show_sample_metric_scatters(df: pd.DataFrame, metric_options: list[str]):
         cols = st.columns(2)
         for col, metric in zip(cols, metric_options[start:start + 2]):
             with col:
-                _sample_metric_scatter(df, metric, sample_order)
+                _sample_metric_scatter(df, metric, sample_order, run_colors)
 
 
 def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
@@ -360,11 +398,114 @@ def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _show_image_compare(selected_runs: list[RunInfo], file_name: str):
+def _get_layout_borders(input_path, thickness=1):
+    import json
+    import pathlib
+    import numpy as np
+    from PIL import Image
+    from utils.result_scanner import PROJECT_ROOT
+    try:
+        input_path = pathlib.Path(input_path)
+        target_img = Image.open(input_path)
+        target_w, target_h = target_img.size
+        
+        orig_img_path = None
+        
+        # 1. Try to resolve the dataset root and topology name from run_config_snapshot.json
+        dataset_root = None
+        topology_name = "Topo_HouseGAN"
+        for parent in input_path.parents:
+            snapshot_path = parent / "run_config_snapshot.json"
+            if snapshot_path.exists():
+                try:
+                    with open(snapshot_path, "r", encoding="utf-8") as f:
+                        snapshot = json.load(f)
+                    dataset_root_raw = snapshot.get("DATASET_ROOT", snapshot.get("dataset_root", ""))
+                    if dataset_root_raw:
+                        dataset_root = pathlib.Path(dataset_root_raw)
+                        if not dataset_root.is_absolute():
+                            dataset_root = (PROJECT_ROOT / dataset_root).resolve()
+                        topology_name = dataset_root.name
+                        break
+                except Exception:
+                    pass
+
+        # 2. Try to fetch the high-resolution clean layout image from the dataset root splits
+        if dataset_root and dataset_root.exists():
+            for split in ("test", "train", "validation"):
+                candidate = dataset_root / "A" / split / input_path.name
+                if candidate.exists():
+                    orig_img_path = candidate
+                    break
+
+        # 3. Fallback to default dataset candidates in PROJECT_ROOT
+        if not orig_img_path:
+            candidates_dirs = [
+                PROJECT_ROOT / "Dataset" / "Data_ImageUNet" / "DensityMap_dataset" / topology_name,
+                PROJECT_ROOT / "Dataset" / "Data_ImageUNet" / "DensityMap_COLORJET_dataset" / topology_name,
+                PROJECT_ROOT / "Dataset" / "Data_ImageUNet" / "Trajectory_line_dataset" / topology_name,
+            ]
+            for d in candidates_dirs:
+                if d.exists():
+                    for split in ("test", "train", "validation"):
+                        candidate = d / "A" / split / input_path.name
+                        if candidate.exists():
+                            orig_img_path = candidate
+                            break
+                if orig_img_path:
+                    break
+                    
+        if orig_img_path:
+            img = Image.open(orig_img_path).convert("RGB")
+        else:
+            img = target_img.convert("RGB")
+            
+        arr = np.array(img)
+        walkable_highres = (arr[:, :, 0] > 50) | (arr[:, :, 1] > 50) | (arr[:, :, 2] > 50)
+        
+        walkable_pil = Image.fromarray(walkable_highres.astype(np.uint8) * 255)
+        walkable_resized = np.array(walkable_pil.resize((target_w, target_h), Image.NEAREST)) > 128
+        
+        current = walkable_resized.copy()
+        for _ in range(thickness):
+            eroded = current.copy()
+            eroded[1:, :] &= current[:-1, :]
+            eroded[:-1, :] &= current[1:, :]
+            eroded[:, 1:] &= current[:, :-1]
+            eroded[:, :-1] &= current[:, 1:]
+            current = eroded
+            
+        borders = walkable_resized & ~current
+        return borders
+    except Exception:
+        return None
+
+
+def _overlay_borders(image_path, borders, color=[220, 220, 220]):
+    import numpy as np
+    from PIL import Image
+    from pathlib import Path
+    try:
+        img = Image.open(image_path)
+        img_rgb = img.convert("RGB")
+        arr = np.array(img_rgb)
+        
+        h, w = arr.shape[:2]
+        bh, bw = borders.shape
+        if (h != bh) or (w != bw):
+            borders_pil = Image.fromarray(borders.astype(np.uint8) * 255)
+            borders = np.array(borders_pil.resize((w, h), Image.NEAREST)) > 128
+            
+        arr[borders] = color
+        return Image.fromarray(arr)
+    except Exception:
+        return Image.open(image_path) if isinstance(image_path, (str, Path)) else image_path
+
+
+def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layout: bool = True):
     if not file_name:
         return
-
-    st.markdown("### Image Comparison")
+    
     first_input = None
     first_target = None
     predictions = []
@@ -375,28 +516,140 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str):
             first_input = input_path
         if first_target is None and target_path is not None:
             first_target = target_path
-        predictions.append((run.label, pred_path))
+        predictions.append((run.label, pred_path, run.method, run.run_name))
+
+    borders = _get_layout_borders(first_input) if (show_layout and first_input) else None
 
     total_cols = 2 + len(predictions)
     cols = st.columns(total_cols)
-    cols[0].caption("INPUT")
+    
+    # Column 0: INPUT
+    cols[0].markdown("**INPUT**")
     if first_input:
         cols[0].image(str(first_input), use_container_width=True)
     else:
         cols[0].info("Missing input")
 
-    for idx, (label, pred_path) in enumerate(predictions, start=1):
-        cols[idx].caption(label)
+    # Mid columns: PREDICTIONS
+    METHOD_SHORT_NAMES = {
+        "Method_pix2pixHD": "pix2pixHD",
+        "Method_PlainUnet": "Plain U-Net",
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
+        "Method_CVAE": "CVAE"
+    }
+
+    for idx, (label, pred_path, method, run_name) in enumerate(predictions, start=1):
+        short_name = METHOD_SHORT_NAMES.get(method, method)
+        cols[idx].markdown(f"**{short_name}**")
         if pred_path:
-            cols[idx].image(str(pred_path), use_container_width=True)
+            if borders is not None:
+                img_with_layout = _overlay_borders(pred_path, borders)
+                cols[idx].image(img_with_layout, use_container_width=True)
+            else:
+                cols[idx].image(str(pred_path), use_container_width=True)
         else:
             cols[idx].info("Missing prediction")
+        
+        # Display the long run folder name underneath the image to preserve grid alignment
+        cols[idx].caption(run_name)
 
-    cols[-1].caption("TARGET")
+    # Last column: TARGET
+    cols[-1].markdown("**TARGET**")
     if first_target:
-        cols[-1].image(str(first_target), use_container_width=True)
+        if borders is not None:
+            img_with_layout = _overlay_borders(first_target, borders)
+            cols[-1].image(img_with_layout, use_container_width=True)
+        else:
+            cols[-1].image(str(first_target), use_container_width=True)
     else:
         cols[-1].info("Missing target")
+
+
+def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
+    METHOD_DISPLAY_NAMES = {
+        "Method_pix2pixHD": "pix2pixHD",
+        "Method_PlainUnet": "Plain U-Net",
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
+        "Method_CVAE": "CVAE"
+    }
+    
+    METRIC_HEADERS = {
+        "MAE": "MAE ↓",
+        "MSE": "MSE ↓",
+        "RMSE": "RMSE ↓",
+        "SSIM": "SSIM ↑",
+        "PSNR": "PSNR ↑",
+        "LPIPS": "LPIPS ↓"
+    }
+
+    # Identify metric columns that exist in the dataframe
+    available_metrics = [m for m in METRIC_ORDER if m in combined.columns]
+    
+    # Compute mean for each run
+    table_rows = []
+    for run in selected_runs:
+        run_data = combined[combined["run"] == run.label]
+        row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+        for m in available_metrics:
+            if not run_data.empty and m in run_data.columns:
+                row[m] = float(run_data[m].mean())
+            else:
+                row[m] = float("nan")
+        table_rows.append(row)
+        
+    df_summary = pd.DataFrame(table_rows)
+
+    # Find the best value for each metric
+    best_vals = {}
+    for m in available_metrics:
+        col_vals = df_summary[m].dropna()
+        if col_vals.empty:
+            continue
+        best_vals[m] = col_vals.min() if m in LOWER_IS_BETTER else col_vals.max()
+
+    # Format the cells
+    formatted_rows = []
+    for _, row in df_summary.iterrows():
+        f_row = {"Model": row["Model"]}
+        for m in available_metrics:
+            val = row[m]
+            header = METRIC_HEADERS.get(m, m)
+            if pd.isna(val):
+                f_row[header] = "—"
+            else:
+                is_best = False
+                if m in best_vals and abs(val - best_vals[m]) < 1e-9:
+                    is_best = True
+                
+                # Format to appropriate decimals
+                if m == "PSNR":
+                    formatted_val = f"{val:.2f}"
+                else:
+                    formatted_val = f"{val:.4f}"
+                    
+                if is_best:
+                    f_row[header] = f"**{formatted_val}**"
+                else:
+                    f_row[header] = formatted_val
+        formatted_rows.append(f_row)
+
+    # Build Markdown Table
+    headers = ["Model"] + [METRIC_HEADERS.get(m, m) for m in available_metrics]
+    aligns = [":---"] + [":---:" for _ in available_metrics]
+    
+    md_lines = []
+    md_lines.append("| " + " | ".join(headers) + " |")
+    md_lines.append("| " + " | ".join(aligns) + " |")
+    
+    for f_row in formatted_rows:
+        row_vals = [str(f_row.get(h, "—")) for h in headers]
+        md_lines.append("| " + " | ".join(row_vals) + " |")
+        
+    table_md = "\n".join(md_lines)
+    
+    st.markdown("### Model Benchmark Summary (Average)")
+    st.markdown(table_md)
+    st.markdown("")
 
 
 def render_image_based_output():
@@ -426,36 +679,84 @@ def render_image_based_output():
         st.info("Select at least one run to inspect.")
         return
 
+    combined = _combined_per_image(selected_runs)
+    if combined.empty:
+        st.warning("Selected runs do not have test_evaluation_per_image.csv yet.")
+        return
+
+    metric_options = [m for m in METRIC_ORDER if m in combined.columns]
+
+    # Color Settings
+    DEFAULT_COLORS = {
+        "Method_PlainUnet": "#ff4d4d",      # Bright Red
+        "Method_pix2pixHD": "#f43f5e",      # Rose Pink
+        "Method_pix2pixhd_No_D": "#ffd166", # Soft Yellow
+        "Method_CVAE": "#f97316",           # Soft Orange
+        "Method_GNN_CVAE": "#ca8a04",       # Yellow
+        "Method_GNN_CVAE2": "#0891b2",      # Cyan
+        "Method_LSTM_01": "#f97316",        # Orange
+        "Method_Transformer": "#06b6d4",    # Teal
+    }
+    
+    METHOD_DISPLAY_NAMES = {
+        "Method_pix2pixHD": "pix2pixHD",
+        "Method_PlainUnet": "Plain U-Net",
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
+        "Method_CVAE": "CVAE"
+    }
+
+    run_colors = {}
+    with st.expander("🎨 Chart Color Settings", expanded=False):
+        st.markdown("Customize chart colors for each model/run:")
+        
+        # Tie color (for winner donut charts)
+        if "color_tie" not in st.session_state:
+            st.session_state["color_tie"] = "#9ca3af"
+        tie_color = st.color_picker("Tie (Draw)", key="color_tie")
+        run_colors["Tie"] = tie_color
+        
+        color_cols = st.columns(min(4, len(selected_runs)))
+        for idx, run in enumerate(selected_runs):
+            col = color_cols[idx % len(color_cols)]
+            with col:
+                method_name = run.method
+                method_display = METHOD_DISPLAY_NAMES.get(method_name, method_name)
+                default_color = DEFAULT_COLORS.get(method_name, "#4b5563")
+                state_key = f"color_{run.label}"
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = default_color
+                chosen_color = st.color_picker(
+                    method_display,
+                    key=state_key
+                )
+                run_colors[run.label] = chosen_color
+
+    # Show Average Summary Table
+    _show_summary_table(combined, selected_runs)
+
     st.markdown("### Run Summary")
     summary_cols = st.columns(len(selected_runs))
     for col, run in zip(summary_cols, selected_runs):
         with col:
             _summary_cards(run, load_per_image(run.path))
 
-    combined = _combined_per_image(selected_runs)
-    if combined.empty:
-        st.warning("Selected runs do not have test_evaluation_per_image.csv yet.")
-        return
-
     st.markdown("### Per-image Metrics")
     table_cols = ["run", "file_name"] + [m for m in METRIC_ORDER if m in combined.columns]
     st.dataframe(combined[table_cols], use_container_width=True, height=360)
 
-    st.markdown("### Metric Graphs")
-    metric_options = [m for m in METRIC_ORDER if m in combined.columns]
-
-    graph_col1, graph_col2 = st.columns([1, 1])
+    st.markdown("### Graph Visualizations")
+    graph_col1, graph_col2 = st.columns(2)
     with graph_col1:
         hist_metric = st.selectbox("Distribution metric", metric_options, index=metric_options.index("RMSE") if "RMSE" in metric_options else 0)
-        _histogram(combined, hist_metric)
+        _histogram(combined, hist_metric, run_colors)
     with graph_col2:
         x_metric = st.selectbox("Scatter X", metric_options, index=metric_options.index("RMSE") if "RMSE" in metric_options else 0)
         y_default = metric_options.index("SSIM") if "SSIM" in metric_options else min(1, len(metric_options) - 1)
         y_metric = st.selectbox("Scatter Y", metric_options, index=y_default)
-        _scatter(combined, x_metric, y_metric)
+        _scatter(combined, x_metric, y_metric, run_colors)
 
-    _show_metric_compare(combined, metric_options, selected_runs)
-    _show_sample_metric_scatters(combined, metric_options)
+    _show_metric_compare(combined, metric_options, selected_runs, run_colors)
+    _show_sample_metric_scatters(combined, metric_options, run_colors)
 
     st.markdown("### Worst / Best Case Viewer")
     rank_metric = st.selectbox("Rank by metric", metric_options, index=metric_options.index("LPIPS") if "LPIPS" in metric_options else 0)
@@ -471,10 +772,41 @@ def render_image_based_output():
     st.dataframe(ranked_view[table_cols], use_container_width=True, height=280)
 
     file_names = sorted(combined["file_name"].dropna().unique().tolist())
-    default_file = ranked_view.iloc[0]["file_name"] if not ranked_view.empty else file_names[0]
-    selected_file = st.selectbox(
-        "Select image file to compare",
-        file_names,
-        index=file_names.index(default_file) if default_file in file_names else 0,
-    )
-    _show_image_compare(selected_runs, selected_file)
+    
+    show_all_files = st.checkbox("Show all test files (including those with missing predictions on disk)", value=False)
+    if not show_all_files:
+        available_files = []
+        for f in file_names:
+            all_exist = True
+            for run in selected_runs:
+                _, pred_path, _ = image_triplet(run.path, f)
+                if pred_path is None:
+                    all_exist = False
+                    break
+            if all_exist:
+                available_files.append(f)
+        if available_files:
+            file_names = sorted(available_files)
+
+    st.markdown("### Image Comparison")
+    
+    col_ctrl1, col_ctrl2 = st.columns([1, 1])
+    with col_ctrl1:
+        show_layout = st.checkbox("Overlay room layout borders on predictions and targets", value=True)
+    with col_ctrl2:
+        show_all_samples = st.checkbox("Show all samples in a list", value=False)
+        
+    if show_all_samples:
+        limit_samples = st.slider("Number of samples to display", min_value=5, max_value=len(file_names), value=min(20, len(file_names)), step=5)
+        for idx_file, f in enumerate(file_names[:limit_samples]):
+            st.markdown(f"#### Sample {idx_file + 1}: `{f}`")
+            _show_image_compare(selected_runs, f, show_layout=show_layout)
+            st.markdown("---")
+    else:
+        default_file = ranked_view.iloc[0]["file_name"] if not ranked_view.empty else file_names[0]
+        selected_file = st.selectbox(
+            "Select image file to compare",
+            file_names,
+            index=file_names.index(default_file) if default_file in file_names else 0,
+        )
+        _show_image_compare(selected_runs, selected_file, show_layout=show_layout)

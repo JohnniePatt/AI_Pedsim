@@ -158,8 +158,8 @@ class TestConfig:
         if snapshot.exists():
             data = load_json_config(snapshot)
             for key, value in data.items():
-                if key.endswith("DIR") or key in {"DATASET_ROOT", "PROJECT_ROOT", "BASE_DIR", "RUNS_ROOT", "CURRENT_RUN_DIR"}:
-                    value = pathlib.Path(value)
+                if key.endswith("DIR") or key in {"DATASET_ROOT", "PROJECT_ROOT", "BASE_DIR", "RUNS_ROOT", "CURRENT_RUN_DIR", "run_name"}:
+                    continue
                 setattr(self, key, value)
 
         if config_file:

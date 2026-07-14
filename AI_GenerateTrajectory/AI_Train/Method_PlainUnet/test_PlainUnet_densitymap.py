@@ -9,6 +9,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from plainunet_common import PlainUNetDataset, PlainUNet, get_device, tensor_density_metrics, resolve_path, resolve_project_root
 
+try:
+    import lpips
+    LPIPS_AVAILABLE = True
+except ImportError:
+    LPIPS_AVAILABLE = False
+
 def _to_colorjet(gray_uint8):
     gray_norm = gray_uint8.astype(np.float32) / 255.0
     x = gray_norm
@@ -22,6 +28,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_path", type=str, required=True)
     parser.add_argument("--checkpoint", type=str, default="best_loss.pt")
+    parser.add_argument("--image_size", type=int, default=None, help="Custom image size for testing (e.g. 512)")
     args = parser.parse_args()
 
     run_path = pathlib.Path(args.run_path)
@@ -34,6 +41,16 @@ def main():
     state = torch.load(checkpoint_path, map_location=device)
     cfg = state["config"]
 
+    lpips_model = None
+    if LPIPS_AVAILABLE:
+        try:
+            lpips_model = lpips.LPIPS(net="alex").to(device)
+            lpips_model.eval()
+            print("[METRIC] LPIPS enabled (alex)")
+        except Exception as e:
+            print(f"[WARN] LPIPS unavailable: {e}")
+            lpips_model = None
+
     script_dir = pathlib.Path(__file__).parent.resolve()
     dataset_root = resolve_path(cfg["dataset_root"], resolve_project_root(script_dir))
 
@@ -41,7 +58,9 @@ def main():
     model.load_state_dict(state["model_state_dict"])
     model.eval()
 
-    test_loader = DataLoader(PlainUNetDataset(dataset_root, "test", cfg["image_size"]), batch_size=1, shuffle=False)
+    image_size = args.image_size if args.image_size is not None else cfg.get("image_size", 256)
+    print(f"[TEST] Using evaluation image size: {image_size}x{image_size}")
+    test_loader = DataLoader(PlainUNetDataset(dataset_root, "test", image_size), batch_size=1, shuffle=False)
 
     result_dir = run_path / "test_results" / args.checkpoint.replace(".pt", "")
     pred_dir = result_dir / "predictions"
@@ -59,6 +78,15 @@ def main():
             b_arr = b.numpy()[0, 0]
             
             metrics = tensor_density_metrics(b_arr, pred_arr)
+            lpips_val = float("nan")
+            if lpips_model is not None:
+                try:
+                    pred_t = (pred * 2.0 - 1.0).repeat(1, 3, 1, 1)
+                    true_t = (b.to(device) * 2.0 - 1.0).repeat(1, 3, 1, 1)
+                    lpips_val = float(lpips_model(pred_t, true_t).mean().item())
+                except Exception as e:
+                    print(f"[WARN] LPIPS calculation failed: {e}")
+
             rows.append({
                 "file_name": name[0],
                 "MAE": metrics["mae"],
@@ -66,7 +94,7 @@ def main():
                 "RMSE": metrics["rmse"],
                 "SSIM": metrics["ssim"],
                 "PSNR": metrics["psnr"],
-                "LPIPS": float("nan")
+                "LPIPS": lpips_val
             })
 
             if i < 50:

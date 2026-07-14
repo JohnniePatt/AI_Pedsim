@@ -98,9 +98,9 @@ class TestConfig:
                 with open(snap, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                     for k, v in data.items():
-                        if k == "DATASET_ROOT": v = pathlib.Path(v)
-                        # Don't overwrite if already set by config or direct path
-                        if not hasattr(self, k) or (k == "checkpoints" and not self.CHECKPOINT_DIR):
+                        if k.endswith("DIR") or k in {"DATASET_ROOT", "PROJECT_ROOT", "BASE_DIR", "RUNS_ROOT", "CURRENT_RUN_DIR", "run_name"}:
+                            continue
+                        if not hasattr(self, k):
                              setattr(self, k, v)
             
             if not self.CHECKPOINT_DIR:

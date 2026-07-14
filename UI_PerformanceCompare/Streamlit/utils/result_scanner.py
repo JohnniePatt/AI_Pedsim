@@ -37,7 +37,10 @@ def discover_runs() -> list[RunInfo]:
         for run_dir in _candidate_run_dirs(method_dir):
             has_summary = (run_dir / "test_evaluation_summary.csv").exists()
             has_per_image = (run_dir / "test_evaluation_per_image.csv").exists()
-            has_images = (run_dir / "test_results" / "predictions").exists()
+            has_images = (run_dir / "test_results" / "predictions").exists() or (
+                (run_dir / "test_results").exists()
+                and any((sub / "predictions").exists() for sub in (run_dir / "test_results").iterdir() if sub.is_dir())
+            )
             if has_summary or has_per_image or has_images:
                 runs.append(RunInfo(method=method_dir.name, run_name=run_dir.name, path=run_dir))
     return sorted(runs, key=lambda run: run.path.stat().st_mtime, reverse=True)

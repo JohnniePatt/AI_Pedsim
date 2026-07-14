@@ -1,6 +1,7 @@
 import argparse
 import json
 import pathlib
+import math
 
 import numpy as np
 import torch
@@ -12,6 +13,12 @@ from cvae_data import BILINEAR, list_pair_files, load_density_target, load_image
 from cvae_io import tensor_to_pil
 from cvae_losses import tensor_density_metrics
 from cvae_model import CVAE
+
+try:
+    import lpips
+    LPIPS_AVAILABLE = True
+except ImportError:
+    LPIPS_AVAILABLE = False
 
 
 def get_device():
@@ -121,7 +128,11 @@ def average_rows(rows):
     if not rows:
         return {}
     keys = rows[0].keys()
-    return {key: float(np.mean([row[key] for row in rows])) for key in keys}
+    res = {}
+    for key in keys:
+        vals = [row[key] for row in rows if not (isinstance(row[key], float) and math.isnan(row[key]))]
+        res[key] = float(np.mean(vals)) if vals else float("nan")
+    return res
 
 
 def write_pix2pix_style_metrics(run_dir, rows, summary):
@@ -129,9 +140,10 @@ def write_pix2pix_style_metrics(run_dir, rows, summary):
     with open(per_image_path, "w", encoding="utf-8") as f:
         f.write("file_name,MAE,MSE,RMSE,SSIM,PSNR,LPIPS\n")
         for row in rows:
+            lpips_txt = "nan" if math.isnan(row.get("lpips", float("nan"))) else f"{row['lpips']:.6f}"
             f.write(
                 f"{row['filename']},{row['mae']:.6f},{row['mse']:.6f},{row['rmse']:.6f},"
-                f"{row['ssim']:.6f},{row['psnr']:.6f},nan\n"
+                f"{row['ssim']:.6f},{row['psnr']:.6f},{lpips_txt}\n"
             )
 
     summary_path = run_dir / "test_evaluation_summary.csv"
@@ -139,7 +151,9 @@ def write_pix2pix_style_metrics(run_dir, rows, summary):
         f.write("metric,value\n")
         for metric in ("MAE", "MSE", "RMSE", "SSIM", "PSNR"):
             f.write(f"{metric},{float(summary[metric.lower()]):.6f}\n")
-        f.write("LPIPS,nan\n")
+        lpips_score = summary.get("lpips", float("nan"))
+        lpips_txt = "nan" if math.isnan(lpips_score) else f"{lpips_score:.6f}"
+        f.write(f"LPIPS,{lpips_txt}\n")
 
 
 def main(default_config, target_representation, target_channels):
@@ -179,6 +193,16 @@ def main(default_config, target_representation, target_channels):
     ).to(device)
     model.load_state_dict(state["model_state_dict"] if "model_state_dict" in state else state)
     model.eval()
+
+    lpips_model = None
+    if LPIPS_AVAILABLE:
+        try:
+            lpips_model = lpips.LPIPS(net="alex").to(device)
+            lpips_model.eval()
+            print("[METRIC] LPIPS enabled (alex)")
+        except Exception as e:
+            print(f"[WARN] LPIPS unavailable: {e}")
+            lpips_model = None
 
     output_name = args.output_name.strip() or checkpoint_label
     result_dir = cfg.TEST_RESULT_DIR / output_name
@@ -241,7 +265,24 @@ def main(default_config, target_representation, target_channels):
                 target.mean(axis=0, keepdims=True) if target.shape[0] > 1 else target,
                 pred.mean(axis=0, keepdims=True) if pred.shape[0] > 1 else pred,
             )
-            rows.append({"filename": path_a.name, **metrics})
+            
+            lpips_val = float("nan")
+            if lpips_model is not None:
+                try:
+                    pred_t = torch.from_numpy(pred).unsqueeze(0).to(device)
+                    target_t = torch.from_numpy(target).unsqueeze(0).to(device)
+                    # Scale from [0, 1] to [-1, 1]
+                    pred_t = pred_t * 2.0 - 1.0
+                    target_t = target_t * 2.0 - 1.0
+                    if pred_t.shape[1] == 1:
+                        pred_t = pred_t.repeat(1, 3, 1, 1)
+                    if target_t.shape[1] == 1:
+                        target_t = target_t.repeat(1, 3, 1, 1)
+                    lpips_val = float(lpips_model(pred_t, target_t).mean().item())
+                except Exception as e:
+                    print(f"[WARN] LPIPS calculation failed: {e}")
+
+            rows.append({"filename": path_a.name, "lpips": lpips_val, **metrics})
             scalar_rows.append({"filename": path_a.name, **scalar_metrics})
 
             tensor_to_pil(a, *orig_size).save(input_dir / path_a.name)

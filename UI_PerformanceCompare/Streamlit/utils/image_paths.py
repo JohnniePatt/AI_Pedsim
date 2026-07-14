@@ -5,12 +5,23 @@ from pathlib import Path
 
 def image_triplet(run_path: Path, file_name: str) -> tuple[Path | None, Path | None, Path | None]:
     result_dir = run_path / "test_results"
-    input_path = result_dir / "inputs" / file_name
-    pred_path = result_dir / "predictions" / file_name
-    target_path = result_dir / "targets" / file_name
+    
+    def find_path(sub_name: str) -> Path | None:
+        # Try direct: e.g. run_path / "test_results" / "predictions" / file_name
+        p = result_dir / sub_name / file_name
+        if p.exists():
+            return p
+        # Try subdirectories inside test_results: e.g. run_path / "test_results" / "best_loss" / "predictions" / file_name
+        if result_dir.exists():
+            for sub in result_dir.iterdir():
+                if sub.is_dir():
+                    p_sub = sub / sub_name / file_name
+                    if p_sub.exists():
+                        return p_sub
+        return None
 
     return (
-        input_path if input_path.exists() else None,
-        pred_path if pred_path.exists() else None,
-        target_path if target_path.exists() else None,
+        find_path("inputs"),
+        find_path("predictions"),
+        find_path("targets"),
     )
