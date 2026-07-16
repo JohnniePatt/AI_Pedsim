@@ -277,12 +277,89 @@ def dashboard_rows(plans):
     return rows
 
 
+@st.cache_data
+def load_dataset_routes_with_distances(ds_dir_str, scenario_root_str, csv_path_str):
+    import json
+    import pandas as pd
+    from pathlib import Path
+    
+    ds_dir = Path(ds_dir_str)
+    scenario_root = Path(scenario_root_str)
+    csv_path = Path(csv_path_str)
+    
+    df_route = pd.read_csv(csv_path, usecols=["plan", "start_node", "end_node", "topology_centerline_distance_m"])
+    df_route = df_route.dropna(subset=["topology_centerline_distance_m"])
+    df_route['pair_key'] = df_route.apply(lambda row: tuple(sorted([str(row['start_node']), str(row['end_node'])])), axis=1)
+    
+    route_map = {}
+    for idx, row in df_route.iterrows():
+        plan = row['plan']
+        if plan not in route_map:
+            route_map[plan] = {}
+        route_map[plan][row['pair_key']] = row['topology_centerline_distance_m']
+        
+    dataset_routes = []
+    plan_to_split = {}
+    
+    for split in ["train", "test", "validation"]:
+        split_dir = ds_dir / split
+        if split_dir.exists():
+            for f in split_dir.glob('*.png'):
+                parts = f.name.split('__')
+                if len(parts) >= 2:
+                    plan_name = parts[0]
+                    plan_to_split[plan_name] = split
+                    
+                    route_base = parts[1].split('_')
+                    if len(route_base) >= 2:
+                        try:
+                            suffix = parts[1].replace('.png', '')
+                            sub_parts = suffix.split('_')
+                            if sub_parts[-1] in ['full', 'half', 'single']:
+                                route_idx = int(sub_parts[-2])
+                            else:
+                                route_idx = int(sub_parts[-1])
+                            
+                            meta_path = scenario_root / 'metadata' / plan_name / f'route_{route_idx:02d}.json'
+                            if meta_path.exists():
+                                with open(meta_path) as meta_f:
+                                    meta = json.load(meta_f)
+                                    sn = meta.get('start_node')
+                                    en = meta.get('end_node')
+                                    if sn and en:
+                                        pair_key = tuple(sorted([str(sn), str(en)]))
+                                        dist = route_map.get(plan_name, {}).get(pair_key)
+                                        if dist is not None:
+                                            dataset_routes.append({
+                                                'plan': plan_name,
+                                                'route_idx': route_idx,
+                                                'topology_centerline_distance_m': dist,
+                                                'split': split
+                                            })
+                        except Exception:
+                            pass
+                            
+    df_ds_routes = pd.DataFrame(dataset_routes).drop_duplicates(subset=['plan', 'route_idx'])
+    return df_ds_routes, plan_to_split
+
+
 def page_dashboard():
     st.header("HouseGAN Dashboard")
     plans = list_plans()
     if not plans:
         st.warning("No generated geometry found yet.")
         return
+
+    csv_path = SCENARIO_ROOT / "route_information" / "all_route_information.csv"
+    ds_dir = PROJECT_ROOT / "Dataset" / "Data_ImageUNet" / "DensityMap_dataset" / "Topo_HouseGAN" / "A"
+    df_ds_routes = pd.DataFrame()
+    plan_to_split = {}
+    if csv_path.exists():
+        df_ds_routes, plan_to_split = load_dataset_routes_with_distances(
+            str(ds_dir),
+            str(SCENARIO_ROOT),
+            str(csv_path)
+        )
 
     rows = dashboard_rows(plans)
     simulated_rows = [row for row in rows if row["simulated"]]
@@ -319,13 +396,29 @@ def page_dashboard():
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     st.subheader("Final Summary")
+    
+    dataset_info = ""
+    if not df_ds_routes.empty:
+        dataset_plans = df_ds_routes["plan"].nunique()
+        dataset_routes_total = len(df_ds_routes)
+        train_cnt = len(df_ds_routes[df_ds_routes["split"] == "train"])
+        test_cnt = len(df_ds_routes[df_ds_routes["split"] == "test"])
+        val_cnt = len(df_ds_routes[df_ds_routes["split"] == "validation"])
+        
+        dataset_info = (
+            f"\n\n**ข้อมูลในชุด Dataset จริง (เฉพาะเส้นทางที่จำลองสำเร็จและแปลงเป็นภาพแล้ว)**: "
+            f"ทั้งหมด **{dataset_plans} plan** คิดเป็น **{dataset_routes_total} unique routes** "
+            f"(แบ่งเป็น Train: {train_cnt} route, Test: {test_cnt} route, Validation: {val_cnt} route) "
+            f"\n*หมายเหตุ: ยอดต่าง {simulated_routes - dataset_routes_total} เส้นทาง เกิดจากบางเส้นทางจำลองไม่สำเร็จ หรือมีสถานะไม่สมบูรณ์จึงไม่ถูกส่งออกไปยังชุด Dataset*"
+        )
+
     st.info(
         f"ตอนนี้มี geometry ทั้งหมด {len(plans)} plan, simulate แล้ว {len(simulated_rows)} plan "
         f"คิดเป็น {simulated_routes} route และยังไม่ได้ simulate {len(unsimulated_rows)} plan "
         f"คิดเป็นประมาณ {unsimulated_routes} route."
+        f"{dataset_info}"
     )
 
-    csv_path = SCENARIO_ROOT / "route_information" / "all_route_information.csv"
     if csv_path.exists():
         try:
             import matplotlib.pyplot as plt
@@ -371,6 +464,67 @@ def page_dashboard():
 
             df_dist = df_filtered.sort_values("topology_centerline_distance_m").reset_index(drop=True)
             df_dist["sorted_index"] = df_dist.index + 1
+
+            df_dist["split"] = df_dist["plan"].map(plan_to_split).fillna("Unassigned")
+            
+            st.markdown("### Dataset Distribution (Train/Test/Val)")
+            split_colors = {"train": "#ef4444", "test": "#f97316", "validation": "#eab308", "Unassigned": "#9ca3af"}
+            
+            # Graph 1: Layout count by split (using FULL dataset)
+            full_plan_counts = pd.Series(list(plan_to_split.values())).value_counts()
+            
+            fig_bar, ax_bar = plt.subplots(figsize=(10, 4))
+            bars = ax_bar.bar(full_plan_counts.index, full_plan_counts.values, color=[split_colors.get(x, "#9ca3af") for x in full_plan_counts.index])
+            ax_bar.set_title("Layout Count per Dataset Split (All Generated Plans)")
+            ax_bar.set_ylabel("Number of Layouts (Plans)")
+            ax_bar.bar_label(bars)
+            ax_bar.grid(axis='y', alpha=0.3)
+            fig_bar.tight_layout()
+            st.pyplot(fig_bar, use_container_width=True)
+            plt.close(fig_bar)
+            
+            # Route Distance Statistics Report
+            if not df_ds_routes.empty:
+                st.markdown("#### Route Centerline Distance Statistics")
+                distances = df_ds_routes["topology_centerline_distance_m"]
+                total_routes = len(df_ds_routes)
+                
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Min Distance", f"{distances.min():.2f} m")
+                c2.metric("Max Distance", f"{distances.max():.2f} m")
+                c3.metric("Mean Distance", f"{distances.mean():.2f} m")
+                c4.metric("Median Distance", f"{distances.median():.2f} m")
+                c5.metric("Std Dev", f"{distances.std():.2f} m")
+                
+                routes_gt_100 = len(df_ds_routes[distances > 100.0])
+                routes_gt_150 = len(df_ds_routes[distances > 150.0])
+                
+                st.markdown(
+                    f"- **Total Unique Routes**: {total_routes:,} routes\n"
+                    f"- **Routes > 100m**: {routes_gt_100} routes ({routes_gt_100/total_routes*100:.2f}%)\n"
+                    f"- **Routes > 150m (Extreme Outliers)**: {routes_gt_150} routes ({routes_gt_150/total_routes*100:.2f}%)"
+                )
+            
+            # Graph 2: Route length distribution by split (using df_ds_routes which matches 100% of dataset routes now!)
+            fig_hist, ax_hist = plt.subplots(figsize=(12, 5))
+            for split_name in ["train", "test", "validation", "Unassigned"]:
+                subset = df_ds_routes[df_ds_routes["split"] == split_name]
+                if not subset.empty:
+                    ax_hist.hist(
+                        subset["topology_centerline_distance_m"], 
+                        bins=30, 
+                        alpha=0.6, 
+                        label=f"{split_name} ({len(subset)} routes)", 
+                        color=split_colors[split_name]
+                    )
+            ax_hist.set_title("Route Distance Distribution per Dataset Split (All Dataset Routes)")
+            ax_hist.set_xlabel("topology_centerline_distance_m (m)")
+            ax_hist.set_ylabel("Frequency (Routes)")
+            ax_hist.legend()
+            ax_hist.grid(True, alpha=0.3)
+            fig_hist.tight_layout()
+            st.pyplot(fig_hist, use_container_width=True)
+            plt.close(fig_hist)
 
             fig, ax = plt.subplots(figsize=(12, 4.6))
             ax.plot(

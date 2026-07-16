@@ -387,6 +387,317 @@ def _show_sample_metric_scatters(df: pd.DataFrame, metric_options: list[str], ru
                 _sample_metric_scatter(df, metric, sample_order, run_colors)
 
 
+def _show_occupancy_level_analysis(
+    df: pd.DataFrame,
+    selected_runs: list[RunInfo],
+    run_colors: dict[str, str],
+    metric_options: list[str]
+):
+    st.markdown("## Occupancy Level Analysis")
+    st.caption("Detailed metric analysis and sample scatter plots broken down by occupancy levels (N, N-half, and 1-agent) shown sequentially for print reporting.")
+
+    # 1. Parse occupancy levels from file name
+    df_copy = df.copy()
+    def get_occupancy_level(fname):
+        fname_str = str(fname).lower()
+        if "full" in fname_str:
+            return "N (Full)"
+        elif "half" in fname_str:
+            return "N-half (Half)"
+        elif "single" in fname_str:
+            return "1-agent (Single)"
+        return "Unknown"
+
+    df_copy["occupancy_level"] = df_copy["file_name"].apply(get_occupancy_level)
+    df_copy = df_copy[df_copy["occupancy_level"] != "Unknown"]
+
+    METHOD_DISPLAY_NAMES = {
+        "Method_pix2pixHD": "pix2pixHD",
+        "Method_PlainUnet": "Plain U-Net",
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
+        "Method_CVAE": "CVAE"
+    }
+
+    levels = [
+        ("N (Full)", "👥 N (Full occupancy)"),
+        ("N-half (Half)", "🌗 N-half (Half occupancy)"),
+        ("1-agent (Single)", "👤 1-agent (Single agent)")
+    ]
+
+    for level_key, level_title in levels:
+        st.markdown(f"### {level_title}")
+        level_df = df_copy[df_copy["occupancy_level"] == level_key]
+        if level_df.empty:
+            st.info(f"No data available for {level_key}.")
+            st.markdown("---")
+            continue
+
+        # 2. Compute and Display average metrics table
+        level_summary = []
+        for run in selected_runs:
+            run_data = level_df[level_df["run"] == run.label]
+            row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+            for m in metric_options:
+                if not run_data.empty and m in run_data.columns:
+                    row[m] = float(run_data[m].mean())
+                else:
+                    row[m] = float("nan")
+            level_summary.append(row)
+
+        df_level_summary = pd.DataFrame(level_summary)
+
+        # Highlight best values
+        best_vals = {}
+        for m in metric_options:
+            col_vals = df_level_summary[m].dropna()
+            if col_vals.empty:
+                continue
+            best_vals[m] = col_vals.min() if m in LOWER_IS_BETTER else col_vals.max()
+
+        formatted_rows = []
+        for _, row in df_level_summary.iterrows():
+            f_row = {"Model": row["Model"]}
+            for m in metric_options:
+                val = row[m]
+                if pd.isna(val):
+                    f_row[m] = "—"
+                else:
+                    is_best = (m in best_vals and abs(val - best_vals[m]) < 1e-9)
+                    if m == "PSNR":
+                        formatted_val = f"{val:.2f}"
+                    else:
+                        formatted_val = f"{val:.4f}"
+                    f_row[m] = f"**{formatted_val}**" if is_best else formatted_val
+            formatted_rows.append(f_row)
+
+        display_cols = ["Model"] + [m for m in metric_options if m in df_level_summary.columns]
+        st.markdown(f"**Average Metrics Summary Table ({level_key})**")
+        st.dataframe(pd.DataFrame(formatted_rows)[display_cols], use_container_width=True)
+
+        # 3. Plot sample scatter plots for ALL metrics in this level
+        st.markdown(f"**Metric Scatter Plots by Sample ({level_key})**")
+        level_file_names = sorted(level_df["file_name"].dropna().unique().tolist())
+        level_sample_order = {file_name: idx + 1 for idx, file_name in enumerate(level_file_names)}
+        
+        # We will plot all metrics in 2 columns
+        for start in range(0, len(metric_options), 2):
+            cols = st.columns(2)
+            for col, metric in zip(cols, metric_options[start:start + 2]):
+                with col:
+                    chart_df = level_df[["run", "file_name", metric]].dropna().copy()
+                    if not chart_df.empty and level_sample_order:
+                        chart_df["sample"] = chart_df["file_name"].map(level_sample_order)
+                        chart_df = chart_df.dropna(subset=["sample"])
+                        chart_df["sample"] = chart_df["sample"].astype(int)
+
+                        domain = list(run_colors.keys())
+                        range_colors = list(run_colors.values())
+                        color_scale = alt.Scale(domain=domain, range=range_colors)
+
+                        st.markdown(f"*{metric} by sample ({level_key})*")
+                        chart = (
+                            alt.Chart(chart_df)
+                            .mark_circle(size=38, opacity=0.72)
+                            .encode(
+                                x=alt.X("sample:Q", title="Sample"),
+                                y=alt.Y(f"{metric}:Q", title=metric),
+                                color=alt.Color("run:N", title="Run", scale=color_scale),
+                                tooltip=[
+                                    alt.Tooltip("sample:Q", title="Sample"),
+                                    alt.Tooltip("file_name:N", title="File"),
+                                    alt.Tooltip("run:N", title="Run"),
+                                    alt.Tooltip(f"{metric}:Q", title=metric, format=".6f"),
+                                ],
+                            )
+                            .interactive()
+                            .properties(height=260)
+                        )
+                        st.altair_chart(chart, use_container_width=True)
+        st.markdown("---")
+
+
+@st.cache_data
+def _load_and_get_file_distances(file_names: tuple[str, ...]):
+    import json
+    import pandas as pd
+    from utils.result_scanner import PROJECT_ROOT
+    
+    scenario_root = PROJECT_ROOT / "Geo_scenario" / "Topo_HouseGAN"
+    ri_path = scenario_root / 'route_information' / 'all_route_information.csv'
+    
+    if not ri_path.exists():
+        return {}
+        
+    try:
+        df_route = pd.read_csv(ri_path)
+    except Exception:
+        return {}
+        
+    df_route['pair_key'] = df_route.apply(
+        lambda row: tuple(sorted([str(row['start_node']), str(row['end_node'])])), 
+        axis=1
+    )
+    
+    route_map = {}
+    for _, row in df_route.iterrows():
+        plan = row['plan']
+        if plan not in route_map:
+            route_map[plan] = {}
+        route_map[plan][row['pair_key']] = float(row['topology_centerline_distance_m'])
+        
+    file_distances = {}
+    for fname in file_names:
+        parts = fname.split('__')
+        if len(parts) < 2:
+            continue
+        plan_name = parts[0]
+        suffix = parts[1].replace('.png', '')
+        sub_parts = suffix.split('_')
+        try:
+            if sub_parts[-1] in ['full', 'half', 'single']:
+                route_idx = int(sub_parts[-2])
+            else:
+                route_idx = int(sub_parts[-1])
+                
+            meta_path = scenario_root / 'metadata' / plan_name / f'route_{route_idx:02d}.json'
+            if meta_path.exists():
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                sn = meta.get('start_node')
+                en = meta.get('end_node')
+                if sn and en:
+                    pair_key = tuple(sorted([str(sn), str(en)]))
+                    dist = route_map.get(plan_name, {}).get(pair_key)
+                    if dist is not None:
+                        file_distances[fname] = dist
+        except Exception:
+            pass
+            
+    return file_distances
+
+
+def _show_error_vs_route_length_analysis(
+    df: pd.DataFrame,
+    selected_runs: list[RunInfo],
+    run_colors: dict[str, str],
+    metric_options: list[str]
+):
+    st.markdown("## Error & Quality vs Route Length Analysis")
+    st.caption("Investigating the relationship between the route physical length (meters) and the model prediction error / similarity metrics on the test set.")
+    
+    # 1. Resolve route distances for files
+    unique_files = tuple(df["file_name"].dropna().unique().tolist())
+    file_distances = _load_and_get_file_distances(unique_files)
+    
+    if not file_distances:
+        st.info("No route distance data could be mapped to test set images.")
+        return
+        
+    df_copy = df.copy()
+    df_copy["route_length_m"] = df_copy["file_name"].map(file_distances)
+    df_copy = df_copy.dropna(subset=["route_length_m"])
+    
+    # Use all metrics (MAE, MSE, RMSE, SSIM, PSNR, LPIPS)
+    error_metrics = metric_options
+    
+    # 2. Compute unified Pearson correlation coefficient r table
+    st.markdown("**Correlation Analysis (Pearson Correlation Coefficient $r$)**")
+    st.markdown(
+        "Pearson correlation measures the linear relationship. "
+        "For error metrics (MAE, MSE, RMSE, LPIPS), $r > 0$ indicates that longer routes lead to higher error (worse performance). "
+        "For similarity metrics (SSIM, PSNR), $r < 0$ indicates that longer routes lead to lower similarity/quality (worse performance)."
+    )
+    
+    METHOD_DISPLAY_NAMES = {
+        "Method_pix2pixHD": "pix2pixHD",
+        "Method_PlainUnet": "Plain U-Net",
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
+        "Method_CVAE": "CVAE"
+    }
+    
+    corr_rows = []
+    for run in selected_runs:
+        run_df = df_copy[df_copy["run"] == run.label]
+        row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+        for m in error_metrics:
+            col_name = f"{m}_r"
+            if not run_df.empty:
+                row[col_name] = float(run_df["route_length_m"].corr(run_df[m]))
+            else:
+                row[col_name] = float("nan")
+        corr_rows.append(row)
+        
+    df_corr = pd.DataFrame(corr_rows)
+    st.dataframe(df_corr, use_container_width=True)
+        
+    # 3. Scatter Plot Grid for ALL metrics (2 columns)
+    st.markdown("**Scatter Plots: Route Length (m) vs. Evaluation Metrics**")
+    
+    domain = list(run_colors.keys())
+    range_colors = list(run_colors.values())
+    color_scale = alt.Scale(domain=domain, range=range_colors)
+    
+    for start in range(0, len(error_metrics), 2):
+        cols = st.columns(2)
+        for col, metric in zip(cols, error_metrics[start:start + 2]):
+            with col:
+                st.markdown(f"*Scatter Plot: Route Length (m) vs. {metric}*")
+                chart = (
+                    alt.Chart(df_copy)
+                    .mark_circle(size=50, opacity=0.6)
+                    .encode(
+                        x=alt.X("route_length_m:Q", title="Route Length (meters)", scale=alt.Scale(zero=False)),
+                        y=alt.Y(f"{metric}:Q", title=f"{metric} Value"),
+                        color=alt.Color("run:N", title="Run", scale=color_scale),
+                        tooltip=["file_name:N", "run:N", "route_length_m:Q", f"{metric}:Q"]
+                    )
+                    .properties(height=300)
+                    .interactive()
+                )
+                st.altair_chart(chart, use_container_width=True)
+                
+    # 4. Narrative Conclusion
+    st.markdown("**Analytical Conclusion (บทวิเคราะห์สรุปแนวโน้ม):**")
+    for row in corr_rows:
+        model = row["Model"]
+        r_mae = row.get("MAE_r")
+        r_rmse = row.get("RMSE_r")
+        r_ssim = row.get("SSIM_r")
+        r_psnr = row.get("PSNR_r")
+        
+        desc_list = []
+        if r_mae is not None and not pd.isna(r_mae):
+            desc_list.append(f"MAE $r$ = {r_mae:.3f}")
+        if r_rmse is not None and not pd.isna(r_rmse):
+            desc_list.append(f"RMSE $r$ = {r_rmse:.3f}")
+        if r_ssim is not None and not pd.isna(r_ssim):
+            desc_list.append(f"SSIM $r$ = {r_ssim:.3f}")
+        if r_psnr is not None and not pd.isna(r_psnr):
+            desc_list.append(f"PSNR $r$ = {r_psnr:.3f}")
+            
+        desc_str = ", ".join(desc_list)
+        
+        # Decide performance trend based on MAE/RMSE (lower-is-better, so r > 0 means worse)
+        # and SSIM/PSNR (higher-is-better, so r < 0 means worse)
+        main_r_err = r_mae if r_mae is not None and not pd.isna(r_mae) else r_rmse
+        main_r_sim = r_ssim if r_ssim is not None and not pd.isna(r_ssim) else r_psnr
+        
+        is_worse_with_distance = False
+        if main_r_err is not None and main_r_err > 0.15:
+            is_worse_with_distance = True
+        elif main_r_sim is not None and main_r_sim < -0.15:
+            is_worse_with_distance = True
+            
+        if main_r_err is None and main_r_sim is None:
+            st.markdown(f"- **{model}**: ไม่พบข้อมูลเปรียบเทียบความสัมพันธ์")
+        elif is_worse_with_distance:
+            st.markdown(f"- **{model}** ({desc_str}): มี **แนวโน้มประสิทธิภาพลดลงชัดเจนเมื่อเส้นทางยาวขึ้น (Performance degrades with distance)** โดยมีค่าสหสัมพันธ์ของ Error เพิ่มขึ้น (Positive $r$ สำหรับ MAE/RMSE) และค่าความคล้ายคลึงลดลง (Negative $r$ สำหรับ SSIM/PSNR)")
+        else:
+            st.markdown(f"- **{model}** ({desc_str}): **ไม่มีแนวโน้มความเสื่อมถอยอย่างมีนัยสำคัญ (Stable performance across distances)** ความยาวเส้นทางไม่มีผลกระทบที่รุนแรงต่อความแม่นยำและการทำนายผังความหนาแน่น")
+            
+    st.markdown("---")
+
+
 def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
     frames = []
     for run in selected_runs:
@@ -757,6 +1068,8 @@ def render_image_based_output():
 
     _show_metric_compare(combined, metric_options, selected_runs, run_colors)
     _show_sample_metric_scatters(combined, metric_options, run_colors)
+    _show_occupancy_level_analysis(combined, selected_runs, run_colors, metric_options)
+    _show_error_vs_route_length_analysis(combined, selected_runs, run_colors, metric_options)
 
     st.markdown("### Worst / Best Case Viewer")
     rank_metric = st.selectbox("Rank by metric", metric_options, index=metric_options.index("LPIPS") if "LPIPS" in metric_options else 0)
