@@ -792,12 +792,38 @@ def _get_layout_borders(input_path, thickness=1):
         return None
 
 
+def _apply_jet_colormap(image_path_or_pil):
+    import cv2
+    import numpy as np
+    from PIL import Image
+    from pathlib import Path
+
+    try:
+        if isinstance(image_path_or_pil, (str, Path)):
+            img = Image.open(image_path_or_pil)
+        else:
+            img = image_path_or_pil
+
+        img_gray = img.convert("L")
+        arr = np.array(img_gray)
+        jet_arr = cv2.applyColorMap(arr, cv2.COLORMAP_JET)
+        jet_rgb = cv2.cvtColor(jet_arr, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(jet_rgb)
+    except Exception:
+        if isinstance(image_path_or_pil, (str, Path)):
+            return Image.open(image_path_or_pil)
+        return image_path_or_pil
+
+
 def _overlay_borders(image_path, borders, color=[220, 220, 220]):
     import numpy as np
     from PIL import Image
     from pathlib import Path
     try:
-        img = Image.open(image_path)
+        if isinstance(image_path, (str, Path)):
+            img = Image.open(image_path)
+        else:
+            img = image_path
         img_rgb = img.convert("RGB")
         arr = np.array(img_rgb)
         
@@ -829,6 +855,15 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
             first_target = target_path
         predictions.append((run.label, pred_path, run.method, run.run_name))
 
+    # Sort predictions consistently by method order: pix2pixHD -> Plain U-Net -> pix2pixHD (No D) -> CVAE
+    METHOD_ORDER = {
+        "Method_pix2pixHD": 0,
+        "Method_PlainUnet": 1,
+        "Method_pix2pixhd_No_D": 2,
+        "Method_CVAE": 3
+    }
+    predictions.sort(key=lambda x: METHOD_ORDER.get(x[2], 99))
+
     borders = _get_layout_borders(first_input) if (show_layout and first_input) else None
 
     total_cols = 2 + len(predictions)
@@ -841,7 +876,19 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
     else:
         cols[0].info("Missing input")
 
-    # Mid columns: PREDICTIONS
+    # Column 1: GROUND TRUTH
+    cols[1].markdown("**GROUND TRUTH**")
+    if first_target:
+        target_img = _apply_jet_colormap(first_target)
+        if borders is not None:
+            img_with_layout = _overlay_borders(target_img, borders)
+            cols[1].image(img_with_layout, use_container_width=True)
+        else:
+            cols[1].image(target_img, use_container_width=True)
+    else:
+        cols[1].info("Missing target")
+
+    # Columns 2+: PREDICTIONS
     METHOD_SHORT_NAMES = {
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
@@ -849,31 +896,22 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
         "Method_CVAE": "CVAE"
     }
 
-    for idx, (label, pred_path, method, run_name) in enumerate(predictions, start=1):
+    for idx, (label, pred_path, method, run_name) in enumerate(predictions, start=2):
         short_name = METHOD_SHORT_NAMES.get(method, method)
         cols[idx].markdown(f"**{short_name}**")
         if pred_path:
+            pred_img = _apply_jet_colormap(pred_path)
             if borders is not None:
-                img_with_layout = _overlay_borders(pred_path, borders)
+                img_with_layout = _overlay_borders(pred_img, borders)
                 cols[idx].image(img_with_layout, use_container_width=True)
             else:
-                cols[idx].image(str(pred_path), use_container_width=True)
+                cols[idx].image(pred_img, use_container_width=True)
         else:
             cols[idx].info("Missing prediction")
         
         # Display the long run folder name underneath the image to preserve grid alignment
         cols[idx].caption(run_name)
 
-    # Last column: TARGET
-    cols[-1].markdown("**TARGET**")
-    if first_target:
-        if borders is not None:
-            img_with_layout = _overlay_borders(first_target, borders)
-            cols[-1].image(img_with_layout, use_container_width=True)
-        else:
-            cols[-1].image(str(first_target), use_container_width=True)
-    else:
-        cols[-1].info("Missing target")
 
 
 def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
@@ -961,6 +999,77 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     st.markdown("### Model Benchmark Summary (Average)")
     st.markdown(table_md)
     st.markdown("")
+
+
+def _show_failure_case_analysis(combined: pd.DataFrame, selected_runs: list):
+    st.markdown("### Failure-Case Analysis")
+    st.markdown("This section highlights 3 best cases (lowest error, representative) and 3 worst cases (highest error) dynamically chosen from the test set.")
+    
+    if not selected_runs:
+        st.warning("No models selected.")
+        return
+        
+    run_labels = [r.label for r in selected_runs]
+    ranking_options = ["Average (All Selected Models)"] + run_labels
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col1:
+        ranking_basis = st.selectbox("Select ranking basis (SSIM):", ranking_options, index=0)
+    with col2:
+        flow_types = st.multiselect(
+            "Select Flow Case Types:",
+            options=["1 agent (single)", "N half (half)", "N full (full)"],
+            default=["1 agent (single)", "N half (half)", "N full (full)"]
+        )
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True) # visual alignment
+        show_layout_overlay = st.checkbox("Overlay room layout borders on predictions and targets", value=True, key="failure_case_layout")
+    
+    if not flow_types:
+        st.warning("Please select at least one Flow Case Type.")
+        return
+
+    type_map = {
+        "1 agent (single)": "single",
+        "N half (half)": "half",
+        "N full (full)": "full"
+    }
+    selected_suffixes = [type_map[ft] for ft in flow_types]
+
+    def check_suffix(fname):
+        if not isinstance(fname, str):
+            return False
+        base = fname.lower().split(".png")[0]
+        for s in selected_suffixes:
+            if base.endswith(f"_{s}"):
+                return True
+        return False
+
+    filtered_combined = combined[combined["file_name"].apply(check_suffix)]
+
+    if ranking_basis == "Average (All Selected Models)":
+        agg_df = filtered_combined.dropna(subset=["SSIM"]).groupby("file_name")["SSIM"].mean().reset_index()
+    else:
+        agg_df = filtered_combined[filtered_combined["run"] == ranking_basis].dropna(subset=["SSIM"])
+        
+    if agg_df.empty:
+        st.warning("No SSIM data available for ranking under current filters.")
+        return
+
+    sorted_df = agg_df.sort_values(by="SSIM", ascending=True)
+    worst_cases = sorted_df.head(3)["file_name"].tolist()
+    best_cases = sorted_df.tail(3)["file_name"].tolist()
+    
+    def render_cases(cases, title):
+        st.markdown(f"#### {title}")
+        for case in cases:
+            st.markdown(f"**Sample**: `{case}`")
+            _show_image_compare(selected_runs, case, show_layout=show_layout_overlay)
+            st.markdown("---")
+            
+    render_cases(best_cases, "✅ 3 Cases Where Model Performed Best (Highest SSIM)")
+    render_cases(worst_cases, "❌ 3 Cases Where Model Performed Worst (Lowest SSIM)")
+
 
 
 def render_image_based_output():
@@ -1070,6 +1179,7 @@ def render_image_based_output():
     _show_sample_metric_scatters(combined, metric_options, run_colors)
     _show_occupancy_level_analysis(combined, selected_runs, run_colors, metric_options)
     _show_error_vs_route_length_analysis(combined, selected_runs, run_colors, metric_options)
+    _show_failure_case_analysis(combined, selected_runs)
 
     st.markdown("### Worst / Best Case Viewer")
     rank_metric = st.selectbox("Rank by metric", metric_options, index=metric_options.index("LPIPS") if "LPIPS" in metric_options else 0)

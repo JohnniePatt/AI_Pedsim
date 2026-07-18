@@ -472,8 +472,8 @@ def run_evaluation(run_path, config_file=None):
                 "lpips": float(lpips_val),
             })
             
-            # Save periodic samples (first 50)
-            if i < 50:
+            # Save all samples
+            if True:
                 ow, oh = orig_size[0].tolist()
                 file_name = str(file_name_batch[0])
                 def denorm_and_finalize_image(x):

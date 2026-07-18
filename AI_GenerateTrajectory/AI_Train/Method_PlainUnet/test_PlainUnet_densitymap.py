@@ -58,7 +58,7 @@ def main():
     model.load_state_dict(state["model_state_dict"])
     model.eval()
 
-    image_size = args.image_size if args.image_size is not None else cfg.get("image_size", 256)
+    image_size = args.image_size if args.image_size is not None else 512
     print(f"[TEST] Using evaluation image size: {image_size}x{image_size}")
     test_loader = DataLoader(PlainUNetDataset(dataset_root, "test", image_size), batch_size=1, shuffle=False)
 
@@ -97,20 +97,25 @@ def main():
                 "LPIPS": lpips_val
             })
 
-            if i < 50:
+            if True:
+                orig_size = Image.open(dataset_root / "A" / test_loader.dataset.split / name[0]).size
+                
                 # Save input
-                a_img = ((a.cpu().numpy()[0].transpose(1, 2, 0)) * 255).clip(0, 255).astype(np.uint8)
-                Image.fromarray(a_img, mode="RGB").save(input_dir / name[0])
+                a_img_arr = ((a.cpu().numpy()[0].transpose(1, 2, 0)) * 255).clip(0, 255).astype(np.uint8)
+                a_img = Image.fromarray(a_img_arr, mode="RGB").resize(orig_size, Image.LANCZOS)
+                a_img.save(input_dir / name[0])
                 
                 # Save target
-                b_img = (b_arr * 255).clip(0, 255).astype(np.uint8)
-                _to_colorjet(b_img).save(target_dir / name[0])
-                Image.fromarray(b_img, mode="L").convert("RGB").save(target_dir / f"MASK_{name[0]}")
+                b_img_arr = (b_arr * 255).clip(0, 255).astype(np.uint8)
+                b_img = Image.fromarray(b_img_arr, mode="L").resize(orig_size, Image.LANCZOS)
+                _to_colorjet(np.array(b_img)).save(target_dir / name[0])
+                b_img.convert("RGB").save(target_dir / f"MASK_{name[0]}")
                 
                 # Save prediction
-                p_img = (pred_arr * 255).clip(0, 255).astype(np.uint8)
-                _to_colorjet(p_img).save(pred_dir / name[0])
-                Image.fromarray(p_img, mode="L").convert("RGB").save(pred_dir / f"MASK_{name[0]}")
+                p_img_arr = (pred_arr * 255).clip(0, 255).astype(np.uint8)
+                p_img = Image.fromarray(p_img_arr, mode="L").resize(orig_size, Image.LANCZOS)
+                _to_colorjet(np.array(p_img)).save(pred_dir / name[0])
+                p_img.convert("RGB").save(pred_dir / f"MASK_{name[0]}")
 
     if rows:
         summary = {k: np.mean([r[k] for r in rows if not (isinstance(r[k], float) and math.isnan(r[k]))]) for k in rows[0].keys() if k != "file_name"}
