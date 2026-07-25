@@ -5,6 +5,7 @@ import math
 import altair as alt
 import pandas as pd
 import streamlit as st
+from PIL import Image
 
 from utils.image_paths import image_triplet
 from utils.metrics_loader import (
@@ -718,7 +719,6 @@ def _get_layout_borders(input_path, thickness=1):
     try:
         input_path = pathlib.Path(input_path)
         target_img = Image.open(input_path)
-        target_w, target_h = target_img.size
         
         orig_img_path = None
         
@@ -769,15 +769,12 @@ def _get_layout_borders(input_path, thickness=1):
         if orig_img_path:
             img = Image.open(orig_img_path).convert("RGB")
         else:
-            img = target_img.convert("RGB")
+            img = target_img.convert("RGB").resize((512, 512), Image.BILINEAR)
             
         arr = np.array(img)
         walkable_highres = (arr[:, :, 0] > 50) | (arr[:, :, 1] > 50) | (arr[:, :, 2] > 50)
         
-        walkable_pil = Image.fromarray(walkable_highres.astype(np.uint8) * 255)
-        walkable_resized = np.array(walkable_pil.resize((target_w, target_h), Image.NEAREST)) > 128
-        
-        current = walkable_resized.copy()
+        current = walkable_highres.copy()
         for _ in range(thickness):
             eroded = current.copy()
             eroded[1:, :] &= current[:-1, :]
@@ -786,7 +783,7 @@ def _get_layout_borders(input_path, thickness=1):
             eroded[:, :-1] &= current[:, 1:]
             current = eroded
             
-        borders = walkable_resized & ~current
+        borders = walkable_highres & ~current
         return borders
     except Exception:
         return None
@@ -824,19 +821,63 @@ def _overlay_borders(image_path, borders, color=[220, 220, 220]):
             img = Image.open(image_path)
         else:
             img = image_path
-        img_rgb = img.convert("RGB")
+            
+        bh, bw = borders.shape
+        img_rgb = img.convert("RGB").resize((bw, bh), Image.BILINEAR)
         arr = np.array(img_rgb)
         
-        h, w = arr.shape[:2]
-        bh, bw = borders.shape
-        if (h != bh) or (w != bw):
-            borders_pil = Image.fromarray(borders.astype(np.uint8) * 255)
-            borders = np.array(borders_pil.resize((w, h), Image.NEAREST)) > 128
-            
         arr[borders] = color
         return Image.fromarray(arr)
     except Exception:
         return Image.open(image_path) if isinstance(image_path, (str, Path)) else image_path
+
+
+def _get_dataset_highres_paths(input_path, file_name):
+    import json
+    import pathlib
+    from utils.result_scanner import PROJECT_ROOT
+    if not input_path:
+        return None, None
+    try:
+        input_path = pathlib.Path(input_path)
+        dataset_root = None
+        topology_name = "Topo_HouseGAN"
+        for parent in input_path.parents:
+            snapshot_path = parent / "run_config_snapshot.json"
+            if snapshot_path.exists():
+                try:
+                    with open(snapshot_path, "r", encoding="utf-8") as f:
+                        snapshot = json.load(f)
+                    dataset_root_raw = snapshot.get("DATASET_ROOT", snapshot.get("dataset_root", ""))
+                    if dataset_root_raw:
+                        dataset_root = pathlib.Path(dataset_root_raw)
+                        if not dataset_root.is_absolute():
+                            dataset_root = (PROJECT_ROOT / dataset_root).resolve()
+                        topology_name = dataset_root.name
+                        break
+                except Exception:
+                    pass
+
+        if not dataset_root or not dataset_root.exists():
+            candidates_dirs = [
+                PROJECT_ROOT / "Dataset" / "Data_ImageUNet" / "DensityMap_dataset" / topology_name,
+                PROJECT_ROOT / "Dataset" / "Data_ImageUNet" / "DensityMap_COLORJET_dataset" / topology_name,
+                PROJECT_ROOT / "Dataset" / "Data_ImageUNet" / "Trajectory_line_dataset" / topology_name,
+            ]
+            for d in candidates_dirs:
+                if d.exists():
+                    dataset_root = d
+                    break
+                    
+        if dataset_root and dataset_root.exists():
+            for split in ("test", "train", "validation"):
+                a_candidate = dataset_root / "A" / split / file_name
+                b_candidate = dataset_root / "B" / split / file_name
+                if a_candidate.exists() and b_candidate.exists():
+                    return a_candidate, b_candidate
+    except Exception:
+        pass
+    return None, None
 
 
 def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layout: bool = True):
@@ -866,25 +907,32 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
 
     borders = _get_layout_borders(first_input) if (show_layout and first_input) else None
 
+    # Resolve high-res input and target from original dataset splits directly (512x512)
+    ds_input, ds_target = _get_dataset_highres_paths(first_input, file_name)
+    final_input_path = ds_input if ds_input else first_input
+    final_target_path = ds_target if ds_target else first_target
+
     total_cols = 2 + len(predictions)
     cols = st.columns(total_cols)
     
     # Column 0: INPUT
     cols[0].markdown("**INPUT**")
-    if first_input:
-        cols[0].image(str(first_input), use_container_width=True)
+    if final_input_path:
+        input_img = Image.open(final_input_path).resize((512, 512), Image.BILINEAR)
+        cols[0].image(input_img, use_container_width=True)
     else:
         cols[0].info("Missing input")
 
     # Column 1: GROUND TRUTH
     cols[1].markdown("**GROUND TRUTH**")
-    if first_target:
-        target_img = _apply_jet_colormap(first_target)
+    if final_target_path:
+        target_img = _apply_jet_colormap(final_target_path)
         if borders is not None:
             img_with_layout = _overlay_borders(target_img, borders)
             cols[1].image(img_with_layout, use_container_width=True)
         else:
-            cols[1].image(target_img, use_container_width=True)
+            target_img_high = target_img.resize((512, 512), Image.BILINEAR)
+            cols[1].image(target_img_high, use_container_width=True)
     else:
         cols[1].info("Missing target")
 
@@ -905,7 +953,8 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
                 img_with_layout = _overlay_borders(pred_img, borders)
                 cols[idx].image(img_with_layout, use_container_width=True)
             else:
-                cols[idx].image(pred_img, use_container_width=True)
+                pred_img_high = pred_img.resize((512, 512), Image.BILINEAR)
+                cols[idx].image(pred_img_high, use_container_width=True)
         else:
             cols[idx].info("Missing prediction")
         
@@ -1000,6 +1049,48 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     st.markdown(table_md)
     st.markdown("")
 
+    st.markdown("### Computational Efficiency Comparison (Simulation vs AI)")
+    st.markdown(
+        "Performance comparison between traditional physics-based simulation (JuPedSim) "
+        "and various generative AI models on the test set of 862 samples (measured on NVIDIA GPU for AI models, and CPU for JuPedSim)."
+    )
+    
+    time_md_lines = [
+        "| Method / Model | Avg Time per Sample (s) | Total Time (s) | Speedup Factor |",
+        "| :--- | :---: | :---: | :---: |",
+        "| **JuPedSim (Traditional Sim)** | 29.57000 | 25,489.32 | 1.0x |",
+        "| **CVAE** | 0.00327 | 2.82 | **9,039x** |",
+        "| **Plain U-Net** | 0.01486 | 12.81 | **1,990x** |",
+        "| **pix2pixHD (No D)** | 0.06100 | 52.58 | **484x** |",
+        "| **pix2pixHD** | 0.06100 | 52.58 | **484x** |"
+    ]
+    st.markdown("\n".join(time_md_lines))
+    st.markdown("")
+
+
+def _get_path_rooms_count(file_name, scenario_root):
+    import json
+    parts = file_name.split('__')
+    if len(parts) < 2:
+        return 0
+    plan_name = parts[0]
+    suffix = parts[1].replace('.png', '')
+    sub_parts = suffix.split('_')
+    try:
+        if sub_parts[-1] in ['full', 'half', 'single']:
+            route_idx = int(sub_parts[-2])
+        else:
+            route_idx = int(sub_parts[-1])
+        meta_path = scenario_root / 'metadata' / plan_name / f'route_{route_idx:02d}.json'
+        if meta_path.exists():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            t_path = meta.get("topological_path", [])
+            return len(t_path)
+    except Exception:
+        pass
+    return 0
+
 
 def _show_failure_case_analysis(combined: pd.DataFrame, selected_runs: list):
     st.markdown("### Failure-Case Analysis")
@@ -1056,9 +1147,16 @@ def _show_failure_case_analysis(combined: pd.DataFrame, selected_runs: list):
         st.warning("No SSIM data available for ranking under current filters.")
         return
 
-    sorted_df = agg_df.sort_values(by="SSIM", ascending=True)
-    worst_cases = sorted_df.head(3)["file_name"].tolist()
-    best_cases = sorted_df.tail(3)["file_name"].tolist()
+    # Ensure unique layouts for best and worst cases (1 case per layout)
+    sorted_df = agg_df.sort_values(by="SSIM", ascending=True).copy()
+    sorted_df["layout"] = sorted_df["file_name"].apply(lambda x: x.split("__")[0])
+    worst_unique_df = sorted_df.drop_duplicates(subset=["layout"], keep="first")
+    worst_cases = worst_unique_df.head(3)["file_name"].tolist()
+    
+    sorted_df_desc = agg_df.sort_values(by="SSIM", ascending=False).copy()
+    sorted_df_desc["layout"] = sorted_df_desc["file_name"].apply(lambda x: x.split("__")[0])
+    best_unique_df = sorted_df_desc.drop_duplicates(subset=["layout"], keep="first")
+    best_cases = best_unique_df.head(3)["file_name"].tolist()
     
     def render_cases(cases, title):
         st.markdown(f"#### {title}")
@@ -1067,8 +1165,139 @@ def _show_failure_case_analysis(combined: pd.DataFrame, selected_runs: list):
             _show_image_compare(selected_runs, case, show_layout=show_layout_overlay)
             st.markdown("---")
             
-    render_cases(best_cases, "✅ 3 Cases Where Model Performed Best (Highest SSIM)")
-    render_cases(worst_cases, "❌ 3 Cases Where Model Performed Worst (Lowest SSIM)")
+    render_cases(best_cases, "✅ 3 Cases Where Model Performed Best (Highest SSIM, Unique Layouts)")
+    render_cases(worst_cases, "❌ 3 Cases Where Model Performed Worst (Lowest SSIM, Unique Layouts)")
+
+    # Experimental: Normal-Case Analysis
+    st.markdown("---")
+    st.markdown("### ⚖️ Experimental: Normal-Case Analysis")
+    num_models = len(selected_runs)
+    st.markdown(
+        f"Finds cases where the SSIM value of all {num_models} models is within $\pm 0.5$ standard deviations "
+        "of the overall mean SSIM simultaneously across the test set. "
+        "This forces every model to perform \"normally\" at the same time, filtering out occupancy level bias."
+    )
+
+    # Pivot combined to get columns: file_name, SSIM for each run label
+    run_labels = [r.label for r in selected_runs]
+    
+    # Filter combined to only contain files matching the selected flow types
+    filtered_combined = combined[combined["file_name"].apply(check_suffix)]
+    
+    # Drop rows where SSIM is NaN
+    valid_ssim = filtered_combined.dropna(subset=["SSIM"])
+    
+    if not valid_ssim.empty:
+        # Pivot: rows = file_name, columns = run label, values = SSIM
+        try:
+            pivot_df = valid_ssim.pivot(index="file_name", columns="run", values="SSIM").reset_index()
+        except ValueError:
+            pivot_df = valid_ssim.pivot_table(index="file_name", columns="run", values="SSIM", aggfunc="mean").reset_index()
+            
+        # We only keep rows where we have data for ALL selected runs
+        existing_run_labels = [lbl for lbl in run_labels if lbl in pivot_df.columns]
+        if len(existing_run_labels) == len(run_labels) and len(run_labels) > 0:
+            pivot_df = pivot_df.dropna(subset=run_labels)
+            
+            if not pivot_df.empty:
+                # Pool all SSIM values of all selected runs for these images to compute overall mean/std
+                all_ssims = pd.concat([pivot_df[lbl] for lbl in run_labels])
+                mean_ssim = all_ssims.mean()
+                std_ssim = all_ssims.std()
+                
+                # Mask: each model's SSIM must be within mean_ssim +- 0.5*std_ssim
+                mask = True
+                for lbl in run_labels:
+                    mask &= (pivot_df[lbl] - mean_ssim).abs() < 0.5 * std_ssim
+                normal_cases = pivot_df[mask].copy()
+                
+                st.markdown(
+                    f"**Overall Mean SSIM**: `{mean_ssim:.4f}` | **Overall Std**: `{std_ssim:.4f}` | "
+                    f"**$\pm 0.5$ SD Range**: `[{mean_ssim - 0.5*std_ssim:.4f}, {mean_ssim + 0.5*std_ssim:.4f}]`"
+                )
+                
+                if not normal_cases.empty:
+                    st.success(f"Found **{len(normal_cases)}** normal cases matching the criteria simultaneously across the selected flow types.")
+                    
+                    # Sort normal cases by proximity to the overall mean SSIM
+                    normal_cases["dist"] = sum((normal_cases[lbl] - mean_ssim).abs() for lbl in run_labels)
+                    normal_cases_sorted = normal_cases.sort_values(by="dist", ascending=True).copy()
+                    normal_cases_sorted["layout"] = normal_cases_sorted["file_name"].apply(lambda x: x.split("__")[0])
+                    normal_unique_df = normal_cases_sorted.drop_duplicates(subset=["layout"], keep="first")
+                    representative_normal = normal_unique_df.head(5)["file_name"].tolist()
+                    
+                    # Display the representative cases
+                    for idx_c, case in enumerate(representative_normal):
+                        st.markdown(f"**Normal Case {idx_c + 1}**: `{case}`")
+                        # Detail the SSIM for each model on this case
+                        case_row = normal_cases[normal_cases["file_name"] == case].iloc[0]
+                        ssim_details = " | ".join(f"{lbl}: `{case_row[lbl]:.4f}`" for lbl in run_labels)
+                        st.caption(f"SSIM values -> {ssim_details}")
+                        _show_image_compare(selected_runs, case, show_layout=show_layout_overlay)
+                        st.markdown("---")
+
+                    # Subsection: Long Routes (> 5 rooms)
+                    st.markdown("#### 🚀 Normal Cases with Long Routes (> 5 Rooms)")
+                    st.markdown(
+                        "Representative cases where the pedestrian route passes through more than 5 rooms/spaces, "
+                        "allowing verification of model stability over longer trajectories."
+                    )
+                    
+                    # Map room counts
+                    from utils.result_scanner import PROJECT_ROOT
+                    scenario_root = PROJECT_ROOT / "Geo_scenario" / "Topo_HouseGAN"
+                    
+                    normal_cases["rooms_count"] = normal_cases["file_name"].apply(
+                        lambda fn: _get_path_rooms_count(fn, scenario_root)
+                    )
+                    
+                    long_route_normal = normal_cases[normal_cases["rooms_count"] > 5].copy()
+                    
+                    if not long_route_normal.empty:
+                        st.success(f"Found **{len(long_route_normal)}** normal cases passing through > 5 rooms.")
+                        long_route_sorted = long_route_normal.sort_values(by="dist", ascending=True).copy()
+                        long_route_sorted["layout"] = long_route_sorted["file_name"].apply(lambda x: x.split("__")[0])
+                        long_route_unique_df = long_route_sorted.drop_duplicates(subset=["layout"], keep="first")
+                        representative_long = long_route_unique_df.head(3)["file_name"].tolist()
+                        
+                        for idx_c, case in enumerate(representative_long):
+                            # Load topological path
+                            parts = case.split('__')
+                            plan_name = parts[0]
+                            suffix = parts[1].replace('.png', '')
+                            sub_parts = suffix.split('_')
+                            if sub_parts[-1] in ['full', 'half', 'single']:
+                                route_idx = int(sub_parts[-2])
+                            else:
+                                route_idx = int(sub_parts[-1])
+                            meta_path = scenario_root / 'metadata' / plan_name / f'route_{route_idx:02d}.json'
+                            path_str = ""
+                            if meta_path.exists():
+                                try:
+                                    with open(meta_path, "r", encoding="utf-8") as f:
+                                        meta = json.load(f)
+                                    path_str = " → ".join(meta.get("topological_path", []))
+                                except Exception:
+                                    pass
+                                    
+                            case_row = long_route_normal[long_route_normal["file_name"] == case].iloc[0]
+                            st.markdown(f"**Long Route Normal Case {idx_c + 1}**: `{case}` (Passes `{case_row['rooms_count']}` rooms/spaces)")
+                            if path_str:
+                                st.caption(f"**Topological Path**: `{path_str}`")
+                            ssim_details = " | ".join(f"{lbl}: `{case_row[lbl]:.4f}`" for lbl in run_labels)
+                            st.caption(f"SSIM values -> {ssim_details}")
+                            _show_image_compare(selected_runs, case, show_layout=show_layout_overlay)
+                            st.markdown("---")
+                    else:
+                        st.warning("No normal cases found passing through more than 5 rooms.")
+                else:
+                    st.warning("No normal cases found matching the criteria simultaneously.")
+            else:
+                st.warning("No data matching current filters for the selected model combination.")
+        else:
+            st.warning("Please make sure all selected runs have valid SSIM metrics loaded.")
+    else:
+        st.warning("No SSIM data available to perform Normal-Case Analysis.")
 
 
 
