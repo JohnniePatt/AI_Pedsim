@@ -45,14 +45,18 @@ def predict_dataset(model, dataset, checkpoint, device):
 
 def compute_metrics(pred, true, target_columns):
     error = pred - true
+    mse = float(np.mean(error**2))
     metrics = {
         "rows": int(len(pred)),
         "mae_overall_s": float(np.mean(np.abs(error))),
-        "rmse_overall_s": float(np.sqrt(np.mean(error**2))),
+        "mse_overall_s": mse,
+        "rmse_overall_s": float(np.sqrt(mse)),
     }
     for idx, name in enumerate(target_columns):
+        target_mse = float(np.mean(error[:, idx] ** 2))
         metrics[f"mae_{name}"] = float(np.mean(np.abs(error[:, idx])))
-        metrics[f"rmse_{name}"] = float(np.sqrt(np.mean(error[:, idx] ** 2)))
+        metrics[f"mse_{name}"] = target_mse
+        metrics[f"rmse_{name}"] = float(np.sqrt(target_mse))
     return metrics
 
 
@@ -64,6 +68,13 @@ def test(config_path, checkpoint_path=None, output_dir=None):
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
     bundle = build_data_bundle(config, config_path)
+    if list(bundle.feature_columns) != list(checkpoint["feature_columns"]):
+        meta = bundle.test.meta.copy()
+        if "observed_agents" in checkpoint["feature_columns"] and "observed_agents" not in meta.columns:
+            meta["observed_agents"] = meta["computed_agents"]
+        from dataset import TimeEstimateDataset
+        bundle.test = TimeEstimateDataset(meta, checkpoint["feature_columns"], checkpoint["target_columns"], checkpoint["scaler"])
+
     device = choose_device(config)
     model = build_model(len(checkpoint["feature_columns"]), checkpoint["config"]).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])

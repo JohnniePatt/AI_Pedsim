@@ -83,14 +83,18 @@ def collate_graphs(batch):
 
 def compute_metrics(pred_s, true_s, target_columns):
     error = pred_s - true_s
+    mse = float(np.mean(error**2))
     metrics = {
         "rows": int(len(pred_s)),
         "mae_overall_s": float(np.mean(np.abs(error))),
-        "rmse_overall_s": float(np.sqrt(np.mean(error**2))),
+        "mse_overall_s": mse,
+        "rmse_overall_s": float(np.sqrt(mse)),
     }
     for idx, name in enumerate(target_columns):
+        target_mse = float(np.mean(error[:, idx] ** 2))
         metrics[f"mae_{name}"] = float(np.mean(np.abs(error[:, idx])))
-        metrics[f"rmse_{name}"] = float(np.sqrt(np.mean(error[:, idx] ** 2)))
+        metrics[f"mse_{name}"] = target_mse
+        metrics[f"rmse_{name}"] = float(np.sqrt(target_mse))
     return metrics
 
 # ---------------------------------------------------------------------------
@@ -158,10 +162,12 @@ def test(config_path, checkpoint_path=None, output_dir=None):
     run_metrics = {
         "final_test": {
             "mae_overall_s": test_metrics["mae_overall_s"],
+            "mse_overall_s": test_metrics["mse_overall_s"],
             "rmse_overall_s": test_metrics["rmse_overall_s"],
         },
         "all_metrics": {
             "mae": [test_metrics[f"mae_{target}"] for target in target_columns],
+            "mse": [test_metrics[f"mse_{target}"] for target in target_columns],
             "rmse": [test_metrics[f"rmse_{target}"] for target in target_columns],
         },
         "targets": target_columns,
