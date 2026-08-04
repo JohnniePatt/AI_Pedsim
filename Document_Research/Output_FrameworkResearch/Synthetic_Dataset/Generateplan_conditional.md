@@ -36,7 +36,7 @@
 ---
 
 ## 3. ทำไมถึงเกิด "ผังเล็ก (Small)" ทั้งที่ไม่ได้สั่งรัน? (Technical Deep Dive)
-สาเหตุเกิดจากลอจิกในโค้ด [generate_layout.py](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Generate_HouseGAN/generate_layout.py#L65-L87) ซึ่งใช้การวางตำแหน่งห้องแบบสุ่มและตรวจสอบการซ้อนทับกัน (Room Overlap/Collision Detection):
+สาเหตุเกิดจากลอจิกในโค้ด [generate_layout.py](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Train/Generate_HouseGAN/generate_layout.py#L65-L87) ซึ่งใช้การวางตำแหน่งห้องแบบสุ่มและตรวจสอบการซ้อนทับกัน (Room Overlap/Collision Detection):
 - อัลกอริทึมจะพยายามวางห้องต่อๆ กันให้ได้ครบตามจำนวนเป้าหมายที่สุ่มได้จากช่วงพารามิเตอร์ (เช่น หากสุ่มได้ 8 ห้องในระดับ Medium)
 - ในแต่ละห้องที่จะวาง โค้ดจะสุ่มพิกัดและลองวางดูไม่เกิน **100 ครั้ง (Trials)** 
 - หากรอบสุ่มนั้นชนกับห้องอื่นจนเต็มพื้นที่และไม่สามารถวางห้องถัดไปได้หลังจากครบ 100 ครั้ง โค้ดจะ**ข้าม (Skip)** ห้องนั้นไปทันทีและจบการสร้างผังด้วยจำนวนห้องที่วางได้สำเร็จ

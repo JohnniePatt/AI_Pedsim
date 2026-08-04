@@ -1,0 +1,11 @@
+{
+    "dataset_path": "../../../Dataset/Data_Traj_Table/Topo_HouseGAN",
+    "batch_size": 1,
+    "obs_len": 50,
+    "pred_len": 25,
+    "skip": 1,
+    "col_frame": "frame",
+    "col_agent": "id",
+    "col_x": "pos_x",
+    "col_y": "pos_y"
+}

@@ -25,7 +25,7 @@ def upscale_run_images(run_path: pathlib.Path, target_size: int = 1024) -> int:
 
     dataset_root = pathlib.Path(dataset_root_raw)
     if not dataset_root.is_absolute():
-        project_root = pathlib.Path(__file__).resolve().parent.parent / "AI_GenerateTrajectory"
+        project_root = pathlib.Path(__file__).resolve().parent.parent / "AI_GenerateImage"
         dataset_root = (project_root / dataset_root).resolve()
 
     test_a_dir = dataset_root / "A" / "test"

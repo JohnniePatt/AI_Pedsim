@@ -17,28 +17,31 @@ cd AI_Pedsim
 ## Running the Dashboard
 
 ```bash
-streamlit run Streamlit_ui/app.py
+streamlit run UI_DevelopAI/Streamlit_ui/app.py
 ```
 
 ## Running Training / Testing Directly
 
-Each method lives in `AI_Train/Method_<Name>/` and has its own `config_train.json` / `config_test.json`.
+Each method lives in `AI_GenerateTimeseries/AI_Train/Method_<Name>/` and has its own `config_train.json` / `config_test.json`.
 
 ```bash
 # Transformer (GPT-2)
-python AI_Train/Method_Transformer/train_transformer.py --config AI_Train/Method_Transformer/config_train.json
-python AI_Train/Method_Transformer/test_transformer.py  --config AI_Train/Method_Transformer/config_test.json
+python AI_GenerateTimeseries/AI_Train/Method_Transformer/train_transformer.py --config AI_GenerateTimeseries/AI_Train/Method_Transformer/config_train.json
+python AI_GenerateTimeseries/AI_Train/Method_Transformer/test_transformer.py  --config AI_GenerateTimeseries/AI_Train/Method_Transformer/config_test.json
 
 # GNN-CVAE
-python AI_Train/Method_GNN_CVAE/train_gnn_cvae.py --config AI_Train/Method_GNN_CVAE/config_train.json
-python AI_Train/Method_GNN_CVAE/test_gnn_cvae.py  --config AI_Train/Method_GNN_CVAE/config_test.json
+python AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE/train_gnn_cvae.py --config AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE/config_train.json
+python AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE/test_gnn_cvae.py  --config AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE/config_test.json
+
+# Grid Social Policy
+python AI_GenerateTimeseries/AI_Train/Method_GridSocialPolicy/train_grid_policy.py --config AI_GenerateTimeseries/AI_Train/Method_GridSocialPolicy/config_train.json
 
 # SGAN
-python AI_Train/Method_SGAN/train_sgan.py --config AI_Train/Method_SGAN/config_train.json
-python AI_Train/Method_SGAN/test_sgan.py  --config AI_Train/Method_SGAN/config_test.json
+python AI_GenerateTimeseries/AI_Train/Method_SGAN/train_sgan.py --config AI_GenerateTimeseries/AI_Train/Method_SGAN/config_train.json
+python AI_GenerateTimeseries/AI_Train/Method_SGAN/test_sgan.py  --config AI_GenerateTimeseries/AI_Train/Method_SGAN/config_test.json
 
 # RL (Actor-Critic)
-python AI_Train/Method_RL/train_rl.py   # config is in config_rl.py (Python file, not JSON)
+python AI_GenerateTimeseries/AI_Train/Method_RL/train_rl.py   # config is in config_rl.py (Python file, not JSON)
 ```
 
 ## Data Pipeline
@@ -76,20 +79,18 @@ AI_Result/Method_<Name>/outputs/run_N/
 
 | Directory | Role |
 |-----------|------|
-| `AI_Train/Method_Transformer/` | GPT-2 goal-conditioned full-trajectory prediction (primary method). `model.py` defines `GoalConditionedGPT2` with a CNN `GeoEncoder`, neighbour context tokens, and a causal GPT-2 backbone. Training uses teacher-forcing; inference is autoregressive with KV-cache. |
-| `AI_Train/Method_GNN_CVAE/` | Graph-based CVAE. Agents are nodes; nearby agents define edges. A CVAE latent captures motion style; the decoder rolls trajectories forward using GNN social context. |
-| `AI_Train/Method_SGAN/` | Social GAN (short-horizon next-N-frame prediction). |
-| `AI_Train/Method_LSTM_01/` | LSTM baseline for bottleneck topology. |
-| `AI_Train/Method_RL/` | Actor-Critic RL agent with shared LSTM. Reward function in `vir_pedsim.py`. Config is `config_rl.py` (Python), not JSON. |
-| `AI_Train/Method_Unet-pix2pix/` & `Method_pix2pixHD/` | Image-to-image translation methods treating trajectory heatmaps as images. |
-| `AI_Train/Generate_HouseGAN/` | Generates floor plan layouts via HouseGAN. |
+| `AI_GenerateTimeseries/AI_Train/Method_Transformer/` | GPT-2 goal-conditioned trajectory sequence prediction. `model.py` defines `GoalConditionedGPT2` with CNN `GeoEncoder` and causal GPT-2. |
+| `AI_GenerateTimeseries/AI_Train/Method_GridSocialPolicy/` | Behavior-cloning discrete action policy model on spatial grid cell representations. |
+| `AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE/` | Graph-based CVAE trajectory generator modeling agent social graph interaction. |
+| `AI_GenerateTimeseries/AI_Train/Method_SGAN/` | Social GAN trajectory prediction baseline. |
+| `AI_GenerateTimeseries/AI_Train/Method_LSTM_01/` | LSTM baseline for trajectory sequence prediction. |
+| `AI_GenerateTimeseries/AI_Train/Method_RL/` | Actor-Critic RL agent in virtual simulation environment (`vir_pedsim.py`). |
+| `AI_GenerateImage/AI_Train/Method_pix2pixHD/` & `Method_PlainUnet/` | Image-based translation methods predicting density heatmaps as image outputs. |
+| `AI_GenerateImage/AI_Train/Method_CVAE/` | Image-based CVAE predicting black & white / color density heatmaps. |
 | `Formater/` | SQLite → Parquet conversion. Run `format_to_parquet.py` when new simulation data arrives. |
-| `Prepare_data/` | Dataset reorganisation and train/test split scripts. |
-| `Geo_scenario/` | Raw geometry and simulation outputs (SQLite, JSON, CSV). Source of truth for map data. |
-| `Dataset_Traj_Table/` | Converted Parquet datasets consumed by all training scripts. |
-| `AI_Result/` | All model outputs, logs, and checkpoints. |
-| `Streamlit_ui/` | Dashboard (`app.py` + `utils/`). Reads configs, launches training subprocesses via `utils/executor.py`, and visualises results via `utils/visualizer.py`. |
-| `Check_duplicates/` | Utility scripts for finding duplicate trajectories in the dataset. |
+| `Geo_scenario/` | Raw geometry and simulation outputs (SQLite, JSON, CSV). |
+| `Dataset/` | Converted Parquet & CSV datasets consumed by training scripts. |
+| `Document_Research/` | Research notes, paper outlines, and framework documentations. |
 
 ## Key Metrics
 

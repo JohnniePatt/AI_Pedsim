@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-AI_RESULT_ROOT = PROJECT_ROOT / "AI_GenerateTrajectory" / "AI_Result"
+AI_RESULT_ROOT = PROJECT_ROOT / "AI_GenerateImage" / "AI_Result"
 
 
 @dataclass(frozen=True)

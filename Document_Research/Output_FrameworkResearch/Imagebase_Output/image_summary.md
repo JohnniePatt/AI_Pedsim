@@ -2,7 +2,7 @@
 
 ## 1. การประเมินความสอดคล้อง (Coding Matching Score)
 **คะแนน: 10/10**
-**เหตุผล:** โครงสร้างโฟลเดอร์สำหรับโมเดลภาพ (`AI_GenerateTrajectory/AI_Train/Method_*`) สอดคล้องและครบถ้วนมาก ครอบคลุมสถาปัตยกรรมหลักทั้ง 4 ตัว ได้แก่ Plain U-Net, Pix2PixHD (with adversarial), Pix2PixHD No_D (without adversarial), และ CVAE พร้อมสคริปต์สำหรับการเทรนและการรันทดสอบ (`train_*.py`, `test_*.py`) รวมถึงมีชุดการประเมินผลเชิงเปรียบเทียบบนหน้า Streamlit (ในไฟล์ `image_based_output.py`) ไว้อย่างชัดเจน
+**เหตุผล:** โครงสร้างโฟลเดอร์สำหรับโมเดลภาพ (`AI_GenerateImage/AI_Train/Method_*`) สอดคล้องและครบถ้วนมาก ครอบคลุมสถาปัตยกรรมหลักทั้ง 4 ตัว ได้แก่ Plain U-Net, Pix2PixHD (with adversarial), Pix2PixHD No_D (without adversarial), และ CVAE พร้อมสคริปต์สำหรับการเทรนและการรันทดสอบ (`train_*.py`, `test_*.py`) รวมถึงมีชุดการประเมินผลเชิงเปรียบเทียบบนหน้า Streamlit (ในไฟล์ `image_based_output.py`) ไว้อย่างชัดเจน
 
 ---
 

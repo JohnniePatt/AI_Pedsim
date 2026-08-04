@@ -77,7 +77,8 @@ Document_Research/Output_FrameworkResearch/
 Output_FrameworkResearch/
 ├── Imagebase_Output/
 ├── Summarybase_Output/
-└── Synthetic_Dataset/
+├── Synthetic_Dataset/
+└── TimeSeries_Output/
 ```
 
 ## 3. Summarybase_Output
@@ -179,6 +180,29 @@ agent_summary.docx
 
 - เป็น DOCX version ของ `agent_summary.md`
 - ใช้สำหรับนำไปจัดรูปแบบ/ส่งต่อในบริบท paper หรือรายงานที่ต้องการ Word document
+
+## 3.5 TimeSeries_Output
+
+Path:
+
+```text
+Document_Research/Output_FrameworkResearch/TimeSeries_Output/
+```
+
+หน้าที่:
+
+- สรุปภาพรวมงานวิจัยและการเปรียบเทียบเชิงลึกสาย Time-Series Pedestrian Simulation
+- เปรียบเทียบขีดจำกัดของ Continuous Coordinate Regression (`Transformer`, `GNN-CVAE`, `SGAN`, `LSTM`) vs. ความสำเร็จของ Discrete Spatial Grid Policy (`GridSocialPolicy`)
+- วางแนวทางการเขียน paper, checklist, discussion, และ Mermaid architecture diagrams
+
+ไฟล์ภายใน:
+
+```text
+agent_summary.md
+agent_summary_code_ContinuousTraj.md
+agent_summary_code_GridPolicy.md
+framework_mermaid.md
+```
 
 ## 4. Synthetic_Dataset
 

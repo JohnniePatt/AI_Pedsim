@@ -103,7 +103,7 @@ def main():
     page = st.sidebar.radio(
         "Menu",
         ["Time series output", "Image based output", "Summary output"],
-        index=1,
+        index=0,
     )
 
     if page == "Time series output":

@@ -17,7 +17,7 @@ SCENARIO_ROOT = PROJECT_ROOT / "Geo_scenario" / "Topo_HouseGAN"
 GEN_CONFIG = MODULE_ROOT / "Prepare_data" / "config_housegan.json"
 SIM_CONFIG = MODULE_ROOT / "Simulation" / "config_density_sim.json"
 THUMB_DIR = MODULE_ROOT / "Streamlit_ui" / ".thumbs"
-LEGACY_VISUALIZER_PATH = PROJECT_ROOT / "AI_GenerateTrajectory" / "Streamlit_ui" / "utils" / "visualizer.py"
+LEGACY_VISUALIZER_PATH = PROJECT_ROOT / "AI_GenerateImage" / "Streamlit_ui" / "utils" / "visualizer.py"
 ROUTE_INFO_GENERATOR_PATH = MODULE_ROOT / "Prepare_data" / "generate_route_information.py"
 
 

@@ -11,19 +11,19 @@ The repository categorizes AI surrogate models across **3 main output paradigms*
 ### 1. Time-Series / Microscopic Sequential Trajectory Output
 *Predicts continuous agent position time-series $(x_t, y_t)$ over sequence steps $t = 1 \dots T$, replacing step-by-step physical simulation.*
 
-- **Transformer (Goal-Conditioned GPT-2)** ([AI_GenerateTrajectory/AI_Train/Method_Transformer](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_Transformer)): Primary method using causal GPT-2 backbone, CNN floorplan GeoEncoder, and neighbor context tokens for autoregressive trajectory generation.
-- **GNN + CVAE** ([AI_GenerateTrajectory/AI_Train/Method_GNN_CVAE](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_GNN_CVAE) & [Method_GNN_CVAE2](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_GNN_CVAE2)): Graph Neural Network modeling social interactions between agents combined with CVAE latent space for multi-modal trajectory forecasting.
-- **CVAE (Conditional VAE)** ([AI_GenerateTrajectory/AI_Train/Method_CVAE](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_CVAE)): Probabilistic trajectory generator conditioned on spawn/goal coordinates and environment density.
-- **SGAN (Social GAN)** ([AI_GenerateTrajectory/AI_Train/Method_SGAN](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_SGAN)): Generative Adversarial Network for multi-agent interaction prediction over short-to-mid horizon time-series.
-- **LSTM Baseline** ([AI_GenerateTrajectory/AI_Train/Method_LSTM_01](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_LSTM_01)): Recurrent baseline model predicting sequential agent movements step-by-step.
-- **Deep Reinforcement Learning (Actor-Critic / PPO)** ([AI_GenerateTrajectory/AI_Train/Method_RL](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_RL)): Reinforcement learning agent interacting with a virtual environment (`vir_pedsim.py`) with shared LSTM policy.
-- **Grid Social Policy** ([AI_GenerateTrajectoryGrid/AI_Train/Method_GridSocialPolicy](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Train/Method_GridSocialPolicy)): Cell/Grid-based trajectory policy model.
+- **Transformer (Goal-Conditioned GPT-2)** ([AI_GenerateTimeseries/AI_Train/Method_Transformer](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_Transformer)): Primary method using causal GPT-2 backbone, CNN floorplan GeoEncoder, and neighbor context tokens for autoregressive trajectory generation.
+- **GNN + CVAE** ([AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE) & [Method_GNN_CVAE2](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_GNN_CVAE2)): Graph Neural Network modeling social interactions between agents combined with CVAE latent space for multi-modal trajectory forecasting.
+- **CVAE (Conditional VAE)** ([AI_GenerateTimeseries/AI_Train/Method_CVAE](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_CVAE)): Probabilistic trajectory generator conditioned on spawn/goal coordinates and environment density.
+- **SGAN (Social GAN)** ([AI_GenerateTimeseries/AI_Train/Method_SGAN](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_SGAN)): Generative Adversarial Network for multi-agent interaction prediction over short-to-mid horizon time-series.
+- **LSTM Baseline** ([AI_GenerateTimeseries/AI_Train/Method_LSTM_01](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_LSTM_01)): Recurrent baseline model predicting sequential agent movements step-by-step.
+- **Deep Reinforcement Learning (Actor-Critic / PPO)** ([AI_GenerateTimeseries/AI_Train/Method_RL](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_RL)): Reinforcement learning agent interacting with a virtual environment (`vir_pedsim.py`) with shared LSTM policy.
+- **Grid Social Policy** ([AI_GenerateTimeseries/AI_Train/Method_GridSocialPolicy](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_GridSocialPolicy)): Cell/Grid-based trajectory policy model.
 
 ### 2. Spatial-Temporal / Macroscopic Image-Based Heatmap Output
 *Predicts spatial pedestrian density distribution / occupancy heatmaps as image outputs over time.*
 
-- **Pix2PixHD / Pix2PixHD No-D** ([AI_GenerateTrajectory/AI_Train/Method_pix2pixHD](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_pix2pixHD) & [Method_pix2pixhd_No_D](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_pix2pixhd_No_D)): High-resolution Image-to-Image GAN translating floor plan and spawn/exit points directly to predicted density heatmaps.
-- **UNet / Plain UNet / Unet-pix2pix** ([AI_GenerateTrajectory/AI_Train/Method_UNet](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_UNet), [Method_PlainUnet](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_PlainUnet), [Method_Unet-pix2pix](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectory/AI_Train/Method_Unet-pix2pix)): Image-to-image encoder-decoder networks mapping environment conditions to spatial trajectory density maps.
+- **Pix2PixHD / Pix2PixHD No-D** ([AI_GenerateTimeseries/AI_Train/Method_pix2pixHD](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_pix2pixHD) & [Method_pix2pixhd_No_D](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_pix2pixhd_No_D)): High-resolution Image-to-Image GAN translating floor plan and spawn/exit points directly to predicted density heatmaps.
+- **UNet / Plain UNet / Unet-pix2pix** ([AI_GenerateTimeseries/AI_Train/Method_UNet](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_UNet), [Method_PlainUnet](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_PlainUnet), [Method_Unet-pix2pix](file:///Ubuntu/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_Unet-pix2pix)): Image-to-image encoder-decoder networks mapping environment conditions to spatial trajectory density maps.
 
 ### 3. Aggregate Summary Output (Travel Time Estimation)
 *Predicts overall scalar simulation summary metrics ($A \rightarrow B$ travel time) directly without step-by-step simulation.*
@@ -51,12 +51,12 @@ For research paper formulation comparing AI Surrogate Models vs. Physical Simula
 
 ```text
 AI_Pedsim/
-├── AI_GenerateTrajectory/   # Trajectory generation models, training, results & UI
-│   ├── AI_Train/            # Training methods (Transformer, GNN_CVAE, SGAN, CVAE, UNet, etc.)
-│   ├── AI_Result/           # Checkpoints, logs, and evaluation samples
-│   └── Streamlit_ui/        # Dashboard for training and visualizing trajectories
-├── AI_Estimate/            # Travel time estimation models (MLP, GNN)
-├── AI_GenerateTrajectoryGrid/ # Grid-based trajectory policy models
+├── AI_GenerateTimeseries/  # Unified Time-Series trajectory & grid policy models
+│   ├── AI_Train/           # Training methods (Transformer, GNN_CVAE, GridSocialPolicy, SGAN, etc.)
+│   └── AI_Result/          # Checkpoints, logs, and evaluation samples
+├── UI_DevelopAI/           # Time-Series training, evaluation & visualization dashboard
+│   └── Streamlit_ui/       # Streamlit application for AI_GenerateTimeseries
+├── AI_GenerateImage/       # Image-based density map models (MLP, GNN)
 ├── GeneratePlan_HouseGAN/  # Procedural floor plan generator (HouseGAN workflow)
 ├── Geo_scenario/           # Raw geometry and SQLite simulation data
 ├── Dataset/                # Formatted Parquet & CSV training/testing datasets
@@ -67,9 +67,9 @@ AI_Pedsim/
 
 ## 🚀 Quick Start
 
-Launch the Trajectory Dashboard:
+Launch the Time-Series Trajectory & Grid Dashboard:
 ```bash
-streamlit run Streamlit_ui/app.py
+streamlit run UI_DevelopAI/Streamlit_ui/app.py
 ```
 
 Launch the Travel Time Estimation Dashboard:

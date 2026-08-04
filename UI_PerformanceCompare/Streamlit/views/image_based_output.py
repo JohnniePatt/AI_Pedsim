@@ -1173,8 +1173,8 @@ def _show_failure_case_analysis(combined: pd.DataFrame, selected_runs: list):
     st.markdown("### ⚖️ Experimental: Normal-Case Analysis")
     num_models = len(selected_runs)
     st.markdown(
-        f"Finds cases where the SSIM value of all {num_models} models is within $\pm 0.5$ standard deviations "
-        "of the overall mean SSIM simultaneously across the test set. "
+        rf"Finds cases where the SSIM value of all {num_models} models is within $\pm 0.5$ standard deviations "
+        r"of their respective overall mean, representing typical average difficulty across layouts. "
         "This forces every model to perform \"normally\" at the same time, filtering out occupancy level bias."
     )
 
@@ -1212,8 +1212,8 @@ def _show_failure_case_analysis(combined: pd.DataFrame, selected_runs: list):
                 normal_cases = pivot_df[mask].copy()
                 
                 st.markdown(
-                    f"**Overall Mean SSIM**: `{mean_ssim:.4f}` | **Overall Std**: `{std_ssim:.4f}` | "
-                    f"**$\pm 0.5$ SD Range**: `[{mean_ssim - 0.5*std_ssim:.4f}, {mean_ssim + 0.5*std_ssim:.4f}]`"
+                    rf"**Overall Mean SSIM**: `{mean_ssim:.4f}` | **Overall Std**: `{std_ssim:.4f}` | "
+                    rf"**$\pm 0.5$ SD Range**: `[{mean_ssim - 0.5*std_ssim:.4f}, {mean_ssim + 0.5*std_ssim:.4f}]`"
                 )
                 
                 if not normal_cases.empty:
@@ -1310,7 +1310,7 @@ def render_image_based_output():
 
     runs = discover_runs()
     if not runs:
-        st.error("No evaluated runs found under AI_GenerateTrajectory/AI_Result.")
+        st.error("No evaluated runs found under AI_GenerateImage/AI_Result.")
         return
 
     labels = [r.label for r in runs]
