@@ -7,6 +7,7 @@ import csv
 import json
 import pathlib
 import random
+import sys
 import time
 
 import numpy as np
@@ -17,12 +18,65 @@ from torch.utils.data import DataLoader
 from baseline_output import create_run_layout, mark_run_completed, update_checkpoint_manifest
 from joint_sf import JointSceneDataset, JointSocialForcePredictor, SceneDiscriminator, trajectory_losses
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - depends on the local training env
+    tqdm = None
+
 
 DISPLAY_NAMES = {
     "Method_Transformer_SF_01": "Social-Force-Informed Joint Multi-Agent Transformer",
     "Method_LSTM_SF_01": "Social-Force-Informed Joint Multi-Agent LSTM",
     "Method_SGAN_SF_01": "Social-Force-Informed Joint Multi-Agent Social GAN",
 }
+
+
+class BatchProgress:
+    def __init__(self, label: str, total: int, *, fallback_interval: int):
+        self.label = label
+        self.total = max(int(total), 1)
+        self.fallback_interval = max(int(fallback_interval), 1)
+        self.last_print = 0.0
+        self.bar = tqdm(total=self.total, desc=label, unit="batch", dynamic_ncols=True, file=sys.stdout) if tqdm else None
+
+    def update(self, count: int, **metrics: float) -> None:
+        if self.bar:
+            self.bar.update(1)
+            if metrics:
+                self.bar.set_postfix(
+                    {key: f"{value:.5f}" for key, value in metrics.items()},
+                    refresh=False,
+                )
+            return
+        now = time.time()
+        if count == 1 or count == self.total or count % self.fallback_interval == 0 or now - self.last_print >= 10.0:
+            metric_text = " ".join(f"{key}={value:.5f}" for key, value in metrics.items())
+            suffix = f" {metric_text}" if metric_text else ""
+            print(f"{self.label} batch {count}/{self.total}{suffix}", flush=True)
+            self.last_print = now
+
+    def close(self) -> None:
+        if self.bar:
+            self.bar.close()
+
+
+def case_id_text(raw: dict) -> str:
+    case_ids = raw.get("case_id", [])
+    if isinstance(case_ids, str):
+        return case_ids
+    if isinstance(case_ids, (list, tuple)):
+        return ", ".join(str(item) for item in case_ids)
+    return str(case_ids)
+
+
+def require_finite_losses(losses: dict[str, torch.Tensor], raw: dict, *, epoch: int, batch_index: int) -> None:
+    bad = {key: float(value.detach().cpu()) for key, value in losses.items() if not torch.isfinite(value).all()}
+    if not bad:
+        return
+    raise FloatingPointError(
+        f"non-finite loss at epoch={epoch} batch={batch_index} "
+        f"case_id={case_id_text(raw)} losses={bad}"
+    )
 
 
 def make_dataset(cfg: dict, split: str) -> JointSceneDataset:
@@ -67,10 +121,11 @@ def model_rollout(model, batch, cfg, teacher_forcing_ratio: float):
     )
 
 
-def validation(model, loader, device, cfg) -> dict[str, float]:
+def validation(model, loader, device, cfg, *, epoch: int, label: str, fallback_interval: int) -> dict[str, float]:
     model.eval()
     totals = {"loss": 0.0, "position_loss": 0.0, "walkability_loss": 0.0, "stop_loss": 0.0}
     batches = 0
+    progress = BatchProgress(label, len(loader), fallback_interval=fallback_interval)
     with torch.no_grad():
         for raw in loader:
             batch = move_batch(raw, device)
@@ -80,9 +135,12 @@ def validation(model, loader, device, cfg) -> dict[str, float]:
                 outputs, batch["positions"][:, :, obs_len:], batch["active"][:, :, obs_len:], batch["walkable"],
                 walkability_weight=cfg.get("walkability_loss_weight", 0.1), stop_weight=cfg.get("stop_loss_weight", 0.2),
             )
+            require_finite_losses(losses, raw, epoch=epoch, batch_index=batches + 1)
             for key in totals:
                 totals[key] += float(losses[key].detach().cpu())
             batches += 1
+            progress.update(batches, loss=totals["loss"] / batches)
+    progress.close()
     return {key: value / max(batches, 1) for key, value in totals.items()}
 
 
@@ -125,6 +183,11 @@ def main() -> None:
     )
     train_loader = DataLoader(train_ds, shuffle=True, drop_last=False, **loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, drop_last=False, **loader_kwargs)
+    print(
+        f"[train] train_cases={len(train_ds.case_dirs)} train_batches={len(train_loader)} "
+        f"val_cases={len(val_ds.case_dirs)} val_batches={len(val_loader)}",
+        flush=True,
+    )
     model = make_model(cfg, args.architecture).to(device)
     generator_optimizer = torch.optim.AdamW(
         model.parameters(), lr=float(cfg.get("learning_rate", cfg.get("lr", 3e-4))),
@@ -138,8 +201,10 @@ def main() -> None:
         csv.DictWriter(stream, fieldnames=fields).writeheader()
     best_val = float("inf")
     patience = int(cfg.get("early_stopping_patience", 10)); bad_epochs = 0
+    epochs = int(cfg.get("epochs", 100))
+    progress_interval = int(cfg.get("progress_interval_batches", max(1, len(train_loader) // 20)))
 
-    for epoch in range(1, int(cfg.get("epochs", 100)) + 1):
+    for epoch in range(1, epochs + 1):
         train_ds.set_epoch(epoch)
         started = time.time(); model.train()
         if discriminator: discriminator.train()
@@ -153,8 +218,13 @@ def main() -> None:
         }
         batches = 0
         ratio_start = float(cfg.get("teacher_forcing_start", 1.0)); ratio_end = float(cfg.get("teacher_forcing_end", 0.1))
-        progress = (epoch - 1) / max(int(cfg.get("epochs", 100)) - 1, 1)
-        teacher_ratio = ratio_start + (ratio_end - ratio_start) * progress
+        epoch_progress = (epoch - 1) / max(epochs - 1, 1)
+        teacher_ratio = ratio_start + (ratio_end - ratio_start) * epoch_progress
+        batch_progress = BatchProgress(
+            f"epoch {epoch}/{epochs} train",
+            len(train_loader),
+            fallback_interval=progress_interval,
+        )
         for raw in train_loader:
             batch = move_batch(raw, device)
             obs_len = int(cfg.get("obs_len", 8))
@@ -163,6 +233,7 @@ def main() -> None:
                 outputs, batch["positions"][:, :, obs_len:], batch["active"][:, :, obs_len:], batch["walkable"],
                 walkability_weight=cfg.get("walkability_loss_weight", 0.1), stop_weight=cfg.get("stop_loss_weight", 0.2),
             )
+            require_finite_losses(losses, raw, epoch=epoch, batch_index=batches + 1)
             adversarial_loss = torch.zeros((), device=device); discriminator_loss = torch.zeros((), device=device)
             if discriminator:
                 full_real = batch["positions"]
@@ -188,8 +259,18 @@ def main() -> None:
                 sums[key] += float(losses[key].detach().cpu())
             sums["adversarial_loss"] += float(adversarial_loss.detach().cpu())
             sums["discriminator_loss"] += float(discriminator_loss.detach().cpu()); batches += 1
+            batch_progress.update(batches, loss=sums["loss"] / batches, teacher=teacher_ratio)
+        batch_progress.close()
 
-        val = validation(model, val_loader, device, cfg)
+        val = validation(
+            model,
+            val_loader,
+            device,
+            cfg,
+            epoch=epoch,
+            label=f"epoch {epoch}/{epochs} val",
+            fallback_interval=max(1, len(val_loader) // 10),
+        )
         row = {
             "epoch": epoch,
             "train_loss": sums["loss"] / max(batches, 1),

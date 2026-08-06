@@ -2,7 +2,9 @@
 
 Research name: **Social-Force-Informed Joint Multi-Agent LSTM**
 
-Status: **trainable** through `run_pipeline.py`. The active pipeline uses the
+Status: **trainable** through `run_pipeline.py`. Interactive runs ask whether
+to use the fast sanity-training profile or the full research-scale profile; use
+`--profile fast` or `--profile full` to skip the prompt. The active pipeline uses the
 canonical synchronized HouseGAN loader, temporal LSTM encoder, inter-agent
 attention, analytic desired/agent/wall force prior, bounded learned residual,
 stop head, scheduled sampling, and full-path autoregressive rollout. All copied

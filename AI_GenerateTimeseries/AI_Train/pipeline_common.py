@@ -11,13 +11,13 @@ import sys
 from typing import Iterable
 
 
-def parser(description: str) -> argparse.ArgumentParser:
+def parser(description: str, *, default_stage: str = "plan") -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=description)
     result.add_argument(
         "--stage",
         choices=("plan", "train", "evaluate", "all"),
-        default="plan",
-        help="Default is plan so a long training job cannot start accidentally.",
+        default=default_stage,
+        help=f"Pipeline stage to run. Default is {default_stage}.",
     )
     result.add_argument("--dry-run", action="store_true", help="Print commands without executing them.")
     result.add_argument("--run-path", type=pathlib.Path, default=None)
@@ -36,8 +36,8 @@ def command_text(command: Iterable[object]) -> str:
 
 
 def run(command: list[object], *, cwd: pathlib.Path, dry_run: bool) -> None:
-    print(f"[pipeline] cwd={cwd}")
-    print(f"[pipeline] {command_text(command)}")
+    print(f"[pipeline] cwd={cwd}", flush=True)
+    print(f"[pipeline] {command_text(command)}", flush=True)
     if not dry_run:
         subprocess.run([str(item) for item in command], cwd=cwd, check=True)
 
@@ -90,4 +90,3 @@ def wants_train(stage: str) -> bool:
 
 def wants_evaluate(stage: str) -> bool:
     return stage in {"evaluate", "all"}
-

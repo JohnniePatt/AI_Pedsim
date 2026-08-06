@@ -96,6 +96,14 @@ def _trajectory_columns(frame: pd.DataFrame) -> tuple[str, str, str, str]:
     )
 
 
+def _is_complete_case_dir(case_dir: pathlib.Path) -> bool:
+    return (
+        any(case_dir.glob("*.parquet"))
+        and (case_dir / "Geo_room.json").is_file()
+        and (case_dir / "Geo_corridor.json").is_file()
+    )
+
+
 class JointSceneDataset(Dataset):
     """Sample synchronized windows without materializing every overlapping window."""
 
@@ -128,7 +136,10 @@ class JointSceneDataset(Dataset):
         self.epoch = 0
         self.cache_size = int(cache_size)
         split_dir = self.dataset_root / split
-        self.case_dirs = sorted(path for path in split_dir.glob("case_*") if path.is_dir())
+        self.case_dirs = sorted(
+            path for path in split_dir.glob("case_*")
+            if path.is_dir() and _is_complete_case_dir(path)
+        )
         if max_cases is not None:
             self.case_dirs = self.case_dirs[: int(max_cases)]
         if not self.case_dirs:
