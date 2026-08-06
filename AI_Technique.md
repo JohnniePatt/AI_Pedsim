@@ -4,6 +4,10 @@
 
 เอกสารนี้สรุปการแก้ไข pipeline ของ `Method_LSTM_SF_01` ที่ทำวันนี้ พร้อมเหตุผลและวิธีรันหลังแก้
 
+> อัปเดตล่าสุด: `run_pipeline.py` ของ trajectory methods ใช้ interactive operation menu แล้ว
+> เมื่อรันโดยไม่ใส่ argument จะไม่เริ่ม train ทันที แต่จะแสดงตัวเลือกพร้อมคำอธิบาย
+> ส่วน `--stage` ยังเก็บไว้สำหรับ automation และ backward compatibility
+
 ## ปัญหาที่เจอ
 
 1. รันคำสั่ง `python3 run_pipeline.py` แล้วจบที่ `stage=plan`
@@ -25,7 +29,7 @@
 
 ## วิธีแก้ที่ทำ
 
-### 1. ให้ `run_pipeline.py` เริ่ม train เป็นค่า default
+### 1. ประวัติเดิม: เคยให้ `run_pipeline.py` เริ่ม train เป็นค่า default
 
 ไฟล์ที่แก้:
 
@@ -41,7 +45,9 @@
 - เพิ่ม shortcut `--profile fast` และ `--profile full` สำหรับข้ามเมนู
 - เพิ่ม `flush=True` ให้ log pipeline เพื่อให้ข้อความออกตามลำดับก่อนเรียก subprocess
 
-ผลลัพธ์:
+พฤติกรรมส่วนนี้ถูกแทนที่ด้วย interactive operation menu แล้ว เพื่อป้องกันการเริ่มใช้ GPU โดยไม่ตั้งใจ
+
+ผลลัพธ์เดิม:
 
 ```bash
 python3 run_pipeline.py
@@ -167,43 +173,48 @@ epoch 1/20 val: ...
 - เหมาะสำหรับเช็คว่า pipeline, loss, dataset และ checkpoint ทำงานถูกก่อน
 - ถ้าต้องการ full training ใช้ config แยก
 
-## วิธีรันหลังแก้
+## วิธีรันปัจจุบัน
 
-รันแบบ default เร็ว:
+รันเมนูหลัก:
 
 ```bash
-cd /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_LSTM_SF_01
-python3 run_pipeline.py
+cd /home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTimeseries/AI_Train/Method_LSTM_SF_01
+/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3 run_pipeline.py
 ```
 
-หรือสั่ง fast โดยไม่ต้องตอบเมนู:
+เมนูให้เลือกตรวจ configuration, smoke test, full training, evaluate, train-and-evaluate
+หรือดู run ที่มีอยู่ การกด Enter เลือก `Check configuration` และยังไม่เริ่ม train
+
+คำสั่งด้านล่างยังรองรับสำหรับ automation หรือการระบุ operation โดยตรง
+
+รัน fast โดยตรง:
 
 ```bash
-python3 run_pipeline.py --profile fast
+/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3 run_pipeline.py --stage train --profile fast
 ```
 
 รัน full research-scale:
 
 ```bash
-python3 run_pipeline.py --profile full
+/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3 run_pipeline.py --stage train --profile full
 ```
 
 หรือระบุ config ตรง ๆ:
 
 ```bash
-python3 run_pipeline.py --config-train config_full.json
+/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3 run_pipeline.py --stage train --config-train config_full.json
 ```
 
 ดู plan อย่างเดียว:
 
 ```bash
-python3 run_pipeline.py --stage plan
+/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3 run_pipeline.py --stage plan
 ```
 
 ทดสอบ smoke config:
 
 ```bash
-python3 run_pipeline.py --stage train --config-train config_smoke.json
+/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3 run_pipeline.py --stage train --config-train config_smoke.json
 ```
 
 ## การตรวจสอบที่ทำแล้ว

@@ -9,8 +9,9 @@ COMMON_DIR = PROJECT_ROOT / "AI_GenerateTimeseries" / "AI_Train"
 sys.path.insert(0, str(COMMON_DIR))
 
 from pipeline_common import (  # noqa: E402
-    load_json, parser, require_sf_ready, resolve_checkpoint, resolve_run, run,
-    wants_evaluate, wants_train,
+    choose_operation, choose_run, confirm_full_training, load_json, parser,
+    print_available_runs, require_sf_ready, resolve_checkpoint, resolve_run,
+    run, wants_evaluate, wants_train,
 )
 
 
@@ -22,9 +23,31 @@ def main() -> None:
     cli.add_argument("--split", choices=("train", "val", "test"), default="test")
     cli.add_argument("--max-steps", type=int, default=1000)
     args = cli.parse_args()
+    outputs = PROJECT_ROOT / "AI_GenerateTrajectoryGrid" / "AI_Result" / "Method_GridSocialPolicy_SF_01" / "outputs"
+    interactive = len(sys.argv) == 1
+    action = None
+    if interactive:
+        action = choose_operation("Social-Force-Conditioned Discrete Grid Policy")
+        if action == "exit":
+            return
+        if action == "runs":
+            print_available_runs(outputs)
+            return
+        args.stage = {"check": "plan", "smoke": "all", "train": "train",
+                      "evaluate": "evaluate", "all": "all"}[action]
+        if action == "smoke":
+            args.config_train = HERE / "config_smoke.json"
+            args.sample_count = 1
+            args.max_steps = 20
+        elif action in {"train", "all"}:
+            if not confirm_full_training("Method_GridSocialPolicy_SF_01", args.config_train):
+                return
+        if action == "evaluate":
+            args.run_path = choose_run(outputs)
+            if args.run_path is None:
+                return
     config = load_json(args.config_train.resolve())
     require_sf_ready(config, "Method_GridSocialPolicy_SF_01", dry_run=args.dry_run or args.stage == "plan")
-    outputs = PROJECT_ROOT / "AI_GenerateTrajectoryGrid" / "AI_Result" / "Method_GridSocialPolicy_SF_01" / "outputs"
     dataset_root = pathlib.Path(config["dataset_root"]).resolve()
 
     print(f"[pipeline] method=Method_GridSocialPolicy_SF_01 stage={args.stage} outputs={outputs}")

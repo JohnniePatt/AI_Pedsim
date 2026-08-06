@@ -7,7 +7,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 AI_TRAIN = HERE.parent
 sys.path.insert(0, str(AI_TRAIN))
 
-from pipeline_common import load_json, parser, run, wants_evaluate, wants_train  # noqa: E402
+from pipeline_common import choose_operation, load_json, parser, run, wants_evaluate, wants_train  # noqa: E402
 
 
 def resolve_from_config(config_path: pathlib.Path, value: str) -> pathlib.Path:
@@ -41,6 +41,24 @@ def main() -> None:
     args = cli.parse_args()
     build_path = args.config_train.resolve()
     eval_path = args.config_test.resolve()
+    if len(sys.argv) == 1:
+        action = choose_operation(
+            "GPT-Assisted Knowledge Retrieval and Geometric Transfer",
+            supports_smoke=False,
+            retrieval=True,
+        )
+        if action == "exit":
+            return
+        if action == "runs":
+            build = load_json(build_path)
+            evaluate = load_json(eval_path)
+            build_output = resolve_from_config(build_path, build.get("knowledge_output_dir", ""))
+            eval_knowledge = resolve_from_config(eval_path, evaluate.get("knowledge_dir", ""))
+            print("\nConfigured artifacts:")
+            print(f"  knowledge index : {build_output} exists={build_output.exists()}")
+            print(f"  evaluation input: {eval_knowledge} exists={eval_knowledge.exists()}")
+            return
+        args.stage = {"check": "plan", "train": "train", "evaluate": "evaluate", "all": "all"}[action]
     failures = validate_retrieval_contract(build_path, eval_path)
     print(f"[pipeline] method=GPT-Assisted Knowledge Retrieval and Geometric Transfer stage={args.stage}")
     if failures:
