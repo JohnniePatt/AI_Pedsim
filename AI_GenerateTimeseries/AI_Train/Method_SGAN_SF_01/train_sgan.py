@@ -45,6 +45,10 @@ def l2_loss(pred_traj, pred_traj_gt, mode='average'):
     return torch.sum(loss)
 
 def train():
+    raise RuntimeError(
+        "Legacy non-adversarial trainer is disabled in Method_SGAN_SF_01; use run_pipeline.py, "
+        "which invokes the genuine joint SGAN-SF trainer."
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config_train.json")
     args = parser.parse_args()
@@ -55,6 +59,11 @@ def train():
     
     with open(config_path, "r") as f:
         config = json.load(f)
+    if not config.get("sf_implementation_ready", False):
+        raise RuntimeError(
+            "Method_SGAN_SF_01 is a protected baseline copy: implement the genuine joint SGAN/Social-Force "
+            "contract, then set sf_implementation_ready=true before training."
+        )
 
     # Resolve dataset_path relative to config file if it's relative
     dataset_path = config["dataset_path"]
@@ -96,9 +105,9 @@ def train():
     project_root = pathlib.Path(__file__).resolve().parents[2]
     dataset_manifest = pathlib.Path(dataset_path) / "manifest_housegan_cases.csv"
     run_layout = create_run_layout(
-        project_root / "AI_Result" / "Method_SGAN" / "outputs",
-        method_id="Method_SGAN",
-        method_display_name="Social Pooling LSTM (legacy SGAN label)",
+        project_root / "AI_Result" / "Method_SGAN_SF_01" / "outputs",
+        method_id="Method_SGAN_SF_01",
+        method_display_name="Social-Force-Informed Joint Multi-Agent Social GAN",
         method_family="continuous_coordinate_social",
         seed=config.get("seed", 42),
         dataset_id=config.get("dataset_id", "housegan_canonical_imagebase_split_v1"),

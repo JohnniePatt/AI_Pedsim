@@ -19,7 +19,7 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
+import sys
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,16 @@ from tqdm import tqdm
 from dataset import SimulationTrajectoryDataset, collate_fn
 from model import GNNCVAE2
 from prepare_geometry_gnn_cvae2 import grid_to_world, point_is_inside_walkable
+
+AI_TRAIN_DIR = pathlib.Path(__file__).resolve().parents[1]
+if str(AI_TRAIN_DIR) not in sys.path:
+    sys.path.insert(0, str(AI_TRAIN_DIR))
+from baseline_output import (  # noqa: E402
+    create_evaluation_layout,
+    finalize_evaluation,
+    resolve_checkpoint,
+    write_case_prediction,
+)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -78,7 +88,7 @@ def compute_metrics(pred_world, gt_world, mask, walkable, collision_threshold_m,
     }
 
 
-def export_parquet(path, positions_world, mask, agent_ids, frames):
+def prediction_frame(case_id, split, positions_world, mask, agent_ids, frames):
     rows = []
     for a, aid in enumerate(agent_ids.tolist()):
         if aid < 0:
@@ -86,10 +96,12 @@ def export_parquet(path, positions_world, mask, agent_ids, frames):
         for t, frame in enumerate(frames.tolist()):
             if t >= mask.shape[1] or not mask[a, t]:
                 continue
-            rows.append({"frame": int(frame), "id": int(aid),
-                         "pos_x": float(positions_world[a, t, 0]),
-                         "pos_y": float(positions_world[a, t, 1])})
-    pd.DataFrame(rows).to_parquet(path)
+            rows.append({
+                "case_id": str(case_id), "split": split, "frame": int(frame),
+                "agent_id": int(aid), "pos_x": float(positions_world[a, t, 0]),
+                "pos_y": float(positions_world[a, t, 1]), "is_active": True,
+            })
+    return pd.DataFrame(rows)
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -105,8 +117,8 @@ def main(config_path: str, model_path: str | None = None, run_path: str | None =
 
     # Resolve model checkpoint
     if run_path:
-        candidate = pathlib.Path(run_path) / "weights" / "best_model.pth"
-        if candidate.exists():
+        candidate = resolve_checkpoint(run_path)
+        if candidate:
             model_path = str(candidate)
 
     if model_path is None:
@@ -121,14 +133,8 @@ def main(config_path: str, model_path: str | None = None, run_path: str | None =
     else:
         run_dir = cfg_file.parent / "test_results_manual"
 
-    out_dir = run_dir / "test_eval"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    samples_dir = out_dir / "samples"
-    samples_dir.mkdir(exist_ok=True)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Test] Device: {device}")
-    print(f"[Test] Output: {out_dir}")
 
     # Dataset
     test_ds = SimulationTrajectoryDataset(
@@ -163,11 +169,37 @@ def main(config_path: str, model_path: str | None = None, run_path: str | None =
         segment_samples=cfg.get("segment_samples", 5),
     ).to(device)
 
+    compatibility_ok = False
     if model_ckpt and model_ckpt.exists():
-        model.load_state_dict(torch.load(model_ckpt, map_location=device))
+        saved = torch.load(model_ckpt, map_location=device)
+        if isinstance(saved, dict) and "model_state_dict" in saved:
+            state_dict = saved["model_state_dict"]
+            trained_name = str(saved.get("data_config", {}).get("dataset_name", ""))
+            compatibility_ok = bool(trained_name) and trained_name.casefold() == pathlib.Path(dataset_path).name.casefold()
+        else:
+            state_dict = saved
+        model.load_state_dict(state_dict)
         print(f"[Test] Loaded: {model_ckpt}")
     else:
-        print("[Test] WARNING: no weights loaded — using random init.")
+        raise FileNotFoundError("a valid --model_path or --run_path checkpoint is required")
+
+    dataset_id = cfg.get("dataset_id", "housegan_canonical_imagebase_split_v1")
+    dataset_manifest = pathlib.Path(dataset_path) / "manifest_housegan_cases.csv"
+    eval_layout = create_evaluation_layout(
+        run_dir,
+        method_id="Method_GNN_CVAE2",
+        dataset_id=dataset_id,
+        split="test",
+        protocol_version=cfg.get("protocol_version", "v1"),
+        checkpoint_path=model_ckpt,
+        evaluation_config=cfg,
+        dataset_manifest=dataset_manifest if dataset_manifest.exists() else None,
+        stochastic_sample_count=1,
+        compatibility_ok=compatibility_ok,
+        invalid_reason=None if compatibility_ok else "legacy checkpoint lacks verifiable dataset provenance",
+    )
+    out_dir = eval_layout.root
+    print(f"[Test] Output: {out_dir}")
 
     model.eval()
     rows = []
@@ -222,15 +254,14 @@ def main(config_path: str, model_path: str | None = None, run_path: str | None =
             rows.append(metrics)
 
             if export_pq:
-                case_dir = out_dir / "samples" / f"case_{case_id}"
-                case_dir.mkdir(parents=True, exist_ok=True)
-                export_parquet(case_dir / f"AI_pred_{case_id}.parquet", pred_world, mask_np, agent_ids, frames)
-                export_parquet(case_dir / f"GT_real_{case_id}.parquet", gt_world,   mask_np, agent_ids, frames)
-                src = pathlib.Path(batch["case_dirs"][0])
-                for fname in ["Geo_room.json", "Geo_corridor.json",
-                              f"Spawn_location_{case_id}.csv", f"Spawn_exit_{case_id}.csv"]:
-                    if (src / fname).exists():
-                        shutil.copy(src / fname, case_dir / fname)
+                pred_df = prediction_frame(
+                    case_id, "test", pred_world, mask_np, agent_ids, frames
+                )
+                pred_df["sample_id"] = 0
+                pred_df["sample_seed"] = int(cfg.get("seed", 42))
+                write_case_prediction(
+                    eval_layout, case_id, pred_df, variant="raw", stochastic=True
+                )
 
     # Summary
     df = pd.DataFrame(rows)
@@ -242,14 +273,38 @@ def main(config_path: str, model_path: str | None = None, run_path: str | None =
         {"metric": "n_cases",           "mean": float(len(df)),                        "std": 0.0},
     ])
 
-    df.to_csv(out_dir / "test_case_metrics.csv", index=False)
-    summary.to_csv(out_dir / "test_summary.csv", index=False)
+    df.to_csv(eval_layout.metrics / "per_case_metrics.csv", index=False)
+    summary.to_csv(eval_layout.metrics / "summary_metrics_long.csv", index=False)
+    pd.DataFrame([{
+        "method_id": "Method_GNN_CVAE2", "variant": "raw", "seed": cfg.get("seed", 42),
+        "ADE": float(df["ADE_m"].mean()), "FDE": float(df["FDE_m"].mean()),
+        "out_of_bounds_rate": float(df["out_of_bounds_rate"].mean()),
+        "collision_exposure_rate": float(df["collision_rate"].mean()),
+        "constraint_intervention_rate": 0.0,
+    }]).to_csv(eval_layout.metrics / "summary_metrics.csv", index=False)
+
+    plan_by_case = {}
+    if dataset_manifest.exists():
+        manifest_df = pd.read_csv(dataset_manifest, usecols=["case_id", "plan_name"])
+        plan_by_case = dict(zip(manifest_df["case_id"].astype(str), manifest_df["plan_name"].astype(str)))
+    research_valid = finalize_evaluation(
+        eval_layout,
+        case_ids=df["case_id"].astype(str),
+        floorplan_ids={plan_by_case[c] for c in df["case_id"].astype(str) if c in plan_by_case},
+        compatibility_ok=compatibility_ok,
+        canonical_test_required=(dataset_id == "housegan_canonical_imagebase_split_v1"),
+        additional_failures=(
+            ["dataset subset is not a final evaluation"]
+            if float(cfg.get("subset_percent", 100.0)) != 100.0 else []
+        ),
+    )
 
     print(f"\n[Test] Results over {len(df)} cases:")
     print(f"  ADE  = {float(df['ADE_m'].mean()):.4f} m  ± {float(df['ADE_m'].std()):.4f}")
     print(f"  FDE  = {float(df['FDE_m'].mean()):.4f} m  ± {float(df['FDE_m'].std()):.4f}")
     print(f"  Coll = {float(df['collision_rate'].mean()):.4f}")
     print(f"  OOB  = {float(df['out_of_bounds_rate'].mean()):.4f}")
+    print(f"  Research valid = {research_valid}")
     print(f"\n[Test] Saved → {out_dir}")
 
 

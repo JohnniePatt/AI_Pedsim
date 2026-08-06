@@ -13,7 +13,7 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
+import sys
 
 import numpy as np
 import pandas as pd
@@ -25,6 +25,15 @@ from tqdm import tqdm
 from dataset import SimulationTrajectoryDataset, collate_fn
 from model import GNNCVAE2
 from prepare_geometry_gnn_cvae2 import grid_to_world, point_is_inside_walkable
+
+AI_TRAIN_DIR = pathlib.Path(__file__).resolve().parents[1]
+if str(AI_TRAIN_DIR) not in sys.path:
+    sys.path.insert(0, str(AI_TRAIN_DIR))
+from baseline_output import (  # noqa: E402
+    create_run_layout,
+    mark_run_completed,
+    update_checkpoint_manifest,
+)
 
 
 # ── utilities ────────────────────────────────────────────────────────────────
@@ -50,6 +59,28 @@ def get_kl_weight(epoch: int, cfg: dict) -> float:
     target = cfg.get("kl_weight", 0.01)
     anneal = cfg.get("kl_anneal_epochs", 20)
     return min(target, target * epoch / max(anneal, 1))
+
+
+def checkpoint_payload(model, cfg: dict, dataset_path: str, epoch: int) -> dict:
+    return {
+        "format_version": 2,
+        "model_state_dict": model.state_dict(),
+        "model_config": {
+            key: cfg.get(key)
+            for key in [
+                "hidden_dim", "latent_dim", "node_feat_dim", "node_embed_dim",
+                "spatial_gnn_layers", "agent_gnn_layers", "neighbor_radius",
+                "dropout", "max_residual", "segment_samples",
+            ]
+        },
+        "data_config": {
+            "dataset_path": str(pathlib.Path(dataset_path).resolve()),
+            "dataset_name": pathlib.Path(dataset_path).name,
+            "dataset_id": cfg.get("dataset_id", "housegan_canonical_imagebase_split_v1"),
+            "frame_stride": cfg.get("frame_stride", 8),
+        },
+        "epoch": int(epoch),
+    }
 
 
 def graph_to_device(nf, ei, et, device):
@@ -287,14 +318,22 @@ def main(config_path: str):
         dataset_path = str((cfg_file.parent / dataset_path).resolve())
 
     project_root = pathlib.Path(__file__).resolve().parents[3]
-    run_dir      = get_next_run_dir(project_root / "AI_GenerateImage" / "AI_Result" / "Method_GNN_CVAE2" / "outputs")
-    logs_dir     = run_dir / "logs"
-    weights_dir  = run_dir / "weights"
-    samples_dir  = run_dir / "samples"
-    for p in [logs_dir, weights_dir, samples_dir]:
-        p.mkdir(parents=True, exist_ok=True)
-
-    shutil.copy(cfg_file, run_dir / "config_train.json")
+    dataset_manifest = pathlib.Path(dataset_path) / "manifest_housegan_cases.csv"
+    run_layout = create_run_layout(
+        project_root / "AI_GenerateTimeseries" / "AI_Result" / "Method_GNN_CVAE2" / "outputs",
+        method_id="Method_GNN_CVAE2",
+        method_display_name="GNN-CVAE",
+        method_family="continuous_coordinate_stochastic",
+        seed=cfg.get("seed", 42),
+        dataset_id=cfg.get("dataset_id", "housegan_canonical_imagebase_split_v1"),
+        config=cfg,
+        dataset_manifest=dataset_manifest if dataset_manifest.exists() else None,
+        project_root=project_root,
+    )
+    run_dir = run_layout.root
+    logs_dir = run_layout.logs
+    weights_dir = run_layout.checkpoints
+    samples_dir = run_layout.validation_samples
     with open(run_dir / "run_meta.json", "w") as f:
         json.dump({"config": str(cfg_file), "scope_name": cfg.get("scope_name", "")}, f, indent=2)
 
@@ -375,14 +414,20 @@ def main(config_path: str):
             json.dump({"epoch": epoch, "total_epochs": epochs,
                        "percentage": int(epoch / epochs * 100), "loss": val_loss}, f)
 
-        torch.save(model.state_dict(), weights_dir / "latest_model.pth")
+        payload = checkpoint_payload(model, cfg, dataset_path, epoch)
+        latest_path = weights_dir / "latest_model.pth"
+        torch.save(payload, latest_path)
+        update_checkpoint_manifest(run_dir, latest_path, "latest")
         if val_loss < best_val:
             best_val = val_loss
-            torch.save(model.state_dict(), weights_dir / "best_model.pth")
+            best_path = weights_dir / "best_model.pth"
+            torch.save(payload, best_path)
+            update_checkpoint_manifest(run_dir, best_path, "best")
             print(f"  [*] Best saved (val_loss={best_val:.5f})")
         if epoch % save_every == 0:
-            torch.save(model.state_dict(), weights_dir / f"epoch_{epoch:03d}.pth")
+            torch.save(payload, weights_dir / f"epoch_{epoch:03d}.pth")
 
+    mark_run_completed(run_dir)
     print(f"\n[Train] Done — {run_dir}")
 
 

@@ -1,0 +1,48 @@
+{
+    "dataset_path"      : "../../../Dataset/Data_Traj_Table/Topo_HouseGAN",
+    "dataset_id"        : "housegan_canonical_imagebase_split_v1",
+    "seed"              : 42,
+    "sf_implementation_ready": true,
+
+    "obs_len"           : 8,
+    "pred_len"          : 24,
+    "frame_stride"      : 5,
+    "max_agents"        : 256,
+    "windows_per_case_train": 32,
+    "windows_per_case_val": 2,
+    "max_seq_len"       : 512,
+    "grid_size"         : 64,
+    "geo_padding"       : 1.0,
+    "subset_percent"    : 100.0,
+
+    "d_model"           : 128,
+    "nhead"             : 4,
+    "num_layers"        : 4,
+    "dropout"           : 0.1,
+    "geo_encoder_type"  : "spatial",
+    "prediction_mode"   : "delta",
+    "max_step_size"     : 0.1,
+    "walkability_loss_weight": 0.05,
+
+    "batch_size"        : 2,
+    "lr"                : 3e-4,
+    "weight_decay"      : 1e-4,
+    "epochs"            : 100,
+    "save_every"        : 10,
+
+    "num_workers"       : 0,
+
+    "hidden_dim"        : 128,
+    "max_residual"      : 0.03,
+    "desired_step"      : 0.012,
+    "agent_repulsion_strength": 0.004,
+    "agent_repulsion_sigma": 0.04,
+    "wall_repulsion_strength": 0.006,
+    "stop_loss_weight"  : 0.2,
+    "teacher_forcing_start": 1.0,
+    "teacher_forcing_end": 0.1,
+    "early_stopping_patience": 10,
+    "case_cache_size"   : 2,
+
+    "resume_checkpoint" : null
+}

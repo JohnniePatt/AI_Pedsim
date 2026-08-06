@@ -72,7 +72,7 @@ def main() -> None:
     compatibility_ok = bool(trained_dataset) and trained_dataset.casefold() == args.dataset_root.resolve().name.casefold()
     eval_layout = create_evaluation_layout(
         run_dir,
-        method_id="Method_GridSocialPolicy",
+        method_id="Method_GridSocialPolicy_SF_01",
         dataset_id="housegan_canonical_imagebase_split_v1",
         split=args.split,
         protocol_version="v1",
@@ -149,7 +149,7 @@ def main() -> None:
         )
         decisions = max(float(batch_df.get("move_decisions", pd.Series(dtype=float)).sum()), 1.0)
         pd.DataFrame([{
-            "method_id": "Method_GridSocialPolicy",
+            "method_id": "Method_GridSocialPolicy_SF_01",
             "variant": "constrained",
             "seed": int(saved.get("config", {}).get("seed", 42)) if isinstance(saved, dict) else 42,
             "out_of_bounds_rate": 1.0 - float(batch_df["walkable_ratio"].mean()),

@@ -250,9 +250,18 @@ def run_epoch_report(model, val_dataset, report_dir: pathlib.Path, epoch: int, d
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main(config_path: str):
+    raise RuntimeError(
+        "Legacy ego-agent trainer is disabled in Method_Transformer_SF_01; use run_pipeline.py, "
+        "which invokes the synchronized joint-SF trainer."
+    )
     cfg_file = pathlib.Path(config_path).resolve()
     with open(cfg_file) as f:
         cfg = json.load(f)
+    if not cfg.get("sf_implementation_ready", False):
+        raise RuntimeError(
+            "Method_Transformer_SF_01 is a protected baseline copy: implement the joint Social-Force contract, "
+            "then set sf_implementation_ready=true before training."
+        )
 
     dataset_path = cfg["dataset_path"]
     if not os.path.isabs(dataset_path):
@@ -262,9 +271,9 @@ def main(config_path: str):
     project_root = pathlib.Path(__file__).resolve().parents[2]
     dataset_manifest = pathlib.Path(dataset_path) / "manifest_housegan_cases.csv"
     run_layout = create_run_layout(
-        project_root / "AI_Result" / "Method_Transformer" / "outputs",
-        method_id="Method_Transformer",
-        method_display_name="Transformer",
+        project_root / "AI_Result" / "Method_Transformer_SF_01" / "outputs",
+        method_id="Method_Transformer_SF_01",
+        method_display_name="Social-Force-Informed Joint Multi-Agent Transformer",
         method_family="continuous_coordinate",
         seed=cfg.get("seed", 42),
         dataset_id=cfg.get("dataset_id", "housegan_canonical_imagebase_split_v1"),

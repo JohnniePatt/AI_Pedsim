@@ -157,6 +157,11 @@ def main() -> None:
     script_dir = pathlib.Path(__file__).parent.resolve()
     config_path = args.config if args.config.is_absolute() else script_dir / args.config
     cfg = load_json(config_path)
+    if not cfg.get("sf_implementation_ready", False):
+        raise RuntimeError(
+            "Method_GridSocialPolicy_SF_01 is a protected baseline copy: implement and validate the "
+            "Social-Force additions, then set sf_implementation_ready=true before training."
+        )
 
     seed = int(cfg.get("seed", 42))
     torch.manual_seed(seed)
@@ -169,15 +174,15 @@ def main() -> None:
 
     if cfg.get("output_root"):
         outputs_root = pathlib.Path(cfg["output_root"]).resolve()
-        if outputs_root.name == "Method_GridSocialPolicy":
+        if outputs_root.name == "Method_GridSocialPolicy_SF_01":
             outputs_root = outputs_root / "outputs"
     else:
-        outputs_root = script_dir.parents[1] / "AI_Result" / "Method_GridSocialPolicy" / "outputs"
+        outputs_root = script_dir.parents[1] / "AI_Result" / "Method_GridSocialPolicy_SF_01" / "outputs"
     dataset_manifest = dataset_root / "manifest_trajectory_grid.csv"
     run_layout = create_run_layout(
         outputs_root,
-        method_id="Method_GridSocialPolicy",
-        method_display_name="Conditional Discrete Grid Social Policy",
+        method_id="Method_GridSocialPolicy_SF_01",
+        method_display_name="Social-Force-Conditioned Discrete Grid Policy",
         method_family="conditional_discrete_grid_policy",
         seed=seed,
         dataset_id=cfg.get("dataset_id", "housegan_canonical_imagebase_split_v1"),
@@ -215,6 +220,7 @@ def main() -> None:
 
     model = GridSocialPolicyNet(
         num_actions=action_space.num_actions,
+        feature_dim=int(cfg.get("feature_dim", 12)),
         base_channels=int(cfg.get("base_channels", 32)),
         hidden_dim=int(cfg.get("hidden_dim", 128)),
         dropout=float(cfg.get("dropout", 0.1)),

@@ -1,0 +1,15 @@
+{
+  "dataset_path": "../../../Dataset/Data_Traj_Table/Topo_HouseGAN",
+  "dataset_id": "housegan_canonical_imagebase_split_v1",
+  "obs_len": 4,
+  "frame_stride": 5,
+  "max_agents": 8,
+  "max_rollout_steps": 5,
+  "grid_size": 32,
+  "geo_padding": 1.0,
+  "stop_threshold": 0.5,
+  "exit_radius_norm": 0.025,
+  "protocol_version": "joint_sf_transformer_smoke_v1",
+  "max_test_cases": 1,
+  "num_workers": 0
+}

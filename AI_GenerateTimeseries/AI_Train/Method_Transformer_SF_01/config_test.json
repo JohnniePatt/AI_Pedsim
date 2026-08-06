@@ -1,0 +1,27 @@
+{
+    "dataset_path"      : "../../../Dataset/Data_Traj_Table/Topo_HouseGAN",
+    "model_checkpoint"  : "",
+
+    "obs_len"           : 8,
+    "frame_stride"      : 5,
+    "max_agents"        : 256,
+    "max_rollout_steps" : 512,
+    "grid_size"         : 64,
+    "geo_padding"       : 1.0,
+    "subset_percent"    : 100.0,
+
+    "d_model"           : 128,
+    "nhead"             : 4,
+    "num_layers"        : 4,
+    "geo_encoder_type"  : "spatial",
+    "prediction_mode"   : "delta",
+    "max_step_size"     : 0.1,
+    "walkability_loss_weight": 0.05,
+
+    "stop_threshold"    : 0.5,
+    "exit_radius_norm"  : 0.025,
+    "protocol_version"  : "joint_sf_full_path_v1",
+    "max_test_cases"    : null,
+    "batch_size"        : 1,
+    "num_workers"       : 0
+}

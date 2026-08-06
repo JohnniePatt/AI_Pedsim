@@ -329,7 +329,7 @@ def main(
     dataset_manifest = pathlib.Path(dataset_path) / "manifest_housegan_cases.csv"
     eval_layout = create_evaluation_layout(
         run_dir,
-        method_id="Method_Transformer",
+        method_id="Method_Transformer_SF_01",
         dataset_id=dataset_id,
         split=split,
         protocol_version=cfg.get("protocol_version", "v1"),
@@ -512,7 +512,7 @@ def main(
     print(f"[Test] Avg Latency (ms): {avg_latency_ms:.2f} ms/sample")
 
     summary_row = {
-        "method_id": "Method_Transformer",
+        "method_id": "Method_Transformer_SF_01",
         "variant": "raw",
         "seed": cfg.get("seed", 42),
         "ADE": avg_ade_m,

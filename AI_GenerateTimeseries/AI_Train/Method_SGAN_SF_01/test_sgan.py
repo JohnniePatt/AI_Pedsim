@@ -82,7 +82,7 @@ def test():
     dataset_manifest = pathlib.Path(dataset_path) / "manifest_housegan_cases.csv"
     eval_layout = create_evaluation_layout(
         run_path,
-        method_id="Method_SGAN",
+        method_id="Method_SGAN_SF_01",
         dataset_id=dataset_id,
         split="test",
         protocol_version=config.get("protocol_version", "v1"),
@@ -206,7 +206,7 @@ def test():
     # Save CSV for UI Dashboard
     import pandas as pd
     summary_df = pd.DataFrame([{
-        "method_id": "Method_SGAN", "variant": "raw", "seed": config.get("seed", 42),
+        "method_id": "Method_SGAN_SF_01", "variant": "raw", "seed": config.get("seed", 42),
         "ADE": avg_ade, "FDE": avg_fde, "constraint_intervention_rate": 0.0,
     }])
     summary_df.to_csv(eval_layout.metrics / "summary_metrics.csv", index=False)

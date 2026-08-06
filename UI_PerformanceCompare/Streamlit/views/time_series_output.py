@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import json
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -12,6 +13,7 @@ DATASET_A_TEST = PROJECT_ROOT / "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_
 DATASET_A_VAL = PROJECT_ROOT / "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN/A/validation"
 TS_RESULT_DIR = PROJECT_ROOT / "AI_GenerateTimeseries/AI_Result"
 GRID_POLICY_RESULT_DIR = PROJECT_ROOT / "AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy"
+GRID_POLICY_SF_RESULT_DIR = PROJECT_ROOT / "AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy_SF_01"
 GT_PREVIEWS_DIR = TS_RESULT_DIR / "GroundTruth_Previews"
 
 
@@ -20,13 +22,18 @@ def discover_housegan_eval_samples() -> dict:
     eval_dirs = {
         "GroundTruth_Raw": GT_PREVIEWS_DIR,
         "GroundTruth_Grid": GT_PREVIEWS_DIR,
-        "GridSocialPolicy": GRID_POLICY_RESULT_DIR / "run_20260507_004920_evaluate",
+        "GridSocialPolicy": GRID_POLICY_RESULT_DIR,
+        "GridSocialPolicy_SF": GRID_POLICY_SF_RESULT_DIR,
         "GridSocialPolicy_Fallback": GRID_POLICY_RESULT_DIR / "run_20260507_004920",
-        "Transformer": TS_RESULT_DIR / "Method_Transformer/outputs/run_33_evaluate",
-        "GNN_CVAE": TS_RESULT_DIR / "Method_GNN_CVAE/outputs/run_6_evaluate",
-        "SGAN": TS_RESULT_DIR / "Method_SGAN/outputs/run_6_evaluate",
-        "LSTM": TS_RESULT_DIR / "Method_LSTM_01/outputs/run_LSTM_20260327_184506_evaluate",
-        "GPT_Knowledge": TS_RESULT_DIR / "Method_GPT_Knowledge/outputs/run_gpt_knowledge_evaluate",
+        "Transformer": TS_RESULT_DIR / "Method_Transformer/outputs",
+        "Transformer_SF": TS_RESULT_DIR / "Method_Transformer_SF_01/outputs",
+        "GNN_CVAE": TS_RESULT_DIR / "Method_GNN_CVAE/outputs",
+        "GNN_CVAE2": TS_RESULT_DIR / "Method_GNN_CVAE2/outputs",
+        "SGAN": TS_RESULT_DIR / "Method_SGAN/outputs",
+        "SGAN_SF": TS_RESULT_DIR / "Method_SGAN_SF_01/outputs",
+        "LSTM": TS_RESULT_DIR / "Method_LSTM_01/outputs",
+        "LSTM_SF": TS_RESULT_DIR / "Method_LSTM_SF_01/outputs",
+        "GPT_Knowledge": TS_RESULT_DIR / "Method_GPT_Knowledge/outputs",
         "GPT_Knowledge_Special": TS_RESULT_DIR / "Method_GPT_Knowledge/special_tests",
         "GPT_Knowledge_Visuals": TS_RESULT_DIR / "Method_GPT_Knowledge/visuals",
     }
@@ -44,8 +51,14 @@ def discover_housegan_eval_samples() -> dict:
     all_cases: set[str] = set()
     selected_ranks: dict[tuple[str, str], tuple[int, int, str]] = {}
 
+    key_aliases = {
+        "Transformer_SF": "Transformer",
+        "GNN_CVAE2": "GNN_CVAE",
+        "SGAN_SF": "SGAN",
+        "LSTM_SF": "LSTM",
+    }
     for m_key, r_dir in eval_dirs.items():
-        actual_key = "GridSocialPolicy" if "GridSocialPolicy" in m_key else ("GPT_Knowledge" if "GPT_Knowledge" in m_key else m_key)
+        actual_key = "GridSocialPolicy" if "GridSocialPolicy" in m_key else ("GPT_Knowledge" if "GPT_Knowledge" in m_key else key_aliases.get(m_key, m_key))
         if r_dir.exists():
             png_list = sorted(list(r_dir.glob("**/*.png")), key=lambda x: (0 if "_full" in str(x) or "compare" in str(x) else 1, x.name))
             for img_p in png_list:
@@ -62,7 +75,9 @@ def discover_housegan_eval_samples() -> dict:
                         # legacy A*-generated images kept in the run folders.
                         # Within the same source class, prefer full/compare art.
                         path_text = str(img_p).replace("\\", "/")
-                        source_rank = 0 if "/framing_previews/" in path_text else 1
+                        # Standard evaluation/framing paths take precedence;
+                        # legacy run folders remain a read-only fallback.
+                        source_rank = 0 if "/evaluations/" in path_text else (1 if "/framing_previews/" in path_text else 2)
                         content_rank = 0 if "_full" in path_text or "compare" in path_text else 1
                         candidate_rank = (source_rank, content_rank, path_text)
                         rank_key = (actual_key, c_id)
@@ -88,6 +103,39 @@ def discover_housegan_eval_samples() -> dict:
         "cases": valid_cases,
         "model_samples": model_samples,
     }
+
+
+def discover_research_valid_evaluations() -> list[dict]:
+    """Return only evaluations explicitly promoted by the validity gate."""
+    manifests = list(TS_RESULT_DIR.glob("*/outputs/run_*/evaluations/*/evaluation_manifest.json"))
+    manifests += list((GRID_POLICY_RESULT_DIR / "outputs").glob("run_*/evaluations/*/evaluation_manifest.json"))
+    manifests += list((GRID_POLICY_SF_RESULT_DIR / "outputs").glob("run_*/evaluations/*/evaluation_manifest.json"))
+    valid = []
+    for path in manifests:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("research_valid") is True:
+            valid.append({**payload, "manifest_path": str(path)})
+    return valid
+
+
+def load_research_valid_metrics(evaluations: list[dict]) -> pd.DataFrame:
+    frames = []
+    for evaluation in evaluations:
+        manifest_path = pathlib.Path(evaluation["manifest_path"])
+        metrics_path = manifest_path.parent / "metrics" / "summary_metrics.csv"
+        if not metrics_path.exists():
+            continue
+        try:
+            frame = pd.read_csv(metrics_path)
+        except (OSError, pd.errors.ParserError):
+            continue
+        frame["evaluation_id"] = evaluation.get("evaluation_id")
+        frame["run_id"] = evaluation.get("run_id")
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def render_time_series_output():
@@ -121,6 +169,8 @@ def render_time_series_output():
     st.markdown("---")
 
     eval_data = discover_housegan_eval_samples()
+    valid_evaluations = discover_research_valid_evaluations()
+    valid_metrics = load_research_valid_metrics(valid_evaluations)
     cases = eval_data["cases"]
     model_samples = eval_data["model_samples"]
 
@@ -169,41 +219,16 @@ def render_time_series_output():
     # ── 3. SECTION 2: Executive Metrics Summary ──
     with st.container(border=True):
         st.subheader("📊 2. Executive Overview & Key Metric Highlights")
-        st.info(
-            "**Core Research Finding:** Continuous Coordinate Models (x, y) exhibit *Feature Ignorance* (wall clipping and inability to navigate complex obstacles), "
-            "whereas Discrete Spatial Grid Representations act as an essential *Spatial Inductive Bias*, enabling high boundary respect and accurate bottleneck flow simulation. "
-            "GPT+RAG Retrieval Models provide high-level topological route guidance but require spatial grid policies for precise obstacle avoidance."
-        )
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric(
-                label="Part A: Continuous Wall Violation",
-                value="11.5%",
-                delta="High Clipping (Feature Ignorance)",
-                delta_color="inverse",
-                help="Percentage of predicted steps crossing solid wall polygons in continuous models",
+        if not valid_evaluations:
+            st.warning(
+                "ยังไม่มี evaluation ที่ผ่าน research-validity gate จึงซ่อน metric ทั้งหมดไว้ "
+                "ต้อง retrain และทดสอบ canonical test ครบ 862 cases / 117 floorplans ก่อนนำตัวเลขมาแสดงหรืออ้างอิงในเปเปอร์"
             )
-        with col2:
-            st.metric(
-                label="Part B: Grid Wall Violation",
-                value="0.8%",
-                delta="-10.7% vs Part A (Wall Respect)",
-                help="Percentage of steps crossing wall polygons in discrete grid policy model",
-            )
-        with col3:
-            st.metric(
-                label="Part B: Goal Reach Success",
-                value="96.5%",
-                delta="+18.1% vs Part A",
-                help="Percentage of agents successfully arriving at the exit goal without getting lost",
-            )
-        with col4:
-            st.metric(
-                label="Inference Latency",
-                value="8.4 ms",
-                delta="14.2x Speedup vs JuPedSim",
-                help="Average rollout execution time per sequence compared to JuPedSim physical simulation",
-            )
+        elif valid_metrics.empty:
+            st.warning("พบ manifest ที่ผ่าน gate แต่ไม่พบ metrics/summary_metrics.csv")
+        else:
+            st.success(f"พบ research-valid evaluations จำนวน {len(valid_evaluations)} รายการ")
+            st.dataframe(valid_metrics, use_container_width=True, hide_index=True)
 
     # ── 4. SECTION 3: Part A — Continuous Coordinate Models Analysis ──
     with st.container(border=True):
@@ -213,7 +238,7 @@ def render_time_series_output():
         col_a1, col_a2 = st.columns([1.1, 1.0])
 
         with col_a1:
-            st.markdown("**Key Research Findings: Continuous Failure Modes**")
+            st.markdown("**Hypotheses to test after canonical evaluation**")
             st.markdown(
                 r"""
                 1. **MSE Loss Illusion**: MSE loss $\mathcal{L} = ||\hat{y} - y||^2$ forces the AI to predict smooth average mathematical curves between start and goal.
@@ -223,16 +248,14 @@ def render_time_series_output():
             )
 
         with col_a2:
-            st.markdown("**Empirical Rollout Failure Breakdown**")
-            part_a_df = pd.DataFrame(
-                {
-                    "Model": ["LSTM Baseline", "SGAN", "CVAE", "GNN-CVAE", "Transformer (GPT-2)", "GPT+RAG Retrieval"],
-                    "Training MSE Loss": [0.042, 0.035, 0.029, 0.021, 0.015, 0.018],
-                    "Wall Violation Rate (%)": [18.4, 14.2, 12.8, 11.5, 9.8, 8.5],
-                    "Goal Miss Rate (%)": [38.0, 28.5, 24.2, 21.6, 17.9, 14.2],
-                }
-            )
-            st.dataframe(part_a_df, use_container_width=True, hide_index=True)
+            st.markdown("**Research-valid continuous-coordinate metrics**")
+            if valid_metrics.empty:
+                st.info("ยังไม่มีผลที่ผ่าน validity gate")
+            else:
+                continuous = valid_metrics[
+                    ~valid_metrics["method_id"].astype(str).str.contains("GridSocialPolicy", na=False)
+                ] if "method_id" in valid_metrics else pd.DataFrame()
+                st.dataframe(continuous, use_container_width=True, hide_index=True)
 
         st.markdown(f"##### 🎬 Transformer Normalized Rollout Preview (`run_33_evaluate` / Case: `{selected_case}`)")
         if trans_img and trans_img.exists():
@@ -389,36 +412,10 @@ def render_time_series_output():
 
         st.markdown("##### 📋 Master Synthesis Benchmark Table Across All Time-Series & RAG Models")
 
-        comp_df = pd.DataFrame(
-            {
-                "Model Architecture": [
-                    "JuPedSim (Ground Truth Sim)",
-                    "LSTM Baseline",
-                    "SGAN",
-                    "CVAE",
-                    "GNN-CVAE",
-                    "Transformer (GPT-2)",
-                    "Method_GPT_Knowledge (GPT+RAG)",
-                    "GridSocialPolicy (Ours)",
-                ],
-                "Representation Paradigm": [
-                    "Physics Simulation",
-                    "Continuous (x, y)",
-                    "Continuous (x, y)",
-                    "Continuous (x, y)",
-                    "Continuous (x, y)",
-                    "Continuous (x, y)",
-                    "Knowledge Base Retrieval + Synthesis",
-                    "Discrete Grid Policy",
-                ],
-                "Wall Respect Rate (%) ↑": ["100.0%", "81.6%", "85.8%", "87.2%", "88.5%", "90.2%", "91.5%", "99.2%"],
-                "Goal Reach Rate (%) ↑": ["100.0%", "62.0%", "71.5%", "75.8%", "78.4%", "82.1%", "85.8%", "96.5%"],
-                "Inference Latency (ms) ↓": ["120.0 ms", "1.8 ms", "5.2 ms", "3.8 ms", "9.8 ms", "14.5 ms", "18.2 ms", "8.4 ms"],
-                "Speedup Factor ↑": ["1.0x", "66.7x", "23.1x", "31.6x", "12.2x", "8.3x", "6.6x", "14.3x"],
-            }
-        )
-
-        st.dataframe(comp_df, use_container_width=True, hide_index=True)
+        if valid_metrics.empty:
+            st.info("Master benchmark table จะถูกสร้างจาก research-valid summary_metrics.csv หลัง retrain/test เท่านั้น")
+        else:
+            st.dataframe(valid_metrics, use_container_width=True, hide_index=True)
         st.warning(
             "**Framing status:** the gallery uses each method's real forward/retrieval path and the shared normalized renderer, "
             "but mismatch/provenance flags mean these previews are not research results. Retrain and run a held-out evaluation before citing metrics."

@@ -1,7 +1,7 @@
 {
-  "knowledge_dir": "../../AI_Result/Method_GPT_Knowledge/knowledge/topo_bottleneck_v2",
-  "input_case_dir": "../../../Dataset/Data_Traj_Table/Topo_bottleneck/test/case_100003",
-  "output_dir": "../../AI_Result/Method_GPT_Knowledge/outputs/sample_case_100003",
+  "knowledge_dir": "../../AI_Result/Method_GPT_Knowledge/knowledge/housegan_canonical_train_v1",
+  "input_case_dir": "../../../Dataset/Data_Traj_Table/Topo_HouseGAN/test/case_plan_100_8ec0_100042_00_half",
+  "output_dir": "../../AI_Result/Method_GPT_Knowledge/outputs/housegan_canonical_test_v1/plan_100_8ec0_100042_00_half",
   "top_k_cases": 5,
   "blend_case_count": 3,
   "blend_steps": 80,
