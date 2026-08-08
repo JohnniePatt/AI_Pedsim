@@ -7,17 +7,29 @@ def image_triplet(run_path: Path, file_name: str) -> tuple[Path | None, Path | N
     result_dir = run_path / "test_results"
     
     def find_path(sub_name: str) -> Path | None:
-        # Try direct: e.g. run_path / "test_results" / "predictions" / file_name
-        p = result_dir / sub_name / file_name
-        if p.exists():
-            return p
-        # Try subdirectories inside test_results: e.g. run_path / "test_results" / "best_loss" / "predictions" / file_name
+        if sub_name == "predictions":
+            sub_candidates = ["predictions", "colorjet", "bw", ""]
+        else:
+            sub_candidates = [sub_name, ""]
+
+        clean_name = file_name[5:] if file_name.startswith("MASK_") else file_name
+        mask_name = f"MASK_{clean_name}"
+        name_candidates = [clean_name, mask_name, file_name]
+
+        for name in name_candidates:
+            for sc in sub_candidates:
+                p = (result_dir / sc / name) if sc else (result_dir / name)
+                if p.exists() and p.is_file():
+                    return p
+
         if result_dir.exists():
             for sub in result_dir.iterdir():
                 if sub.is_dir():
-                    p_sub = sub / sub_name / file_name
-                    if p_sub.exists():
-                        return p_sub
+                    for name in name_candidates:
+                        for sc in sub_candidates:
+                            p_sub = (sub / sc / name) if sc else (sub / name)
+                            if p_sub.exists() and p_sub.is_file():
+                                return p_sub
         return None
 
     return (

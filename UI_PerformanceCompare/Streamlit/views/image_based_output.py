@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import numpy as np
 
 import altair as alt
 import pandas as pd
@@ -49,11 +50,19 @@ def _default_runs(runs: list[RunInfo]) -> list[str]:
         "Method_pix2pixhd_No_D / run_HD_NoD_20260709_180550",
         "Method_CVAE / run_CVAE_20260627_193237_config2"
     ]
+    pix2pix_run = next((r.label for r in runs if r.label.startswith("Method_pix2pix / ")), None)
+    if pix2pix_run:
+        preferred_labels.append(pix2pix_run)
+
+    resnet_run = next((r.label for r in runs if r.label.startswith("Method_ResNet / ")), None)
+    if resnet_run:
+        preferred_labels.append(resnet_run)
+
     defaults = [label for label in preferred_labels if any(r.label == label for r in runs)]
     if defaults:
         return defaults
     labels = [r.label for r in runs]
-    return labels[: min(2, len(labels))]
+    return labels[: min(6, len(labels))]
 
 
 def _summary_cards(run: RunInfo, per_image: pd.DataFrame):
@@ -255,8 +264,8 @@ def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, 
     st.altair_chart(chart, use_container_width=True)
 
 
-def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_runs: list[RunInfo], run_colors: dict[str, str]):
-    st.markdown("### Metric compare")
+def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_runs: list[RunInfo], run_colors: dict[str, str], title: str = "Metric compare", key_prefix: str = "full"):
+    st.markdown(f"### {title}")
 
     run_labels = [run.label for run in selected_runs]
     if len(run_labels) < 2:
@@ -316,6 +325,7 @@ def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_r
             "Per-image winner metric",
             metric_options,
             index=metric_options.index("MAE") if "MAE" in metric_options else 0,
+            key=f"{key_prefix}_detail_metric_select"
         )
         detail_view = detail_view[detail_view["metric"] == detail_metric].copy()
         value_rename = {
@@ -413,6 +423,8 @@ def _show_occupancy_level_analysis(
     df_copy = df_copy[df_copy["occupancy_level"] != "Unknown"]
 
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
         "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
@@ -610,6 +622,8 @@ def _show_error_vs_route_length_analysis(
     )
     
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
         "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
@@ -703,6 +717,18 @@ def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
     frames = []
     for run in selected_runs:
         per_image = load_per_image(run.path)
+        if not per_image.empty:
+            frames.append(attach_run_label(per_image, run.label))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _combined_per_image_walkable(selected_runs: list[RunInfo]) -> pd.DataFrame:
+    from utils.metrics_loader import load_walkable_per_image
+    frames = []
+    for run in selected_runs:
+        per_image = load_walkable_per_image(run.path)
         if not per_image.empty:
             frames.append(attach_run_label(per_image, run.label))
     if not frames:
@@ -901,7 +927,9 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
         "Method_pix2pixHD": 0,
         "Method_PlainUnet": 1,
         "Method_pix2pixhd_No_D": 2,
-        "Method_CVAE": 3
+        "Method_CVAE": 3,
+        "Method_pix2pix": 4,
+        "Method_ResNet": 5
     }
     predictions.sort(key=lambda x: METHOD_ORDER.get(x[2], 99))
 
@@ -938,6 +966,8 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
 
     # Columns 2+: PREDICTIONS
     METHOD_SHORT_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
         "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
@@ -963,8 +993,89 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
 
 
 
+def _show_walkable_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
+    METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
+        "Method_pix2pixHD": "pix2pixHD",
+        "Method_PlainUnet": "Plain U-Net",
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
+        "Method_CVAE": "CVAE"
+    }
+
+    METRIC_HEADERS = {
+        "MAE": "MAE ↓",
+        "MSE": "MSE ↓",
+        "RMSE": "RMSE ↓",
+        "SSIM": "SSIM ↑",
+        "PSNR": "PSNR ↑",
+        "LPIPS": "LPIPS ↓"
+    }
+
+    available_metrics = [m for m in METRIC_ORDER if m in combined.columns]
+
+    table_rows = []
+    for run in selected_runs:
+        run_path = run.path
+        csv_sum = run_path / "test_evaluation_walkable_summary.csv"
+        if not csv_sum.exists():
+            csv_sum = run_path / "logs" / "test_evaluation_walkable_summary.csv"
+
+        row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+        if csv_sum.exists():
+            try:
+                df_s = pd.read_csv(csv_sum)
+                for _, s_row in df_s.iterrows():
+                    m_name = str(s_row["metric"]).strip()
+                    val = float(s_row["value"])
+                    if m_name in available_metrics:
+                        row[m_name] = val
+            except Exception:
+                pass
+        table_rows.append(row)
+
+    if not table_rows or not any(len(r) > 1 for r in table_rows):
+        return
+
+    df_summary = pd.DataFrame(table_rows)
+
+    best_vals = {}
+    for m in available_metrics:
+        if m in df_summary.columns:
+            col_vals = df_summary[m].dropna()
+            if not col_vals.empty:
+                best_vals[m] = col_vals.min() if m in LOWER_IS_BETTER else col_vals.max()
+
+    formatted_rows = []
+    for _, row in df_summary.iterrows():
+        f_row = {"Model": row["Model"]}
+        for m in available_metrics:
+            val = row.get(m, np.nan)
+            header = METRIC_HEADERS.get(m, m)
+            if pd.isna(val):
+                f_row[header] = "—"
+            else:
+                is_best = (m in best_vals and abs(val - best_vals[m]) < 1e-9)
+                formatted_val = f"{val:.2f}" if m == "PSNR" else f"{val:.4f}"
+                f_row[header] = f"**{formatted_val}**" if is_best else formatted_val
+        formatted_rows.append(f_row)
+
+    headers = ["Model"] + [METRIC_HEADERS.get(m, m) for m in available_metrics if any(METRIC_HEADERS.get(m, m) in r for r in formatted_rows)]
+    aligns = [":---"] + [":---:" for _ in headers[1:]]
+
+    md_lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(aligns) + " |"]
+    for f_row in formatted_rows:
+        row_vals = [str(f_row.get(h, "—")) for h in headers]
+        md_lines.append("| " + " | ".join(row_vals) + " |")
+
+    st.markdown("### Model Benchmark Summary only walkable area (Average)")
+    st.markdown("\n".join(md_lines))
+
+
 def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
         "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
@@ -1049,6 +1160,9 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     st.markdown(table_md)
     st.markdown("")
 
+    _show_walkable_summary_table(combined, selected_runs)
+    st.markdown("")
+
     st.markdown("### Computational Efficiency Comparison (Simulation vs AI)")
     st.markdown(
         "Performance comparison between traditional physics-based simulation (JuPedSim) "
@@ -1061,6 +1175,8 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
         "| **JuPedSim (Traditional Sim)** | 29.57000 | 25,489.32 | 1.0x |",
         "| **CVAE** | 0.00327 | 2.82 | **9,039x** |",
         "| **Plain U-Net** | 0.01486 | 12.81 | **1,990x** |",
+        "| **Pix2Pix** | 0.01486 | 12.81 | **1,990x** |",
+        "| **ResNet-9** | 0.06100 | 52.58 | **484x** |",
         "| **pix2pixHD (No D)** | 0.06100 | 52.58 | **484x** |",
         "| **pix2pixHD** | 0.06100 | 52.58 | **484x** |"
     ]
@@ -1337,6 +1453,8 @@ def render_image_based_output():
 
     # Color Settings
     DEFAULT_COLORS = {
+        "Method_pix2pix": "#a855f7",        # Purple
+        "Method_ResNet": "#10b981",         # Emerald Green
         "Method_PlainUnet": "#ff4d4d",      # Bright Red
         "Method_pix2pixHD": "#f43f5e",      # Rose Pink
         "Method_pix2pixhd_No_D": "#ffd166", # Soft Yellow
@@ -1348,6 +1466,8 @@ def render_image_based_output():
     }
     
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
         "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
@@ -1404,7 +1524,13 @@ def render_image_based_output():
         y_metric = st.selectbox("Scatter Y", metric_options, index=y_default)
         _scatter(combined, x_metric, y_metric, run_colors)
 
-    _show_metric_compare(combined, metric_options, selected_runs, run_colors)
+    _show_metric_compare(combined, metric_options, selected_runs, run_colors, title="Metric compare", key_prefix="full")
+    
+    walkable_combined = _combined_per_image_walkable(selected_runs)
+    if not walkable_combined.empty:
+        walkable_metrics = [m for m in METRIC_ORDER if m in walkable_combined.columns]
+        _show_metric_compare(walkable_combined, walkable_metrics, selected_runs, run_colors, title="Metric compare (walkable area)", key_prefix="walkable")
+
     _show_sample_metric_scatters(combined, metric_options, run_colors)
     _show_occupancy_level_analysis(combined, selected_runs, run_colors, metric_options)
     _show_error_vs_route_length_analysis(combined, selected_runs, run_colors, metric_options)

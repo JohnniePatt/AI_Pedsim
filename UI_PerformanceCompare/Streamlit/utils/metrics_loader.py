@@ -17,8 +17,21 @@ def _read_csv(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+import numpy as np
+
+
 def load_summary(run_path: Path) -> pd.DataFrame:
-    df = _read_csv(run_path / "test_evaluation_summary.csv")
+    candidates = [
+        run_path / "test_evaluation_summary.csv",
+        run_path / "test_results" / "test_evaluation_summary.csv",
+        run_path / "logs" / "test_evaluation_summary.csv",
+    ]
+    df = pd.DataFrame()
+    for c in candidates:
+        df = _read_csv(c)
+        if not df.empty and "metric" in df.columns and "value" in df.columns:
+            break
+
     if df.empty or "metric" not in df.columns or "value" not in df.columns:
         return pd.DataFrame(columns=["metric", "value"])
     df = df[["metric", "value"]].copy()
@@ -28,11 +41,23 @@ def load_summary(run_path: Path) -> pd.DataFrame:
 
 
 def load_per_image(run_path: Path) -> pd.DataFrame:
-    df = _read_csv(run_path / "test_evaluation_per_image.csv")
+    candidates = [
+        run_path / "test_evaluation_per_image.csv",
+        run_path / "test_results" / "test_evaluation_per_image.csv",
+        run_path / "logs" / "test_evaluation.csv",
+        run_path / "logs" / "test_evaluation_per_image.csv",
+    ]
+    df = pd.DataFrame()
+    for c in candidates:
+        df = _read_csv(c)
+        if not df.empty:
+            break
+
     if df.empty:
         return pd.DataFrame()
 
     rename_map = {
+        "filename": "file_name",
         "mae": "MAE",
         "mse": "MSE",
         "rmse": "RMSE",
@@ -41,6 +66,13 @@ def load_per_image(run_path: Path) -> pd.DataFrame:
         "lpips": "LPIPS",
     }
     df = df.rename(columns=rename_map)
+
+    if "MAE" in df.columns and "MSE" in df.columns:
+        if "RMSE" not in df.columns:
+            df["RMSE"] = np.sqrt(pd.to_numeric(df["MSE"], errors="coerce"))
+        if "PSNR" not in df.columns:
+            df["PSNR"] = 20.0 * np.log10(1.0 / np.maximum(df["RMSE"], 1e-12))
+
     for metric in METRIC_ORDER:
         if metric in df.columns:
             df[metric] = pd.to_numeric(df[metric], errors="coerce")
@@ -73,3 +105,43 @@ def attach_run_label(df: pd.DataFrame, run_label: str) -> pd.DataFrame:
     out = df.copy()
     out.insert(0, "run", run_label)
     return out
+
+
+def load_walkable_per_image(run_path: Path) -> pd.DataFrame:
+    candidates = [
+        run_path / "test_evaluation_walkable_per_image.csv",
+        run_path / "test_results" / "test_evaluation_walkable_per_image.csv",
+        run_path / "logs" / "test_evaluation_walkable_per_image.csv",
+    ]
+    df = pd.DataFrame()
+    for c in candidates:
+        df = _read_csv(c)
+        if not df.empty:
+            break
+    if df.empty:
+        return pd.DataFrame()
+
+    cname = "file_name" if "file_name" in df.columns else ("filename" if "filename" in df.columns else None)
+    if not cname:
+        return pd.DataFrame()
+
+    df = df.rename(columns={cname: "file_name"})
+
+    for col in METRIC_ORDER:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Derivations if RMSE or PSNR is missing
+    if "MSE" in df.columns and "RMSE" not in df.columns:
+        df["RMSE"] = np.sqrt(df["MSE"].clip(lower=0))
+
+    if "RMSE" in df.columns and "PSNR" not in df.columns:
+        def _calc_psnr(val):
+            if pd.isna(val) or val <= 1e-12:
+                return np.nan
+            return 20.0 * np.log10(1.0 / val)
+        df["PSNR"] = df["RMSE"].apply(_calc_psnr)
+
+    cols = ["file_name"] + [m for m in METRIC_ORDER if m in df.columns]
+    return df[cols].copy()
+
