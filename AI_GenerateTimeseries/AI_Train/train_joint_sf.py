@@ -13,7 +13,7 @@ import time
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 from baseline_output import create_run_layout, mark_run_completed, update_checkpoint_manifest
 from joint_sf import JointSceneDataset, JointSocialForcePredictor, SceneDiscriminator, trajectory_losses
@@ -29,6 +29,94 @@ DISPLAY_NAMES = {
     "Method_LSTM_SF_01": "Social-Force-Informed Joint Multi-Agent LSTM",
     "Method_SGAN_SF_01": "Social-Force-Informed Joint Multi-Agent Social GAN",
 }
+
+
+class CaseWindowBatchSampler(Sampler[list[int]]):
+    """Shuffle cases while keeping each case's windows close for dataset cache hits."""
+
+    def __init__(
+        self,
+        dataset: JointSceneDataset,
+        *,
+        batch_size: int,
+        seed: int,
+        shuffle_cases: bool = True,
+        shuffle_windows: bool = True,
+        case_fraction_per_epoch: float = 1.0,
+        group_fraction_by_plan: bool = True,
+        drop_last: bool = False,
+    ):
+        self.dataset = dataset
+        self.batch_size = max(int(batch_size), 1)
+        self.seed = int(seed)
+        self.shuffle_cases = bool(shuffle_cases)
+        self.shuffle_windows = bool(shuffle_windows)
+        self.case_fraction_per_epoch = min(max(float(case_fraction_per_epoch), 0.0), 1.0)
+        self.group_fraction_by_plan = bool(group_fraction_by_plan)
+        self.drop_last = bool(drop_last)
+        self.epoch = 0
+        self.plan_groups = self._make_plan_groups()
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    @staticmethod
+    def _plan_key(case_dir: pathlib.Path) -> str:
+        case_id = case_dir.name.removeprefix("case_")
+        pieces = case_id.split("_")
+        return "_".join(pieces[:3]) if len(pieces) >= 3 else case_id
+
+    def _make_plan_groups(self) -> list[list[int]]:
+        groups: dict[str, list[int]] = {}
+        for case_index, case_dir in enumerate(self.dataset.case_dirs):
+            groups.setdefault(self._plan_key(case_dir), []).append(case_index)
+        return [groups[key] for key in sorted(groups)]
+
+    def selected_case_indices(self) -> list[int]:
+        rng = np.random.default_rng(self.seed + self.epoch * 1000003)
+        if self.case_fraction_per_epoch >= 1.0:
+            case_indices = np.arange(len(self.dataset.case_dirs), dtype=np.int64)
+            if self.shuffle_cases:
+                rng.shuffle(case_indices)
+            return [int(item) for item in case_indices]
+        if self.group_fraction_by_plan:
+            group_indices = np.arange(len(self.plan_groups), dtype=np.int64)
+            if self.shuffle_cases:
+                rng.shuffle(group_indices)
+            group_count = max(1, int(np.ceil(len(group_indices) * self.case_fraction_per_epoch)))
+            selected = []
+            for group_index in group_indices[:group_count]:
+                selected.extend(self.plan_groups[int(group_index)])
+            if self.shuffle_cases:
+                rng.shuffle(selected)
+            return [int(item) for item in selected]
+        case_indices = np.arange(len(self.dataset.case_dirs), dtype=np.int64)
+        if self.shuffle_cases:
+            rng.shuffle(case_indices)
+        case_count = max(1, int(np.ceil(len(case_indices) * self.case_fraction_per_epoch)))
+        return [int(item) for item in case_indices[:case_count]]
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch * 1000003 + 17)
+        batch = []
+        for case_index in self.selected_case_indices():
+            window_indices = np.arange(self.dataset.windows_per_case, dtype=np.int64)
+            if self.shuffle_windows:
+                rng.shuffle(window_indices)
+            base = int(case_index) * self.dataset.windows_per_case
+            for window_index in window_indices:
+                batch.append(base + int(window_index))
+                if len(batch) == self.batch_size:
+                    yield batch
+                    batch = []
+        if batch and not self.drop_last:
+            yield batch
+
+    def __len__(self) -> int:
+        sample_count = len(self.selected_case_indices()) * self.dataset.windows_per_case
+        if self.drop_last:
+            return sample_count // self.batch_size
+        return (sample_count + self.batch_size - 1) // self.batch_size
 
 
 class BatchProgress:
@@ -121,7 +209,11 @@ def model_rollout(model, batch, cfg, teacher_forcing_ratio: float):
     )
 
 
-def validation(model, loader, device, cfg, *, epoch: int, label: str, fallback_interval: int) -> dict[str, float]:
+def cuda_autocast(enabled: bool):
+    return torch.amp.autocast("cuda", enabled=enabled)
+
+
+def validation(model, loader, device, cfg, *, epoch: int, label: str, fallback_interval: int, use_amp: bool) -> dict[str, float]:
     model.eval()
     totals = {"loss": 0.0, "position_loss": 0.0, "walkability_loss": 0.0, "stop_loss": 0.0}
     batches = 0
@@ -129,12 +221,13 @@ def validation(model, loader, device, cfg, *, epoch: int, label: str, fallback_i
     with torch.no_grad():
         for raw in loader:
             batch = move_batch(raw, device)
-            outputs = model_rollout(model, batch, cfg, 0.0)
-            obs_len = int(cfg.get("obs_len", 8))
-            losses = trajectory_losses(
-                outputs, batch["positions"][:, :, obs_len:], batch["active"][:, :, obs_len:], batch["walkable"],
-                walkability_weight=cfg.get("walkability_loss_weight", 0.1), stop_weight=cfg.get("stop_loss_weight", 0.2),
-            )
+            with cuda_autocast(use_amp):
+                outputs = model_rollout(model, batch, cfg, 0.0)
+                obs_len = int(cfg.get("obs_len", 8))
+                losses = trajectory_losses(
+                    outputs, batch["positions"][:, :, obs_len:], batch["active"][:, :, obs_len:], batch["walkable"],
+                    walkability_weight=cfg.get("walkability_loss_weight", 0.1), stop_weight=cfg.get("stop_loss_weight", 0.2),
+                )
             require_finite_losses(losses, raw, epoch=epoch, batch_index=batches + 1)
             for key in totals:
                 totals[key] += float(losses[key].detach().cpu())
@@ -177,15 +270,37 @@ def main() -> None:
     )
     print(f"[train] method={args.method_id} architecture={args.architecture} device={device} run={layout.root}")
     train_ds, val_ds = make_dataset(cfg, "train"), make_dataset(cfg, "val")
+    batch_size = int(cfg.get("batch_size", 4))
+    num_workers = int(cfg.get("num_workers", 0))
     loader_kwargs = dict(
-        batch_size=int(cfg.get("batch_size", 4)), num_workers=int(cfg.get("num_workers", 0)),
+        num_workers=num_workers,
         pin_memory=bool(cfg.get("pin_memory", device.type == "cuda")),
     )
-    train_loader = DataLoader(train_ds, shuffle=True, drop_last=False, **loader_kwargs)
-    val_loader = DataLoader(val_ds, shuffle=False, drop_last=False, **loader_kwargs)
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = bool(cfg.get("persistent_workers", True))
+        loader_kwargs["prefetch_factor"] = int(cfg.get("prefetch_factor", 2))
+    grouped_batches = bool(cfg.get("case_grouped_batches", True))
+    train_sampler = None
+    if grouped_batches:
+        train_sampler = CaseWindowBatchSampler(
+            train_ds,
+            batch_size=batch_size,
+            seed=seed,
+            shuffle_cases=bool(cfg.get("shuffle_train_cases", True)),
+            shuffle_windows=bool(cfg.get("shuffle_train_windows", True)),
+            case_fraction_per_epoch=float(cfg.get("case_fraction_per_epoch", 1.0)),
+            group_fraction_by_plan=bool(cfg.get("group_fraction_by_plan", True)),
+        )
+        train_loader = DataLoader(train_ds, batch_sampler=train_sampler, **loader_kwargs)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=False, **loader_kwargs)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, drop_last=False, **loader_kwargs)
+    use_amp = bool(cfg.get("amp", device.type == "cuda")) and device.type == "cuda"
     print(
         f"[train] train_cases={len(train_ds.case_dirs)} train_batches={len(train_loader)} "
-        f"val_cases={len(val_ds.case_dirs)} val_batches={len(val_loader)}",
+        f"val_cases={len(val_ds.case_dirs)} val_batches={len(val_loader)} "
+        f"grouped_batches={grouped_batches} workers={num_workers} amp={use_amp} "
+        f"case_fraction_per_epoch={cfg.get('case_fraction_per_epoch', 1.0)}",
         flush=True,
     )
     model = make_model(cfg, args.architecture).to(device)
@@ -195,6 +310,7 @@ def main() -> None:
     )
     discriminator = SceneDiscriminator(cfg.get("hidden_dim", 128)).to(device) if args.architecture == "sgan" else None
     discriminator_optimizer = torch.optim.AdamW(discriminator.parameters(), lr=float(cfg.get("discriminator_lr", 2e-4))) if discriminator else None
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     history_path = layout.logs / "training_history.csv"
     fields = ["epoch", "train_loss", "position_loss", "walkability_loss", "stop_loss", "adversarial_loss", "discriminator_loss", "val_loss", "epoch_seconds"]
     with history_path.open("w", newline="", encoding="utf-8") as stream:
@@ -206,6 +322,14 @@ def main() -> None:
 
     for epoch in range(1, epochs + 1):
         train_ds.set_epoch(epoch)
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+            selected_cases = len(train_sampler.selected_case_indices())
+            print(
+                f"[epoch {epoch}] sampled_train_cases={selected_cases}/{len(train_ds.case_dirs)} "
+                f"train_batches={len(train_loader)}",
+                flush=True,
+            )
         started = time.time(); model.train()
         if discriminator: discriminator.train()
         sums = {
@@ -227,12 +351,13 @@ def main() -> None:
         )
         for raw in train_loader:
             batch = move_batch(raw, device)
-            obs_len = int(cfg.get("obs_len", 8))
-            outputs = model_rollout(model, batch, cfg, teacher_ratio)
-            losses = trajectory_losses(
-                outputs, batch["positions"][:, :, obs_len:], batch["active"][:, :, obs_len:], batch["walkable"],
-                walkability_weight=cfg.get("walkability_loss_weight", 0.1), stop_weight=cfg.get("stop_loss_weight", 0.2),
-            )
+            with cuda_autocast(use_amp):
+                obs_len = int(cfg.get("obs_len", 8))
+                outputs = model_rollout(model, batch, cfg, teacher_ratio)
+                losses = trajectory_losses(
+                    outputs, batch["positions"][:, :, obs_len:], batch["active"][:, :, obs_len:], batch["walkable"],
+                    walkability_weight=cfg.get("walkability_loss_weight", 0.1), stop_weight=cfg.get("stop_loss_weight", 0.2),
+                )
             require_finite_losses(losses, raw, epoch=epoch, batch_index=batches + 1)
             adversarial_loss = torch.zeros((), device=device); discriminator_loss = torch.zeros((), device=device)
             if discriminator:
@@ -246,15 +371,19 @@ def main() -> None:
                     F.binary_cross_entropy_with_logits(real_score, torch.ones_like(real_score)) +
                     F.binary_cross_entropy_with_logits(fake_score, torch.zeros_like(fake_score))
                 )
-                discriminator_loss.backward(); discriminator_optimizer.step()
-                adversarial_loss = F.binary_cross_entropy_with_logits(
-                    discriminator(full_fake, full_active), torch.ones_like(real_score)
-                )
+                scaler.scale(discriminator_loss).backward()
+                scaler.step(discriminator_optimizer)
+                with cuda_autocast(use_amp):
+                    adversarial_loss = F.binary_cross_entropy_with_logits(
+                        discriminator(full_fake, full_active), torch.ones_like(real_score)
+                    )
                 losses["loss"] = losses["loss"] + float(cfg.get("adversarial_loss_weight", 0.05)) * adversarial_loss
             generator_optimizer.zero_grad(set_to_none=True)
-            losses["loss"].backward()
+            scaler.scale(losses["loss"]).backward()
+            scaler.unscale_(generator_optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg.get("gradient_clip", 1.0)))
-            generator_optimizer.step()
+            scaler.step(generator_optimizer)
+            scaler.update()
             for key in ("loss", "position_loss", "walkability_loss", "stop_loss"):
                 sums[key] += float(losses[key].detach().cpu())
             sums["adversarial_loss"] += float(adversarial_loss.detach().cpu())
@@ -270,6 +399,7 @@ def main() -> None:
             epoch=epoch,
             label=f"epoch {epoch}/{epochs} val",
             fallback_interval=max(1, len(val_loader) // 10),
+            use_amp=use_amp,
         )
         row = {
             "epoch": epoch,

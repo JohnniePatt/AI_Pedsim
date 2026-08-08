@@ -11,7 +11,7 @@
   "windows_per_case_val": 2,
   "grid_size": 64,
   "geo_padding": 1.0,
-  "batch_size": 2,
+  "batch_size": 8,
   "hidden_dim": 128,
   "num_layers": 2,
   "nhead": 4,
@@ -27,8 +27,15 @@
   "teacher_forcing_end": 0.1,
   "learning_rate": 0.0003,
   "weight_decay": 0.0001,
+  "amp": true,
   "epochs": 100,
   "early_stopping_patience": 10,
-  "num_workers": 0,
-  "case_cache_size": 2
+  "num_workers": 2,
+  "persistent_workers": true,
+  "prefetch_factor": 2,
+  "case_grouped_batches": true,
+  "shuffle_train_cases": true,
+  "shuffle_train_windows": true,
+  "case_cache_size": 16,
+  "progress_interval_batches": 100
 }
