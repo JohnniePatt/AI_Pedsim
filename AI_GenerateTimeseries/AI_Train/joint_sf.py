@@ -354,10 +354,16 @@ class JointSocialForcePredictor(nn.Module):
             temporal_state = hidden[-1]
         temporal_state = temporal_state.reshape(batch, agents, self.hidden_dim)
         current_active = active_history[:, :, -1]
+        social_key_padding = ~current_active
+        no_active_scene = social_key_padding.all(dim=1)
+        if no_active_scene.any():
+            social_key_padding = social_key_padding.clone()
+            social_key_padding[no_active_scene, 0] = False
         social, _ = self.social_attention(
             temporal_state, temporal_state, temporal_state,
-            key_padding_mask=~current_active,
+            key_padding_mask=social_key_padding,
         )
+        social = torch.where(current_active[..., None], social, torch.zeros_like(social))
         current = history[:, :, -1]
         current_velocity = velocity[:, :, -1]
         prior = social_force_prior(current, current_velocity, goal, current_active, wall_field, **self.force_kwargs)
@@ -456,6 +462,7 @@ def trajectory_losses(
     # The window boundary is not an evacuation event; its following state is
     # unknown, so it must not teach the model to stop at every training horizon.
     valid_stop[:, :, -1] = 0.0
+    stop_loss = torch.where(valid_stop.bool(), stop_loss, torch.zeros_like(stop_loss))
     stop_loss = (stop_loss * valid_stop).sum() / valid_stop.sum().clamp_min(1.0)
     total = position_loss + walkability_weight * walkability_loss + stop_weight * stop_loss
     return {"loss": total, "position_loss": position_loss, "walkability_loss": walkability_loss, "stop_loss": stop_loss}

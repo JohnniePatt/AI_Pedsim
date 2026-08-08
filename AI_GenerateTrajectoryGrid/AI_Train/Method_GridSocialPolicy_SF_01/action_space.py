@@ -7,6 +7,8 @@ from collections import Counter
 
 import pandas as pd
 
+from path_utils import resolve_manifest_path
+
 
 def load_json(path: pathlib.Path):
     with path.open("r", encoding="utf-8") as f:
@@ -49,7 +51,7 @@ def collect_grid_deltas(dataset_root: pathlib.Path, split: str, max_cases: int |
 
     counter: Counter = Counter()
     for _, row in manifest.iterrows():
-        traj_path = pathlib.Path(row["target_dir"]) / "trajectory.parquet"
+        traj_path = resolve_manifest_path(dataset_root, row["target_dir"]) / "trajectory.parquet"
         if not traj_path.exists():
             continue
         traj = pd.read_parquet(traj_path, columns=["frame", "agent_id", "grid_x", "grid_y"])

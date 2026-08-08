@@ -153,7 +153,7 @@ def confirm_full_training(
     print(f"  config : {config_path.resolve()}")
     print("  note   : inspect the config above; this may use the GPU for several hours")
     try:
-        answer = input_func("Start full training? [y/N]: ").strip().lower()
+        answer = input_func("Start training? [y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print("\n[pipeline] Cancelled; training was not started.")
         return False

@@ -9,7 +9,7 @@ import sys
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 from tqdm import tqdm
 
 from action_space import ActionSpace, build_action_space
@@ -47,7 +47,94 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
-def make_loader(cfg: dict, split: str, action_space: ActionSpace, shuffle: bool) -> DataLoader:
+class PlanFractionBatchSampler(Sampler[list[int]]):
+    """Sample a rotating fraction of training plans each epoch."""
+
+    def __init__(
+        self,
+        dataset: GridPolicyDataset,
+        *,
+        batch_size: int,
+        seed: int,
+        plan_fraction_per_epoch: float,
+        shuffle_plans: bool = True,
+        shuffle_samples: bool = True,
+        drop_last: bool = True,
+    ):
+        self.dataset = dataset
+        self.batch_size = max(int(batch_size), 1)
+        self.seed = int(seed)
+        self.plan_fraction_per_epoch = min(max(float(plan_fraction_per_epoch), 0.0), 1.0)
+        self.shuffle_plans = bool(shuffle_plans)
+        self.shuffle_samples = bool(shuffle_samples)
+        self.drop_last = bool(drop_last)
+        self.epoch = 0
+        self.plan_to_cases = self._make_plan_groups()
+        self.case_to_sample_indices = self._make_case_sample_indices()
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def _make_plan_groups(self) -> dict[str, list[int]]:
+        groups: dict[str, list[int]] = {}
+        for case_index, row in enumerate(self.dataset.cases):
+            groups.setdefault(str(row["plan_name"]), []).append(case_index)
+        return groups
+
+    def _make_case_sample_indices(self) -> dict[int, list[int]]:
+        indices: dict[int, list[int]] = {}
+        for sample_index, (case_index, _) in enumerate(self.dataset.samples):
+            indices.setdefault(case_index, []).append(sample_index)
+        return indices
+
+    def selected_plan_names(self) -> list[str]:
+        names = sorted(self.plan_to_cases)
+        if self.plan_fraction_per_epoch >= 1.0:
+            return names
+        rng = np.random.default_rng(self.seed + self.epoch * 1000003)
+        indices = np.arange(len(names), dtype=np.int64)
+        if self.shuffle_plans:
+            rng.shuffle(indices)
+        count = max(1, int(np.ceil(len(indices) * self.plan_fraction_per_epoch)))
+        return [names[int(index)] for index in indices[:count]]
+
+    def selected_case_indices(self) -> list[int]:
+        cases: list[int] = []
+        for plan_name in self.selected_plan_names():
+            cases.extend(self.plan_to_cases[plan_name])
+        rng = np.random.default_rng(self.seed + self.epoch * 1000003 + 17)
+        if self.shuffle_plans:
+            rng.shuffle(cases)
+        return [int(item) for item in cases]
+
+    def selected_sample_indices(self) -> list[int]:
+        rng = np.random.default_rng(self.seed + self.epoch * 1000003 + 31)
+        samples: list[int] = []
+        for case_index in self.selected_case_indices():
+            case_samples = list(self.case_to_sample_indices.get(case_index, ()))
+            if self.shuffle_samples:
+                rng.shuffle(case_samples)
+            samples.extend(case_samples)
+        return samples
+
+    def __iter__(self):
+        batch: list[int] = []
+        for sample_index in self.selected_sample_indices():
+            batch.append(sample_index)
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+        if batch and not self.drop_last:
+            yield batch
+
+    def __len__(self) -> int:
+        sample_count = len(self.selected_sample_indices())
+        if self.drop_last:
+            return sample_count // self.batch_size
+        return (sample_count + self.batch_size - 1) // self.batch_size
+
+
+def make_loader(cfg: dict, split: str, action_space: ActionSpace, shuffle: bool) -> tuple[DataLoader, PlanFractionBatchSampler | None]:
     per_case_key = "max_samples_per_case_train" if split == "train" else "max_samples_per_case_eval"
     max_cases_key = "max_train_cases" if split == "train" else "max_eval_cases"
     dataset = GridPolicyDataset(
@@ -63,16 +150,31 @@ def make_loader(cfg: dict, split: str, action_space: ActionSpace, shuffle: bool)
     )
     num_workers = int(cfg.get("num_workers", 0))
     kwargs = {
-        "batch_size": int(cfg["batch_size"]),
-        "shuffle": shuffle,
         "num_workers": num_workers,
         "pin_memory": bool(cfg.get("pin_memory", False)),
-        "drop_last": split == "train",
         "persistent_workers": num_workers > 0,
     }
     if num_workers > 0:
         kwargs["prefetch_factor"] = int(cfg.get("prefetch_factor", 2))
-    return DataLoader(dataset, **kwargs)
+    plan_fraction = float(cfg.get("plan_fraction_per_epoch", 1.0)) if split == "train" else 1.0
+    if split == "train" and bool(cfg.get("plan_fraction_batches", plan_fraction < 1.0)):
+        sampler = PlanFractionBatchSampler(
+            dataset,
+            batch_size=int(cfg["batch_size"]),
+            seed=int(cfg.get("seed", 42)),
+            plan_fraction_per_epoch=plan_fraction,
+            shuffle_plans=bool(cfg.get("shuffle_train_plans", True)),
+            shuffle_samples=bool(cfg.get("shuffle_train_samples", True)),
+            drop_last=True,
+        )
+        return DataLoader(dataset, batch_sampler=sampler, **kwargs), sampler
+    return DataLoader(
+        dataset,
+        batch_size=int(cfg["batch_size"]),
+        shuffle=shuffle,
+        drop_last=split == "train",
+        **kwargs,
+    ), None
 
 
 def make_action_loss_weights(action_space: ActionSpace, cfg: dict, device: torch.device) -> torch.Tensor | None:
@@ -167,13 +269,21 @@ def main() -> None:
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    dataset_root = pathlib.Path(cfg["dataset_root"]).resolve()
+    dataset_root = pathlib.Path(cfg["dataset_root"])
+    if not dataset_root.is_absolute():
+        dataset_root = (config_path.parent / dataset_root).resolve()
+    else:
+        dataset_root = dataset_root.resolve()
     if not dataset_root.exists():
         raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
     cfg["dataset_root"] = str(dataset_root)
 
     if cfg.get("output_root"):
-        outputs_root = pathlib.Path(cfg["output_root"]).resolve()
+        outputs_root = pathlib.Path(cfg["output_root"])
+        if not outputs_root.is_absolute():
+            outputs_root = (config_path.parent / outputs_root).resolve()
+        else:
+            outputs_root = outputs_root.resolve()
         if outputs_root.name == "Method_GridSocialPolicy_SF_01":
             outputs_root = outputs_root / "outputs"
     else:
@@ -214,9 +324,15 @@ def main() -> None:
     print(f"[RUN] {run_dir}")
     print(f"[ACTION] actions={action_space.num_actions} wait_id={action_space.wait_action_id}")
 
-    train_loader = make_loader(cfg, "train", action_space, shuffle=bool(cfg.get("dataloader_shuffle", False)))
-    val_loader = make_loader(cfg, "val", action_space, shuffle=False)
+    train_loader, train_sampler = make_loader(cfg, "train", action_space, shuffle=bool(cfg.get("dataloader_shuffle", False)))
+    val_loader, _ = make_loader(cfg, "val", action_space, shuffle=False)
+    if train_sampler is not None:
+        train_sampler.set_epoch(1)
     print(f"[DATA] train_samples={len(train_loader.dataset)} val_samples={len(val_loader.dataset)}")
+    print(
+        f"[DATA] train_batches={len(train_loader)} val_batches={len(val_loader)} "
+        f"plan_fraction_per_epoch={cfg.get('plan_fraction_per_epoch', 1.0)}"
+    )
 
     model = GridSocialPolicyNet(
         num_actions=action_space.num_actions,
@@ -257,6 +373,13 @@ def main() -> None:
     epochs = int(cfg["epochs"])
     for epoch in range(1, epochs + 1):
         print(f"[EPOCH] {epoch}/{epochs}")
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+            print(
+                f"[EPOCH] sampled_train_plans={len(train_sampler.selected_plan_names())}/{len(train_sampler.plan_to_cases)} "
+                f"sampled_train_cases={len(train_sampler.selected_case_indices())}/{len(train_loader.dataset.cases)} "
+                f"train_batches={len(train_loader)}"
+            )
         train_metrics = run_epoch(
             model,
             train_loader,

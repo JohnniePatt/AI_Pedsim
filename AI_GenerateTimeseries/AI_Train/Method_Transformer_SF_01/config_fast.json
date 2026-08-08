@@ -13,7 +13,7 @@
   "max_val_cases": 32,
   "grid_size": 64,
   "geo_padding": 1.0,
-  "batch_size": 8,
+  "batch_size": 4,
   "hidden_dim": 64,
   "num_layers": 2,
   "nhead": 4,

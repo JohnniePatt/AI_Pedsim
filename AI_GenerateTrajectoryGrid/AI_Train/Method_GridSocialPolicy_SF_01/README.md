@@ -30,44 +30,62 @@ rollout.py                 Run a trained checkpoint from frame 0 spawn.
 rollout_batch.py           Run and save 1-20 rollout preview samples from manifest cases.
 metrics.py                 Basic rollout summary.
 config_train.json          Default training config.
+config_fast.json           Quick debug/sanity config.
+config_quarter_plan.json   Rotate 25% of train plans each epoch.
+config_full.json           Full research-scale config.
 ```
 
 ## Train
 
+Interactive pipeline:
+
+```bash
+cd /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Train/Method_GridSocialPolicy_SF_01
+/home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 run_pipeline.py
+```
+
+When training is selected, the menu offers:
+
+```text
+1) fast    - quick debug/sanity training
+2) quarter - rotate 25% of train plans each epoch
+3) full    - full research-scale training
+```
+
+Direct profile commands:
+
+```bash
+/home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 run_pipeline.py --profile fast
+/home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 run_pipeline.py --profile quarter
+/home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 run_pipeline.py --profile full
+```
+
 Quick smoke test:
 
 ```bash
-cd /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Train/Method_GridSocialPolicy
-/home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 train_grid_policy.py --config config_smoke.json
-```
-
-Full baseline training:
-
-```bash
-cd /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Train/Method_GridSocialPolicy
-/home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 train_grid_policy.py --config config_train.json
+/home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 run_pipeline.py --stage all --config-train config_smoke.json --sample-count 1 --max-steps 20
 ```
 
 Outputs go to:
 
 ```text
-AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy/run_YYYYMMDD_HHMMSS/
+AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy_SF_01/outputs/run_YYYYMMDD_HHMMSS_seedNNN/
   action_space.json
-  config_train.json
-  metrics.csv
+  logs/training_history.csv
+  manifest.json
   model_architecture.txt
   checkpoints/
-    best.pt
-    last.pt
+    best_model.pth
+    latest_model.pth
 ```
 
 ## Rollout
 
 ```bash
 /home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 rollout.py \
-  --checkpoint /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy/<run>/checkpoints/best.pt \
+  --checkpoint /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy_SF_01/outputs/<run>/checkpoints/best_model.pth \
   --input-dir /home/johnfaqpc/programming/AI_Pedsim/Dataset/Data_TrajectoryGrid/Topo_HouseGAN/A/train/<plan>/<sqlite_stem> \
-  --output-dir /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy/<run>/rollout_sample
+  --output-dir /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy_SF_01/outputs/<run>/rollout_sample
 ```
 
 Each rollout writes:
@@ -83,9 +101,9 @@ For multiple preview samples:
 
 ```bash
 /home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 rollout_batch.py \
-  --checkpoint /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy/<run>/checkpoints/best.pt \
+  --checkpoint /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy_SF_01/outputs/<run>/checkpoints/best_model.pth \
   --dataset-root /home/johnfaqpc/programming/AI_Pedsim/Dataset/Data_TrajectoryGrid/Topo_HouseGAN \
-  --output-root /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy/<run>/rollouts \
+  --output-root /home/johnfaqpc/programming/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy_SF_01/outputs/<run>/rollouts \
   --split val \
   --sample-count 10
 ```
@@ -115,3 +133,8 @@ pin_memory = true
 `action_frame_stride=5` trains one action from a 5-frame delta instead of a 1-frame
 delta. This reduces the 25 FPS wait-label problem and gives the 20 movement actions
 real speed/direction meaning.
+
+`quarter` uses a plan-level rotating sampler. Each epoch samples 25% of train plans,
+then uses all configured samples from those plans. This is faster per epoch than
+`full`, but it is a stochastic training protocol and should be reported separately
+from full-data-per-epoch training in research results.
