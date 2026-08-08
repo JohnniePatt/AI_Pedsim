@@ -56,16 +56,15 @@ def load_per_image(run_path: Path) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    rename_map = {
-        "filename": "file_name",
-        "mae": "MAE",
-        "mse": "MSE",
-        "rmse": "RMSE",
-        "ssim": "SSIM",
-        "psnr": "PSNR",
-        "lpips": "LPIPS",
-    }
-    df = df.rename(columns=rename_map)
+    # Normalize column names to uppercase except file_name
+    new_cols = []
+    for col in df.columns:
+        c_clean = str(col).strip()
+        if c_clean.lower() in ("filename", "file_name"):
+            new_cols.append("file_name")
+        else:
+            new_cols.append(c_clean.upper())
+    df.columns = new_cols
 
     if "MAE" in df.columns and "MSE" in df.columns:
         if "RMSE" not in df.columns:
@@ -121,11 +120,14 @@ def load_walkable_per_image(run_path: Path) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    cname = "file_name" if "file_name" in df.columns else ("filename" if "filename" in df.columns else None)
-    if not cname:
-        return pd.DataFrame()
-
-    df = df.rename(columns={cname: "file_name"})
+    new_cols = []
+    for col in df.columns:
+        c_clean = str(col).strip()
+        if c_clean.lower() in ("filename", "file_name"):
+            new_cols.append("file_name")
+        else:
+            new_cols.append(c_clean.upper())
+    df.columns = new_cols
 
     for col in METRIC_ORDER:
         if col in df.columns:

@@ -1,0 +1,12 @@
+{
+  "dataset_root": "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN",
+  "output_dir": "AI_GenerateImage/AI_Result/Method_pix2pix_WGAN-GP/outputs",
+  "epochs": 50,
+  "batch_size": 4,
+  "lr": 0.0002,
+  "b1": 0.5,
+  "b2": 0.999,
+  "lambda_l1": 100.0,
+  "lambda_gp": 10.0,
+  "image_size": 512
+}

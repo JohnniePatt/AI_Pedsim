@@ -102,16 +102,16 @@ def main():
 
     page = st.sidebar.radio(
         "Menu",
-        ["Time series output", "Image based output", "Summary output"],
+        ["Image based output", "Time series output", "Summary output"],
         index=0,
     )
 
-    if page == "Time series output":
-        render_time_series_output()
+    if page == "Image based output":
+        render_image_based_output()
     elif page == "Summary output":
         render_summary_output()
     else:
-        render_image_based_output()
+        render_time_series_output()
 
 
 if __name__ == "__main__":
