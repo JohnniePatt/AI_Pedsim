@@ -12,6 +12,7 @@ from shapely.geometry import Point, Polygon
 from torch.utils.data import Dataset
 
 from action_space import ActionSpace
+from path_utils import resolve_manifest_path
 
 
 def load_json(path: pathlib.Path):
@@ -151,8 +152,8 @@ class GridPolicyDataset(Dataset):
             return item
 
         row = self.cases[case_idx]
-        input_dir = pathlib.Path(row["input_dir"])
-        target_dir = pathlib.Path(row["target_dir"])
+        input_dir = resolve_manifest_path(self.dataset_root, row["input_dir"])
+        target_dir = resolve_manifest_path(self.dataset_root, row["target_dir"])
         grid_payload = load_json(input_dir / "walkablearea_grid.json")
         exit_payload = load_json(input_dir / "exit_room.json")
         traj = pd.read_parquet(

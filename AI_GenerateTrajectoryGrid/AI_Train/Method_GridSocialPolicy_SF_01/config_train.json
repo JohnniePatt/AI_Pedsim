@@ -1,6 +1,6 @@
 {
-  "dataset_root": "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/Dataset/Data_TrajectoryGrid/Topo_HouseGAN",
-  "output_root": "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateTrajectoryGrid/AI_Result/Method_GridSocialPolicy_SF_01",
+  "dataset_root": "../../../Dataset/Data_TrajectoryGrid/Topo_HouseGAN",
+  "output_root": "../../AI_Result/Method_GridSocialPolicy_SF_01",
   "dataset_id": "housegan_canonical_imagebase_split_v1",
   "sf_implementation_ready": true,
   "seed": 42,
