@@ -34,11 +34,12 @@ Direct profile commands:
 /home/johnfaqpc/programming/AI_Pedsim-env/bin/python3 run_pipeline.py --profile full
 ```
 
-`quarter` uses the shared joint-SF case-grouped sampler with
-`case_fraction_per_epoch=0.25` and `group_fraction_by_plan=true`, so each epoch
-samples about 25% of train plans and rotates the sampled plans on the next epoch.
-It is faster per epoch than `full`, but it is a stochastic training protocol and
-should be reported separately from full-data-per-epoch training.
+`quarter` is a practical rotating-plan profile. It uses the shared joint-SF
+case-grouped sampler with `case_fraction_per_epoch=0.25` and
+`group_fraction_by_plan=true`, so each epoch samples about 25% of train plans and
+rotates the sampled plans on the next epoch. To keep Transformer-SF usable, it
+also uses fewer windows per case, fewer layers, and a lower agent cap than
+`full`. It is not a replacement for full-data-per-epoch research training.
 
 This method will predict all active agents synchronously. Its intended inputs
 are trajectory history, velocity, exit/navigation direction, walkable geometry,

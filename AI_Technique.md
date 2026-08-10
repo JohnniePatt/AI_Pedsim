@@ -582,18 +582,43 @@ first quarter train batch:
 
 - ใช้ trainer กลาง `train_joint_sf.py` เหมือน LSTM-SF โดยส่ง `--architecture transformer`
 - `fast` ใช้ dataset/model เล็กลงเพื่อ sanity/debug
-- `quarter` ใช้ transformer ขนาด full แต่ตั้ง `case_fraction_per_epoch=0.25` และ `group_fraction_by_plan=true`
+- `quarter` เป็น practical profile: สุ่ม 25% ของ plans ต่อ epoch แต่ลดจำนวน windows/layers/agent cap เพื่อให้รันได้จริง
 - `full` ใช้ train split เต็มทุก epoch
 - ตั้ง `case_grouped_batches=true` เพื่อให้ windows ของ case เดียวกันอยู่ใกล้กัน ลดการอ่าน parquet/geometry ซ้ำ
 - เปิด `amp=true`, `num_workers=2`, `persistent_workers=true`, `prefetch_factor=2` ใน `quarter/full`
-- ใช้ `batch_size=4` สำหรับ transformer เพราะ transformer หนักกว่า LSTM; ลด batch count ลงจาก config เดิมที่ batch size 2 แต่ยัง conservative กว่า LSTM batch size 8
+- ใช้ `batch_size=8` ใน quarter หลังลด agent cap/layers แล้ว เพื่อลด batch count ต่อ epoch
 
-จำนวนที่ตรวจจาก config `quarter`:
+จำนวนเดิมที่ตรวจจาก config `quarter` รุ่นแรก:
 
 ```text
 sampled_train_cases=688/2719
 sampled_train_plans=120/478
 train_batches=5504
+```
+
+ปัญหาที่พบจากการรันจริง:
+
+```text
+epoch 1/160 train:
+  344/5504 batches
+  elapsed=15:23
+  speed=2.91s/batch
+  eta_per_epoch≈4.4 hours
+```
+
+ดังนั้นถ้ารันครบ 160 epochs จะยาวเป็นหลักหลายสิบวัน ซึ่งช้าเกินไปสำหรับ profile ที่ตั้งใจให้เป็นตัวทดลองแบบ practical
+
+ค่า quarter ใหม่:
+
+```text
+sampled_train_cases=688/2719
+sampled_train_plans=120/478
+train_batches=688
+epochs=40
+max_agents=128
+windows_per_case_train=8
+batch_size=8
+num_layers=2
 ```
 
 ประมาณ full profile:
@@ -607,10 +632,10 @@ epochs=100
 
 ความเห็นแบบไม่อวย:
 
-- `quarter` ของ Transformer-SF เร็วกว่า full ต่อ epoch ประมาณ 4 เท่า
-- แต่เพราะใช้ `epochs=160` exposure รวมจะประมาณ 40 full-equivalent epochs ไม่เท่า full 100 epochs
+- `quarter` ใหม่ไม่ใช่ full-size Transformer training; มันเป็น profile ทดลองที่ลด compute อย่างตั้งใจ
+- ยังสุ่มระดับ plan 25% ตาม concept เดิม แต่ไม่ได้ใช้ windows/model capacity เท่า full
 - ถ้าจะใช้เป็นผลวิจัย ต้องบอก protocol ชัดว่าเป็น stochastic quarter-plan training
-- ถ้า GPU ยังไหวและอยากลด batch count อีก อาจค่อยทดลองเพิ่ม `batch_size` จาก 4 เป็น 8 แต่ต้องเช็ก VRAM ก่อน
+- ถ้าจะอ้างเป็น final/research-scale ให้ใช้ `full` หรือสร้าง config research-quarter แยกที่ระบุข้อจำกัดชัดเจน
 
 วิธีใช้:
 
