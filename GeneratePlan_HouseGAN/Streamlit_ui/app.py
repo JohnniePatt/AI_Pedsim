@@ -542,10 +542,12 @@ def page_dashboard():
             st.pyplot(fig, use_container_width=True)
             plt.close(fig)
             
-            if not df_dist.empty:
+            if not df_ds_routes.empty:
+                distance_values = df_ds_routes["topology_centerline_distance_m"]
+
                 fig_box, ax_box = plt.subplots(figsize=(12, 2.5))
                 ax_box.boxplot(
-                    df_dist["topology_centerline_distance_m"],
+                    distance_values,
                     vert=False,
                     patch_artist=True,
                     boxprops=dict(facecolor="#93c5fd", color="#2563eb", linewidth=1.5),
@@ -565,50 +567,95 @@ def page_dashboard():
 
                 try:
                     fig_kde, ax_kde = plt.subplots(figsize=(12, 3.5))
-                    # Histogram
                     ax_kde.hist(
-                        df_dist["topology_centerline_distance_m"], 
-                        bins=30, 
-                        density=True, 
-                        color="#dbeafe", 
-                        edgecolor="#93c5fd", 
-                        alpha=0.8
+                        distance_values,
+                        bins=30,
+                        density=True,
+                        color="#dbeafe",
+                        edgecolor="#93c5fd",
+                        alpha=0.8,
                     )
-                    # KDE Curve (Bell Curve)
-                    df_dist["topology_centerline_distance_m"].plot.kde(
-                        ax=ax_kde, 
-                        color="#2563eb", 
-                        linewidth=2
+                    distance_values.plot.kde(
+                        ax=ax_kde,
+                        color="#2563eb",
+                        linewidth=2,
                     )
                     kde_lines = ax_kde.get_lines()
                     if kde_lines:
                         kde_x, kde_y = kde_lines[0].get_data()
                         ax_kde.fill_between(kde_x, kde_y, color="#2563eb", alpha=0.1)
-                        
-                        x_min = df_dist["topology_centerline_distance_m"].min()
-                        x_max = df_dist["topology_centerline_distance_m"].max()
+
+                        x_min = distance_values.min()
+                        x_max = distance_values.max()
                         padding = (x_max - x_min) * 0.1
                         ax_kde.set_xlim(max(0, x_min - padding), x_max + padding)
-                    
+
                     ax_kde.set_xlabel("topology_centerline_distance_m (m)")
                     ax_kde.set_ylabel("Density")
                     ax_kde.set_title("Distance Distribution (Density Curve & Histogram)")
                     ax_kde.grid(True, alpha=0.28)
                     fig_kde.tight_layout()
-                    
+
                     st.pyplot(fig_kde, use_container_width=True)
                     plt.close(fig_kde)
                 except Exception as kde_err:
                     st.caption(f"Cannot load Density Curve: {kde_err}")
 
-                total_filtered_routes = len(df_dist)
-                min_dist = df_dist["topology_centerline_distance_m"].min()
-                max_dist = df_dist["topology_centerline_distance_m"].max()
-                mean_dist = df_dist["topology_centerline_distance_m"].mean()
+                try:
+                    mean_distance = distance_values.mean()
+                    median_distance = distance_values.median()
+
+                    fig_histogram, ax_histogram = plt.subplots(figsize=(12, 3.5))
+                    ax_histogram.hist(
+                        distance_values,
+                        bins=30,
+                        density=True,
+                        color="#facc15",
+                        edgecolor="#ca8a04",
+                        linewidth=0.8,
+                        alpha=0.9,
+                    )
+
+                    ax_histogram.axvline(
+                        mean_distance,
+                        color="#dc2626",
+                        linestyle="--",
+                        linewidth=2,
+                        label=f"Mean: {mean_distance:.2f} m",
+                    )
+                    ax_histogram.axvline(
+                        median_distance,
+                        color="#2563eb",
+                        linestyle="-.",
+                        linewidth=2,
+                        label=f"Median: {median_distance:.2f} m",
+                    )
+
+                    x_min = distance_values.min()
+                    x_max = distance_values.max()
+                    padding = (x_max - x_min) * 0.1
+                    if padding > 0:
+                        ax_histogram.set_xlim(max(0, x_min - padding), x_max + padding)
+
+                    ax_histogram.set_xlabel("topology_centerline_distance_m (m)")
+                    ax_histogram.set_ylabel("Density")
+                    ax_histogram.set_title("Distance Distribution (Histogram with Mean & Median)")
+                    ax_histogram.legend()
+                    ax_histogram.grid(True, alpha=0.28, axis="y")
+                    fig_histogram.tight_layout()
+
+                    st.pyplot(fig_histogram, use_container_width=True)
+                    plt.close(fig_histogram)
+                except Exception as histogram_err:
+                    st.caption(f"Cannot load Distance Histogram: {histogram_err}")
+
+                total_distribution_routes = len(distance_values)
+                min_dist = distance_values.min()
+                max_dist = distance_values.max()
                 
                 st.caption("### Graph Summary")
                 sc1, sc2, sc3 = st.columns(3)
-                sc1.metric("Graph Routes Count", f"{total_filtered_routes:,.0f}")
+                sc1.metric("Graph Routes Count", f"{total_distribution_routes:,.0f}")
                 sc2.metric("Min Distance", f"{min_dist:,.2f} m")
                 sc3.metric("Max Distance", f"{max_dist:,.2f} m")
         except Exception as e:

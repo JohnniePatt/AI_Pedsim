@@ -21,6 +21,7 @@ from utils.result_scanner import RunInfo, discover_runs, get_run_by_label
 
 LOWER_IS_BETTER = {"MAE", "MSE", "RMSE", "LPIPS"}
 HIGHER_IS_BETTER = {"SSIM", "PSNR"}
+EXCLUDED_IMAGE_COMPARE_METHODS = {"Method_CVAE"}
 RUN_COLOR_RANGE = [
     "#e11d48",
     "#2563eb",
@@ -48,7 +49,6 @@ def _default_runs(runs: list[RunInfo]) -> list[str]:
         "Method_pix2pixHD",
         "Method_ResNet",
         "Method_pix2pix_WGAN-GP",
-        "Method_CVAE",
         "Method_PlainUnet"
     ]
     defaults = []
@@ -424,8 +424,7 @@ def _show_occupancy_level_analysis(
         "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
 
     levels = [
@@ -624,8 +623,7 @@ def _show_error_vs_route_length_analysis(
         "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
     
     corr_rows = []
@@ -920,13 +918,12 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
             first_target = target_path
         predictions.append((run.label, pred_path, run.method, run.run_name))
 
-    # Sort predictions consistently by method order: pix2pixHD -> ResNet-9 -> Pix2Pix (WGAN-GP) -> CVAE -> Plain U-Net
+    # Sort predictions consistently by method order: pix2pixHD -> ResNet-9 -> Pix2Pix (WGAN-GP) -> Plain U-Net
     METHOD_ORDER = {
         "Method_pix2pixHD": 0,
         "Method_ResNet": 1,
         "Method_pix2pix_WGAN-GP": 2,
-        "Method_CVAE": 3,
-        "Method_PlainUnet": 4
+        "Method_PlainUnet": 3
     }
     predictions.sort(key=lambda x: METHOD_ORDER.get(x[2], 99))
 
@@ -967,8 +964,7 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
         "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
 
     for idx, (label, pred_path, method, run_name) in enumerate(predictions, start=2):
@@ -996,8 +992,7 @@ def _show_walkable_summary_table(combined: pd.DataFrame, selected_runs: list[Run
         "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
 
     METRIC_HEADERS = {
@@ -1076,8 +1071,7 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
         "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
     
     METRIC_HEADERS = {
@@ -1198,7 +1192,6 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
         "| **pix2pixHD** | 0.06100 | 52.58 | **484x** |",
         "| **ResNet-9** | 0.06100 | 52.58 | **484x** |",
         "| **Pix2Pix (WGAN-GP)** | 0.01486 | 12.81 | **1,990x** |",
-        "| **CVAE** | 0.00327 | 2.82 | **9,039x** |",
         "| **Plain U-Net** | 0.01486 | 12.81 | **1,990x** |"
     ]
     st.markdown("\n".join(time_md_lines))
@@ -1445,7 +1438,10 @@ def render_image_based_output():
         unsafe_allow_html=True,
     )
 
-    runs = discover_runs()
+    runs = [
+        run for run in discover_runs()
+        if run.method not in EXCLUDED_IMAGE_COMPARE_METHODS
+    ]
     if not runs:
         st.error("No evaluated runs found under AI_GenerateImage/AI_Result.")
         return
@@ -1466,8 +1462,7 @@ def render_image_based_output():
         "Method_pix2pixHD": 0,
         "Method_ResNet": 1,
         "Method_pix2pix_WGAN-GP": 2,
-        "Method_CVAE": 3,
-        "Method_PlainUnet": 4
+        "Method_PlainUnet": 3
     }
     selected_runs.sort(key=lambda r: METHOD_ORDER.get(r.method, 99))
 
@@ -1490,7 +1485,6 @@ def render_image_based_output():
         "Method_PlainUnet": "#ff4d4d",      # Bright Red
         "Method_pix2pixHD": "#f43f5e",      # Rose Pink
         "Method_pix2pixhd_No_D": "#ffd166", # Soft Yellow
-        "Method_CVAE": "#f97316",           # Soft Orange
         "Method_GNN_CVAE": "#ca8a04",       # Yellow
         "Method_GNN_CVAE2": "#0891b2",      # Cyan
         "Method_LSTM_01": "#f97316",        # Orange
@@ -1502,8 +1496,7 @@ def render_image_based_output():
         "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
 
     run_colors = {}
