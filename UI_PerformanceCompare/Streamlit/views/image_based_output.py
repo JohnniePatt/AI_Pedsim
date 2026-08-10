@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import numpy as np
 
 import altair as alt
 import pandas as pd
@@ -20,6 +21,7 @@ from utils.result_scanner import RunInfo, discover_runs, get_run_by_label
 
 LOWER_IS_BETTER = {"MAE", "MSE", "RMSE", "LPIPS"}
 HIGHER_IS_BETTER = {"SSIM", "PSNR"}
+EXCLUDED_IMAGE_COMPARE_METHODS = {"Method_CVAE"}
 RUN_COLOR_RANGE = [
     "#e11d48",
     "#2563eb",
@@ -43,17 +45,20 @@ def _format_metric(value: float, metric: str) -> str:
 def _default_runs(runs: list[RunInfo]) -> list[str]:
     if not runs:
         return []
-    preferred_labels = [
-        "Method_pix2pixHD / run_HD_20260517_133538_BestForBW",
-        "Method_PlainUnet / run_PlainUNet_20260708_211818",
-        "Method_pix2pixhd_No_D / run_HD_NoD_20260709_180550",
-        "Method_CVAE / run_CVAE_20260627_193237_config2"
+    preferred_order = [
+        "Method_pix2pixHD",
+        "Method_ResNet",
+        "Method_pix2pix_WGAN-GP",
+        "Method_PlainUnet"
     ]
-    defaults = [label for label in preferred_labels if any(r.label == label for r in runs)]
+    defaults = []
+    for method in preferred_order:
+        match = next((r.label for r in runs if r.method == method or r.label.startswith(f"{method} / ")), None)
+        if match and match not in defaults:
+            defaults.append(match)
     if defaults:
         return defaults
-    labels = [r.label for r in runs]
-    return labels[: min(2, len(labels))]
+    return [r.label for r in runs][: min(6, len(runs))]
 
 
 def _summary_cards(run: RunInfo, per_image: pd.DataFrame):
@@ -255,8 +260,8 @@ def _donut_chart(score_df: pd.DataFrame, metric: str, display_labels: dict[str, 
     st.altair_chart(chart, use_container_width=True)
 
 
-def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_runs: list[RunInfo], run_colors: dict[str, str]):
-    st.markdown("### Metric compare")
+def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_runs: list[RunInfo], run_colors: dict[str, str], title: str = "Metric compare", key_prefix: str = "full"):
+    st.markdown(f"### {title}")
 
     run_labels = [run.label for run in selected_runs]
     if len(run_labels) < 2:
@@ -316,6 +321,7 @@ def _show_metric_compare(df: pd.DataFrame, metric_options: list[str], selected_r
             "Per-image winner metric",
             metric_options,
             index=metric_options.index("MAE") if "MAE" in metric_options else 0,
+            key=f"{key_prefix}_detail_metric_select"
         )
         detail_view = detail_view[detail_view["metric"] == detail_metric].copy()
         value_rename = {
@@ -413,10 +419,12 @@ def _show_occupancy_level_analysis(
     df_copy = df_copy[df_copy["occupancy_level"] != "Unknown"]
 
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_pix2pix_WGAN-GP": "Pix2Pix (WGAN-GP)",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
 
     levels = [
@@ -610,10 +618,12 @@ def _show_error_vs_route_length_analysis(
     )
     
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_pix2pix_WGAN-GP": "Pix2Pix (WGAN-GP)",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
     
     corr_rows = []
@@ -703,6 +713,18 @@ def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
     frames = []
     for run in selected_runs:
         per_image = load_per_image(run.path)
+        if not per_image.empty:
+            frames.append(attach_run_label(per_image, run.label))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _combined_per_image_walkable(selected_runs: list[RunInfo]) -> pd.DataFrame:
+    from utils.metrics_loader import load_walkable_per_image
+    frames = []
+    for run in selected_runs:
+        per_image = load_walkable_per_image(run.path)
         if not per_image.empty:
             frames.append(attach_run_label(per_image, run.label))
     if not frames:
@@ -896,12 +918,12 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
             first_target = target_path
         predictions.append((run.label, pred_path, run.method, run.run_name))
 
-    # Sort predictions consistently by method order: pix2pixHD -> Plain U-Net -> pix2pixHD (No D) -> CVAE
+    # Sort predictions consistently by method order: pix2pixHD -> ResNet-9 -> Pix2Pix (WGAN-GP) -> Plain U-Net
     METHOD_ORDER = {
         "Method_pix2pixHD": 0,
-        "Method_PlainUnet": 1,
-        "Method_pix2pixhd_No_D": 2,
-        "Method_CVAE": 3
+        "Method_ResNet": 1,
+        "Method_pix2pix_WGAN-GP": 2,
+        "Method_PlainUnet": 3
     }
     predictions.sort(key=lambda x: METHOD_ORDER.get(x[2], 99))
 
@@ -938,10 +960,11 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
 
     # Columns 2+: PREDICTIONS
     METHOD_SHORT_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
 
     for idx, (label, pred_path, method, run_name) in enumerate(predictions, start=2):
@@ -963,12 +986,92 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
 
 
 
-def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
+def _show_walkable_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
+    }
+
+    METRIC_HEADERS = {
+        "MAE": "MAE ↓",
+        "MSE": "MSE ↓",
+        "RMSE": "RMSE ↓",
+        "SSIM": "SSIM ↑",
+        "PSNR": "PSNR ↑",
+        "LPIPS": "LPIPS ↓"
+    }
+
+    available_metrics = list(METRIC_ORDER)
+
+    table_rows = []
+    for run in selected_runs:
+        run_path = run.path
+        csv_sum = run_path / "test_evaluation_walkable_summary.csv"
+        if not csv_sum.exists():
+            csv_sum = run_path / "logs" / "test_evaluation_walkable_summary.csv"
+
+        row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+        if csv_sum.exists():
+            try:
+                df_s = pd.read_csv(csv_sum)
+                for _, s_row in df_s.iterrows():
+                    m_name = str(s_row.iloc[0]).strip().upper()
+                    val = float(s_row.iloc[1])
+                    if m_name in available_metrics:
+                        row[m_name] = val
+            except Exception:
+                pass
+        table_rows.append(row)
+
+    if not table_rows or not any(len(r) > 1 for r in table_rows):
+        return
+
+    df_summary = pd.DataFrame(table_rows)
+
+    best_vals = {}
+    for m in available_metrics:
+        if m in df_summary.columns:
+            col_vals = df_summary[m].dropna()
+            if not col_vals.empty:
+                best_vals[m] = col_vals.min() if m in LOWER_IS_BETTER else col_vals.max()
+
+    formatted_rows = []
+    for _, row in df_summary.iterrows():
+        f_row = {"Model": row["Model"]}
+        for m in available_metrics:
+            val = row.get(m, np.nan)
+            header = METRIC_HEADERS.get(m, m)
+            if pd.isna(val):
+                f_row[header] = "—"
+            else:
+                is_best = (m in best_vals and abs(val - best_vals[m]) < 1e-9)
+                formatted_val = f"{val:.2f}" if m == "PSNR" else f"{val:.4f}"
+                f_row[header] = f"**{formatted_val}**" if is_best else formatted_val
+        formatted_rows.append(f_row)
+
+    headers = ["Model"] + [METRIC_HEADERS.get(m, m) for m in available_metrics if any(METRIC_HEADERS.get(m, m) in r for r in formatted_rows)]
+    aligns = [":---"] + [":---:" for _ in headers[1:]]
+
+    md_lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(aligns) + " |"]
+    for f_row in formatted_rows:
+        row_vals = [str(f_row.get(h, "—")) for h in headers]
+        md_lines.append("| " + " | ".join(row_vals) + " |")
+
+    st.markdown("### Model Benchmark Summary only walkable area (Average)")
+    st.markdown("\n".join(md_lines))
+
+
+def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
+    METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_pix2pix_WGAN-GP": "Pix2Pix (WGAN-GP)",
+        "Method_ResNet": "ResNet-9",
+        "Method_pix2pixHD": "pix2pixHD",
+        "Method_PlainUnet": "Plain U-Net",
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
     
     METRIC_HEADERS = {
@@ -980,16 +1083,40 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
         "LPIPS": "LPIPS ↓"
     }
 
-    # Identify metric columns that exist in the dataframe
-    available_metrics = [m for m in METRIC_ORDER if m in combined.columns]
+    # Always present all 6 core metrics: MAE, MSE, RMSE, SSIM, PSNR, LPIPS
+    available_metrics = list(METRIC_ORDER)
     
-    # Compute mean for each run
+    # Compute mean for each run (preferring test_evaluation_summary.csv if available)
     table_rows = []
     for run in selected_runs:
+        summary_csv = run.path / "test_evaluation_summary.csv"
+        if not summary_csv.exists():
+            summary_csv = run.path / "logs" / "test_evaluation_summary.csv"
+            
+        summary_dict = {}
+        if summary_csv.exists():
+            try:
+                df_s = pd.read_csv(summary_csv)
+                for _, s_row in df_s.iterrows():
+                    m_name = str(s_row.iloc[0]).strip().upper()
+                    try:
+                        m_val = float(s_row.iloc[1])
+                        if not np.isnan(m_val):
+                            summary_dict[m_name] = m_val
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         run_data = combined[combined["run"] == run.label]
         row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
         for m in available_metrics:
-            if not run_data.empty and m in run_data.columns:
+            m_upper = m.upper()
+            if m_upper in summary_dict:
+                row[m] = summary_dict[m_upper]
+            elif m in summary_dict:
+                row[m] = summary_dict[m]
+            elif not run_data.empty and m in run_data.columns and not pd.isna(run_data[m].mean()):
                 row[m] = float(run_data[m].mean())
             else:
                 row[m] = float("nan")
@@ -1049,6 +1176,9 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     st.markdown(table_md)
     st.markdown("")
 
+    _show_walkable_summary_table(combined, selected_runs)
+    st.markdown("")
+
     st.markdown("### Computational Efficiency Comparison (Simulation vs AI)")
     st.markdown(
         "Performance comparison between traditional physics-based simulation (JuPedSim) "
@@ -1059,10 +1189,10 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
         "| Method / Model | Avg Time per Sample (s) | Total Time (s) | Speedup Factor |",
         "| :--- | :---: | :---: | :---: |",
         "| **JuPedSim (Traditional Sim)** | 29.57000 | 25,489.32 | 1.0x |",
-        "| **CVAE** | 0.00327 | 2.82 | **9,039x** |",
-        "| **Plain U-Net** | 0.01486 | 12.81 | **1,990x** |",
-        "| **pix2pixHD (No D)** | 0.06100 | 52.58 | **484x** |",
-        "| **pix2pixHD** | 0.06100 | 52.58 | **484x** |"
+        "| **pix2pixHD** | 0.06100 | 52.58 | **484x** |",
+        "| **ResNet-9** | 0.06100 | 52.58 | **484x** |",
+        "| **Pix2Pix (WGAN-GP)** | 0.01486 | 12.81 | **1,990x** |",
+        "| **Plain U-Net** | 0.01486 | 12.81 | **1,990x** |"
     ]
     st.markdown("\n".join(time_md_lines))
     st.markdown("")
@@ -1308,7 +1438,10 @@ def render_image_based_output():
         unsafe_allow_html=True,
     )
 
-    runs = discover_runs()
+    runs = [
+        run for run in discover_runs()
+        if run.method not in EXCLUDED_IMAGE_COMPARE_METHODS
+    ]
     if not runs:
         st.error("No evaluated runs found under AI_GenerateImage/AI_Result.")
         return
@@ -1324,6 +1457,15 @@ def render_image_based_output():
     selected_runs = [get_run_by_label(runs, label) for label in selected_labels]
     selected_runs = [run for run in selected_runs if run is not None]
 
+    # Sort selected runs in exact preferred order
+    METHOD_ORDER = {
+        "Method_pix2pixHD": 0,
+        "Method_ResNet": 1,
+        "Method_pix2pix_WGAN-GP": 2,
+        "Method_PlainUnet": 3
+    }
+    selected_runs.sort(key=lambda r: METHOD_ORDER.get(r.method, 99))
+
     if not selected_runs:
         st.info("Select at least one run to inspect.")
         return
@@ -1337,10 +1479,12 @@ def render_image_based_output():
 
     # Color Settings
     DEFAULT_COLORS = {
+        "Method_pix2pix": "#a855f7",        # Purple
+        "Method_pix2pix_WGAN-GP": "#8b5cf6", # Electric Purple
+        "Method_ResNet": "#10b981",         # Emerald Green
         "Method_PlainUnet": "#ff4d4d",      # Bright Red
         "Method_pix2pixHD": "#f43f5e",      # Rose Pink
         "Method_pix2pixhd_No_D": "#ffd166", # Soft Yellow
-        "Method_CVAE": "#f97316",           # Soft Orange
         "Method_GNN_CVAE": "#ca8a04",       # Yellow
         "Method_GNN_CVAE2": "#0891b2",      # Cyan
         "Method_LSTM_01": "#f97316",        # Orange
@@ -1348,10 +1492,11 @@ def render_image_based_output():
     }
     
     METHOD_DISPLAY_NAMES = {
+        "Method_pix2pix": "Pix2Pix",
+        "Method_ResNet": "ResNet-9",
         "Method_pix2pixHD": "pix2pixHD",
         "Method_PlainUnet": "Plain U-Net",
-        "Method_pix2pixhd_No_D": "pix2pixHD (No D)",
-        "Method_CVAE": "CVAE"
+        "Method_pix2pixhd_No_D": "pix2pixHD (No D)"
     }
 
     run_colors = {}
@@ -1404,7 +1549,13 @@ def render_image_based_output():
         y_metric = st.selectbox("Scatter Y", metric_options, index=y_default)
         _scatter(combined, x_metric, y_metric, run_colors)
 
-    _show_metric_compare(combined, metric_options, selected_runs, run_colors)
+    _show_metric_compare(combined, metric_options, selected_runs, run_colors, title="Metric compare", key_prefix="full")
+    
+    walkable_combined = _combined_per_image_walkable(selected_runs)
+    if not walkable_combined.empty:
+        walkable_metrics = [m for m in METRIC_ORDER if m in walkable_combined.columns]
+        _show_metric_compare(walkable_combined, walkable_metrics, selected_runs, run_colors, title="Metric compare (walkable area)", key_prefix="walkable")
+
     _show_sample_metric_scatters(combined, metric_options, run_colors)
     _show_occupancy_level_analysis(combined, selected_runs, run_colors, metric_options)
     _show_error_vs_route_length_analysis(combined, selected_runs, run_colors, metric_options)

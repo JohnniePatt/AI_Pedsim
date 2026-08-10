@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 
 
-DEFAULT_DIRS = ("predictions", "targets")
+DEFAULT_DIRS = ("bw", "predictions", "targets")
 
 
 def gray_to_colorjet(gray_uint8: np.ndarray) -> Image.Image:
@@ -79,6 +79,8 @@ def resolve_run_path(run_path: str) -> pathlib.Path:
     project_root = pathlib.Path(__file__).resolve().parents[1]
     candidates = [
         project_root / run_path,
+        project_root / "AI_GenerateImage" / "AI_Result" / "Method_ResNet" / "outputs" / run_path,
+        project_root / "AI_GenerateImage" / "AI_Result" / "Method_pix2pix" / "outputs" / run_path,
         project_root / "AI_GenerateImage" / "AI_Result" / "Method_pix2pixHD" / "outputs" / run_path,
         project_root / "AI_GenerateImage" / "AI_Result" / "Method_pix2pixhd_No_D" / "outputs" / run_path,
         project_root / "AI_GenerateImage" / "AI_Result" / "Method_CVAE" / "outputs" / run_path,

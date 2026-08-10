@@ -1,0 +1,10 @@
+{
+    "epochs": 50,
+    "batch_size": 4,
+    "learning_rate": 0.0002,
+    "l1_weight": 100.0,
+    "num_resnet_blocks": 9,
+    "image_size": 256,
+    "target_channels": 1,
+    "dataset_root": "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN"
+}

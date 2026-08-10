@@ -1,0 +1,6 @@
+{
+    "image_size": 256,
+    "target_channels": 1,
+    "num_resnet_blocks": 9,
+    "dataset_root": "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN"
+}

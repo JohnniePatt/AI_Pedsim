@@ -1404,10 +1404,11 @@ elif navigation == "🌈 Format BW to COLORJET":
         st.error(f"❌ Utility script not found: {formatter_script}")
     else:
         st.subheader("📁 Select Run")
-        formatter_methods = ["Method_pix2pixHD", "Method_pix2pixhd_No_D", "Method_CVAE", "Method_PlainUnet"]
+        image_result_dir = PROJECT_ROOT / "AI_GenerateImage" / "AI_Result"
+        formatter_methods = ["Method_pix2pix", "Method_ResNet", "Method_pix2pixHD", "Method_pix2pixhd_No_D", "Method_CVAE", "Method_PlainUnet"]
         existing_formatter_methods = [
             method for method in formatter_methods
-            if (AI_RESULT_DIR / method / "outputs").exists()
+            if (image_result_dir / method / "outputs").exists() or (AI_RESULT_DIR / method / "outputs").exists()
         ] or formatter_methods
         selected_formatter_method = st.selectbox(
             "Result Method",
@@ -1415,7 +1416,7 @@ elif navigation == "🌈 Format BW to COLORJET":
             index=0,
             help="Choose which method's test_results should be converted from BW grayscale to COLORJET.",
         )
-        result_method_path = AI_RESULT_DIR / selected_formatter_method
+        result_method_path = image_result_dir / selected_formatter_method if (image_result_dir / selected_formatter_method / "outputs").exists() else (AI_RESULT_DIR / selected_formatter_method)
         runs = get_method_runs(result_method_path)
         if not runs:
             st.warning(f"No runs found under `{result_method_path / 'outputs'}`.")
@@ -1555,10 +1556,11 @@ elif navigation == "🔍 Upscale Inputs to 1024":
         st.error(f"❌ Utility script not found: {upscale_script}")
     else:
         st.subheader("📁 Select Run to Upscale")
-        formatter_methods = ["Method_pix2pixHD", "Method_pix2pixhd_No_D", "Method_CVAE", "Method_PlainUnet"]
+        image_result_dir = PROJECT_ROOT / "AI_GenerateImage" / "AI_Result"
+        formatter_methods = ["Method_pix2pix", "Method_ResNet", "Method_pix2pixHD", "Method_pix2pixhd_No_D", "Method_CVAE", "Method_PlainUnet"]
         existing_formatter_methods = [
             method for method in formatter_methods
-            if (AI_RESULT_DIR / method / "outputs").exists()
+            if (image_result_dir / method / "outputs").exists() or (AI_RESULT_DIR / method / "outputs").exists()
         ] or formatter_methods
         selected_formatter_method = st.selectbox(
             "Result Method",
@@ -1566,7 +1568,7 @@ elif navigation == "🔍 Upscale Inputs to 1024":
             index=0,
             help="Choose which method's test_results should be upscaled to 1024x1024.",
         )
-        result_method_path = AI_RESULT_DIR / selected_formatter_method
+        result_method_path = image_result_dir / selected_formatter_method if (image_result_dir / selected_formatter_method / "outputs").exists() else (AI_RESULT_DIR / selected_formatter_method)
         runs = get_method_runs(result_method_path)
         if not runs:
             st.warning(f"No runs found under `{result_method_path / 'outputs'}`.")

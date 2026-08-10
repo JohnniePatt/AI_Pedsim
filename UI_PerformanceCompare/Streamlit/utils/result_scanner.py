@@ -35,11 +35,22 @@ def discover_runs() -> list[RunInfo]:
     runs: list[RunInfo] = []
     for method_dir in sorted([p for p in AI_RESULT_ROOT.iterdir() if p.is_dir()], key=lambda p: p.name):
         for run_dir in _candidate_run_dirs(method_dir):
-            has_summary = (run_dir / "test_evaluation_summary.csv").exists()
+            has_summary = (
+                (run_dir / "test_evaluation_summary.csv").exists()
+                or (run_dir / "logs" / "test_evaluation.csv").exists()
+                or (run_dir / "logs" / "training_history.csv").exists()
+            )
             has_per_image = (run_dir / "test_evaluation_per_image.csv").exists()
-            has_images = (run_dir / "test_results" / "predictions").exists() or (
-                (run_dir / "test_results").exists()
-                and any((sub / "predictions").exists() for sub in (run_dir / "test_results").iterdir() if sub.is_dir())
+            test_res = run_dir / "test_results"
+            has_images = test_res.exists() and (
+                (test_res / "predictions").exists()
+                or (test_res / "colorjet").exists()
+                or (test_res / "bw").exists()
+                or any(p.suffix == ".png" for p in test_res.iterdir() if p.is_file())
+                or any(
+                    (sub / "predictions").exists() or (sub / "colorjet").exists() or (sub / "bw").exists()
+                    for sub in test_res.iterdir() if sub.is_dir()
+                )
             )
             if has_summary or has_per_image or has_images:
                 runs.append(RunInfo(method=method_dir.name, run_name=run_dir.name, path=run_dir))
