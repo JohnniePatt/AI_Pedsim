@@ -22,7 +22,8 @@ outputs/
 .pth
 .pt
 
-.pdf
+# Local research reference (not versioned)
+Document_Research/Reference_data/ASA2026_FP_2436.pdf
 
 AI_Result
 Geo_scenario
