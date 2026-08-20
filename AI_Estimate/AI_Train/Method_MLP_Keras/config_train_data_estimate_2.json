@@ -43,7 +43,7 @@
     "device": "auto"
   },
   "output": {
-    "root": "../../AI_result/Method_MLP_Keras/outputs",
+    "root": "../../AI_result/Method_MLP_Keras_dataestimate2/outputs",
     "run_name": "auto"
   }
 }

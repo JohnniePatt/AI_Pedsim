@@ -44,7 +44,7 @@
     "device": "auto"
   },
   "output": {
-    "root": "../../AI_result/Method_GNN/outputs",
+    "root": "../../AI_result/Method_GNN_dataestimate2/outputs",
     "run_name": "auto"
   }
 }

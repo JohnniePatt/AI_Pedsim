@@ -21,10 +21,18 @@ CONDITION_ORDER = ["N Agents", "N/2 Agents", "1 Agent"]
 METHOD_NAMES = {
     "Method_MLP_Keras": "MLP",
     "Method_GNN": "GNN",
+    "Method_MLP_Keras_dataestimate2": "MLP",
+    "Method_GNN_dataestimate2": "GNN",
+}
+METHOD_DATASETS = {
+    "Method_MLP_Keras": "Data Estimate 1",
+    "Method_GNN": "Data Estimate 1",
+    "Method_MLP_Keras_dataestimate2": "Data Estimate 2",
+    "Method_GNN_dataestimate2": "Data Estimate 2",
 }
 DEFAULT_RUNS = {
-    "Method_MLP_Keras": "run_20260414_000936",
-    "Method_GNN": "run_20260421_161900",
+    "Method_MLP_Keras_dataestimate2": "run_20260820_102231",
+    "Method_GNN_dataestimate2": "run_20260820_102427",
 }
 MODEL_COLORS = {"MLP": "#2563eb", "GNN": "#f97316"}
 
@@ -40,8 +48,12 @@ class EstimateRun:
         return METHOD_NAMES.get(self.method, self.method)
 
     @property
+    def dataset(self) -> str:
+        return METHOD_DATASETS.get(self.method, "Unknown dataset")
+
+    @property
     def label(self) -> str:
-        return f"{self.model} / {self.run_name}"
+        return f"{self.model} · {self.dataset} / {self.run_name}"
 
 
 def _discover_runs() -> list[EstimateRun]:
@@ -49,7 +61,7 @@ def _discover_runs() -> list[EstimateRun]:
     if not RESULT_ROOT.exists():
         return runs
     for method_dir in sorted(path for path in RESULT_ROOT.iterdir() if path.is_dir()):
-        if method_dir.name not in {"Method_MLP_Keras", "Method_GNN"}:
+        if method_dir.name not in METHOD_NAMES:
             continue
         output_dir = method_dir / "outputs"
         if not output_dir.exists():
@@ -249,8 +261,8 @@ def render_summary_output():
         st.error("No AI_Estimate prediction artifacts were found.")
         return
 
-    mlp_runs = [run for run in runs if run.method == "Method_MLP_Keras"]
-    gnn_runs = [run for run in runs if run.method == "Method_GNN"]
+    mlp_runs = [run for run in runs if run.model == "MLP"]
+    gnn_runs = [run for run in runs if run.model == "GNN"]
     if not mlp_runs or not gnn_runs:
         st.error("Summary Output requires both an MLP run and a GNN run with test predictions.")
         return
@@ -319,14 +331,17 @@ def render_summary_output():
         gnn = metrics[metrics["Model"] == "GNN"].iloc[0]
         ratio = gnn["MAE (s)"] / mlp["MAE (s)"] if mlp["MAE (s)"] else np.nan
         st.markdown(
-            f"For the selected paper runs, **MLP records lower overall error than GNN**: "
+            f"For the selected runs, **MLP records lower overall error than GNN**: "
             f"MAE {mlp['MAE (s)']:.2f} s versus {gnn['MAE (s)']:.2f} s, "
             f"or approximately {ratio:.1f}x lower error. The parity plots should be used to inspect where this gap occurs, "
             "especially for slowest-agent and high-density cases."
         )
     else:
         st.info("Select the paper MLP and GNN runs together to show the comparative interpretation.")
+    scenario_summary = ", ".join(
+        f"{row['Model']} {int(row['Scenarios']):,}" for _, row in metrics.iterrows()
+    )
     st.caption(
-        "This page reports only the 167 test scenarios present in each selected predictions.csv. "
-        "It does not claim the 862-case trajectory-evaluation protocol used by other modules."
+        f"Scenario counts come directly from each selected predictions.csv ({scenario_summary}). "
+        "Data Estimate 2 follows the canonical Image-based HouseGAN split: 2,603 train, 439 validation, and 862 test scenarios."
     )
