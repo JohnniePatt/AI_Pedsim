@@ -3,6 +3,8 @@ import ctypes
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -162,6 +164,8 @@ def _compute_metrics(pred_s, true_s, target_columns):
 # ---------------------------------------------------------------------------
 
 def test(config_path, checkpoint_path=None, output_dir=None):
+    process_started_at = datetime.now(timezone.utc)
+    process_started_perf = time.perf_counter()
     config_path = Path(config_path).resolve()
     config      = read_json(config_path)
 
@@ -188,8 +192,23 @@ def test(config_path, checkpoint_path=None, output_dir=None):
         result_df[f"abs_error_{target}"] = np.abs(pred_s[:, idx] - true_s[:, idx])
     result_df.to_csv(output_dir / "predictions.csv", index=False)
     write_json(output_dir / "test_metrics.json", metrics)
+    process_completed_at = datetime.now(timezone.utc)
+    test_duration_seconds = time.perf_counter() - process_started_perf
+    write_json(output_dir / "test_runtime.json", {
+        "schema_version": "ai_estimate_runtime_v1",
+        "method_id": "Method_MLP_Keras",
+        "stage": "test",
+        "run_id": run_dir.name,
+        "started_at_utc": process_started_at.isoformat(),
+        "completed_at_utc": process_completed_at.isoformat(),
+        "duration_seconds": test_duration_seconds,
+        "device": "cuda" if tf.config.list_physical_devices("GPU") else "cpu",
+        "test_rows": int(len(result_df)),
+        "timing_scope": "config, dataset, and checkpoint loading, full-test inference, metrics, and prediction artifact writes",
+    })
 
     print(f"[AI_Estimate][Keras][Test] checkpoint={checkpoint_path}")
+    print(f"[AI_Estimate][Keras][Test] duration={test_duration_seconds:.6f}s")
     print(json.dumps(metrics, indent=2))
     return output_dir
 

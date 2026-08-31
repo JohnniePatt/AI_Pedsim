@@ -1,5 +1,6 @@
 import argparse
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,6 +55,8 @@ def load_models(xgboost, run_dir, model_bundle):
 
 
 def evaluate(config_path, checkpoint=None, output_dir=None):
+    process_started_at = datetime.now(timezone.utc)
+    process_started_perf = time.perf_counter()
     xgboost = require_xgboost()
     config_path = Path(config_path).resolve()
     config = read_json(config_path)
@@ -143,7 +146,25 @@ def evaluate(config_path, checkpoint=None, output_dir=None):
         else "Smoke test or canonical test inventory mismatch."
     )
     write_json(run_dir / "run_manifest.json", run_manifest)
+    process_completed_at = datetime.now(timezone.utc)
+    test_duration_seconds = time.perf_counter() - process_started_perf
+    write_json(
+        output_dir / "test_runtime.json",
+        {
+            "schema_version": "ai_estimate_runtime_v1",
+            "method_id": "Method_XGBoost",
+            "stage": "test",
+            "run_id": run_dir.name,
+            "started_at_utc": process_started_at.isoformat(),
+            "completed_at_utc": process_completed_at.isoformat(),
+            "duration_seconds": test_duration_seconds,
+            "device": "cpu",
+            "test_rows": int(len(result)),
+            "timing_scope": "config, dataset, and checkpoint loading, full-test inference, metrics, provenance, and prediction artifact writes",
+        },
+    )
     print(f"[AI_Estimate][XGBoost][Test] run={run_dir}")
+    print(f"[AI_Estimate][XGBoost][Test] duration={test_duration_seconds:.6f}s")
     print(json.dumps(metrics, indent=2))
     return output_dir
 

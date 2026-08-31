@@ -2,6 +2,60 @@
 
 วันที่อัปเดต: 2026-08-31
 
+## JuPedSim wall-clock benchmark สำหรับ Data_Estimate_2
+
+- เพิ่ม `Dataset_TimeCalculate/Total_RefFileName.csv` เป็น allow-list ที่สร้างจากแถว
+  `status=success` ของ `Data_Estimate_2` เท่านั้น เพื่อไม่รัน scenario นอก canonical dataset
+  หรือ scenario ที่ไม่เคยสร้างผลสำเร็จ
+- inventory ที่ตรวจแล้วคือ Train `2,603 / 412`, Validation `439 / 60` และ
+  Test `862 / 117` scenarios/plans รวม 3,904 reference IDs ที่ไม่ซ้ำ
+- `Dataset_TimeCalculate/src/benchmark_jupedsim_runtime.py` วัดด้วย
+  `time.perf_counter_ns()` แบบ sequential และแยก plan setup, scenario setup,
+  simulation loop และ total wall-clock time
+- benchmark อ่าน geometry/metadata เดิมแบบ read-only, เขียน SQLite เฉพาะใน system
+  temporary directory และลบทิ้งหลังจบแต่ละ scenario ผลถาวรมีเพียง
+  `Dataset_TimeCalculate/JuPedSim_Runtime.csv`
+- มี timeout/deadlock guard, per-scenario CSV flush, `--dry-run`, `--limit`, โหมดรันเฉพาะ
+  reference ที่ยังไม่มีผล success, warm-up และ repeat โดยค่าเริ่มต้นเลือก canonical test split
+- Smoke test หนึ่ง scenario อยู่ใน `Dataset_TimeCalculate/JuPedSim_Runtime.csv` และใช้เพื่อตรวจ pipeline เท่านั้น:
+  status `success`, total wall time `1.709014730 s`, temporary output ถูกลบ และ SHA-256
+  ของ source dataset CSV, route metadata และ source SQLite ไม่เปลี่ยน ผลนี้ยังไม่ใช่ full-test
+  computational-efficiency result
+
+## Process runtime instrumentation สำหรับ MLP, GNN และ XGBoost
+
+- เพิ่ม wall-clock timer แบบ `time.perf_counter()` ใน Train และ Test ของ
+  `Method_MLP_Keras`, `Method_GNN` และ `Method_XGBoost` โดยไม่เปลี่ยน architecture,
+  loss, hyperparameters หรือ prediction behavior
+- Train บันทึก `<run>/train_runtime.json`; Test บันทึก
+  `<run>/test_eval/test_runtime.json` ด้วย schema `ai_estimate_runtime_v1`
+- Train timing รวม config/dataset loading, training, checkpointing, metrics และ artifact writes
+- Test timing รวม config/dataset/checkpoint loading, inference ครบ test set, metrics และ prediction writes
+- runtime artifact บันทึก UTC start/end, duration วินาที, device, run ID และ row counts
+
+Full rerun บน `data_estimate_2_housegan_canonical_imagebase_split_v1`:
+
+| Method | Run ID | Device | Train rows / epochs | Train time | Test rows / plans | Test time |
+|---|---|---|---:|---:|---:|---:|
+| MLP Keras | `run_20260831_192301` | CUDA | 2,603 / 73 (early stop) | 38.726311 s | 862 / 117 | 3.687032 s |
+| GNN | `run_20260831_192423` | CUDA | 2,603 / 300 | 121.946285 s | 862 / 117 | 2.941674 s |
+| XGBoost | `run_20260831T122725Z_seed042` | CPU | 2,603 / 3 targets | 3.140157 s | 862 / 117 | 1.376539 s |
+
+`UI_PerformanceCompare/Streamlit/views/summary_output.py` อ่าน `train_runtime.json`
+และ `test_runtime.json` ของ selected runs โดยตรงในหัวข้อ Computational Efficiency Comparison
+พร้อมแสดง device, train rows/work, Train/Test process time และ amortized Test process/scenario.
+ค่า Simulation wall time และ Speed-up แสดง `Not measured` / `Not evaluated` จนกว่าจะมี
+JuPedSim wall-clock artifact ที่ใช้ protocol เดียวกัน; ไม่ใช้ `simulation_duration_s` แทน compute time
+
+หมายเหตุ: เวลานี้เป็น end-to-end process timing ไม่ใช่ warmed-up forward-pass latency และ
+MLP/GNN ใช้ GPU ขณะที่ XGBoost config นี้ใช้ CPU จึงต้องรายงาน device ควบคู่ตัวเลขเสมอ
+
+Environment ที่ใช้ rerun: TensorFlow `2.21.0`, Keras `3.14.0`, protobuf `6.33.0`,
+PyTorch ตาม environment หลัก และ XGBoost `3.4.1`. การอัปเกรด protobuf ให้ตรงกับ
+TensorFlow ทำให้ `pip check` แจ้ง conflict กับ `nerfstudio 1.1.5` ซึ่งกำหนด protobuf
+ไม่เกิน `3.20.3`; งาน AI_Estimate รันผ่าน แต่ environment นี้ไม่ควรถือว่าพร้อมสำหรับ
+Nerfstudio จนกว่าจะแยก environment หรือแก้ dependency constraint
+
 ## Method_XGBoost สำหรับ Data_Estimate_2
 
 - เพิ่ม `AI_Estimate/AI_Train/Method_XGBoost` เป็น vanilla `gbtree` baseline แยกจาก MLP และ GNN

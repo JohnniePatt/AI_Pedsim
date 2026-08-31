@@ -35,9 +35,9 @@ METHOD_DATASETS = {
     "Method_XGBoost": "Data Estimate 2",
 }
 DEFAULT_RUNS = {
-    "Method_MLP_Keras_dataestimate2": "run_20260820_102231",
-    "Method_GNN_dataestimate2": "run_20260820_102427",
-    "Method_XGBoost": "run_20260831T085815Z_seed042",
+    "Method_MLP_Keras_dataestimate2": "run_20260831_192301",
+    "Method_GNN_dataestimate2": "run_20260831_192423",
+    "Method_XGBoost": "run_20260831T122725Z_seed042",
 }
 MODEL_COLORS = {"MLP": "#2563eb", "GNN": "#f97316", "XGBoost": "#16a34a"}
 
@@ -201,21 +201,56 @@ def _summary_cards(metrics: pd.DataFrame):
             st.caption(f"{row['Run']} · {int(row['Scenarios'])} test scenarios")
 
 
-@st.cache_data(show_spinner=False)
 def _load_computational_efficiency(path: str) -> dict | None:
-    artifact = Path(path) / "test_eval" / "computational_efficiency.json"
-    if not artifact.exists():
-        return None
+    run_path = Path(path)
+
+    def load_json(artifact: Path) -> dict | None:
+        if not artifact.exists():
+            return None
+        try:
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    payload = {
+        "train": load_json(run_path / "train_runtime.json"),
+        "test": load_json(run_path / "test_eval" / "test_runtime.json"),
+        "legacy": load_json(run_path / "test_eval" / "computational_efficiency.json"),
+    }
+    return payload if any(value is not None for value in payload.values()) else None
+
+
+def _format_seconds(value) -> str:
     try:
-        payload = json.loads(artifact.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+        return f"{float(value):.6f}"
+    except (TypeError, ValueError):
+        return "Not measured"
+
+
+def _format_process_per_scenario(duration, scenarios) -> str:
+    try:
+        duration = float(duration)
+        scenarios = int(scenarios)
+    except (TypeError, ValueError):
+        return "Not measured"
+    return f"{duration * 1000.0 / scenarios:.3f}" if scenarios > 0 else "Not measured"
+
+
+def _training_work(payload: dict | None) -> str:
+    if not payload:
+        return "Not measured"
+    if payload.get("epochs_completed") is not None:
+        return f"{int(payload['epochs_completed'])} epochs"
+    if payload.get("targets_trained") is not None:
+        return f"{int(payload['targets_trained'])} targets"
+    return "Recorded"
 
 
 def _render_computational_efficiency(runs: list[EstimateRun]):
     rows = []
-    available = 0
+    full_stage_timings = 0
+    simulation_timings = 0
     for run in runs:
         payload = _load_computational_efficiency(str(run.path))
         if payload is None:
@@ -223,45 +258,67 @@ def _render_computational_efficiency(runs: list[EstimateRun]):
                 {
                     "Model": run.model,
                     "Run": run.run_name,
-                    "Scenarios": "—",
-                    "JuPedSim wall time (s)": "—",
-                    "AI inference wall time (s)": "—",
-                    "AI latency/scenario (ms)": "—",
-                    "Speed-up": "—",
+                    "Device": "Not measured",
+                    "Train rows": "Not measured",
+                    "Training work": "Not measured",
+                    "Train process (s)": "Not measured",
+                    "Test scenarios": "Not measured",
+                    "Test process (s)": "Not measured",
+                    "Test process/scenario (ms)": "Not measured",
+                    "Simulation wall time (s)": "Not measured",
+                    "Speed-up": "Not evaluated",
                     "Status": "Not evaluated",
                 }
             )
             continue
 
-        available += 1
+        train = payload.get("train") or {}
+        test = payload.get("test") or {}
+        legacy = payload.get("legacy") or {}
+        if train and test:
+            full_stage_timings += 1
+        simulation_wall_time = legacy.get("simulation_wall_time_total_s")
+        if simulation_wall_time is not None:
+            simulation_timings += 1
+        status = "Full Train/Test timing" if train and test else "Partial timing"
         rows.append(
             {
                 "Model": run.model,
                 "Run": run.run_name,
-                "Scenarios": payload.get("scenario_count", "—"),
-                "JuPedSim wall time (s)": payload.get("simulation_wall_time_total_s", "—"),
-                "AI inference wall time (s)": payload.get("ai_inference_wall_time_total_s", "—"),
-                "AI latency/scenario (ms)": payload.get("ai_latency_per_scenario_ms", "—"),
-                "Speed-up": payload.get("speedup_vs_simulation", "—"),
-                "Status": "Available" if payload.get("research_valid") is True else "Preliminary",
+                "Device": train.get("device", test.get("device", "Not measured")),
+                "Train rows": train.get("train_rows", "Not measured"),
+                "Training work": _training_work(train),
+                "Train process (s)": _format_seconds(train.get("duration_seconds")),
+                "Test scenarios": test.get("test_rows", legacy.get("scenario_count", "Not measured")),
+                "Test process (s)": _format_seconds(test.get("duration_seconds")),
+                "Test process/scenario (ms)": _format_process_per_scenario(
+                    test.get("duration_seconds"), test.get("test_rows")
+                ),
+                "Simulation wall time (s)": _format_seconds(simulation_wall_time),
+                "Speed-up": legacy.get("speedup_vs_simulation", "Not evaluated"),
+                "Status": status,
             }
         )
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    if available == 0:
+    if full_stage_timings == 0:
         st.info(
-            "Computational-efficiency results have not been evaluated for the selected runs. "
-            "The existing simulation_duration_s field is simulated travel duration, not JuPedSim wall-clock runtime, "
-            "so it is not used to calculate AI speed-up."
+            "Full Train/Test runtime artifacts are not available for the selected runs."
         )
-    elif available < len(runs):
+    elif full_stage_timings < len(runs):
         st.warning(
-            f"Timing artifacts are available for {available}/{len(runs)} selected runs. "
-            "Rows without a comparable benchmark remain marked Not evaluated."
+            f"Full Train/Test timing is available for {full_stage_timings}/{len(runs)} selected runs."
+        )
+    if simulation_timings == 0:
+        st.info(
+            "AI Train/Test process timings are measured, but JuPedSim computational wall time has not been measured. "
+            "The simulation_duration_s field is simulated pedestrian time, not compute runtime, so Simulation and "
+            "Speed-up remain Not measured / Not evaluated."
         )
     st.caption(
-        "A valid comparison requires the same 862-scenario test set, declared hardware, warm-up policy, "
-        "repeat count, timing scope, and wall-clock measurements for both JuPedSim and AI inference."
+        "AI process timing includes config/dataset/checkpoint loading, full-stage execution, metrics, and artifact "
+        "writes after entering the Train/Test function. Device and timing scope come from each run artifact. "
+        "A valid Simulation-vs-AI speed-up additionally requires JuPedSim wall-clock measurements under a locked protocol."
     )
 
 

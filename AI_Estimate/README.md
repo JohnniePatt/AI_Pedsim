@@ -72,3 +72,14 @@ Outputs are now isolated by method:
 - `AI_Estimate/AI_result/Method_MLP_PyTorch/outputs/<run_name>`
 - `AI_Estimate/AI_result/Method_MLP_Keras/outputs/<run_name>`
 - `AI_Estimate/AI_result/Method_XGBoost/outputs/<run_name>`
+
+Full Train/Test runs also record process-level wall-clock timing:
+
+- `<run_name>/train_runtime.json` covers config and dataset loading, full training,
+  checkpointing, metrics, and artifact writes.
+- `<run_name>/test_eval/test_runtime.json` covers config, dataset, and checkpoint
+  loading, full-test inference, metrics, and prediction artifact writes.
+- Both files use schema `ai_estimate_runtime_v1` and record UTC start/end times,
+  `duration_seconds`, device, run ID, and processed row counts.
+
+These process timings are not equivalent to model-only warmed-up inference latency.

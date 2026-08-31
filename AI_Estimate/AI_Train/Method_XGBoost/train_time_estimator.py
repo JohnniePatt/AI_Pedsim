@@ -4,6 +4,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,13 +83,13 @@ def predict_matrix(models, x):
 
 
 def train(config_path):
+    process_started_at = datetime.now(timezone.utc)
+    process_started_perf = time.perf_counter()
     xgboost = require_xgboost()
     config_path = Path(config_path).resolve()
     config = read_json(config_path)
     bundle = build_data_bundle(config, config_path)
     run_dir = make_run_dir(config, config_path)
-    started_at = datetime.now(timezone.utc)
-
     models = []
     histories = []
     checkpoint_entries = []
@@ -133,8 +134,6 @@ def train(config_path):
     val_pred = inverse_target_transform(predict_matrix(models, bundle.x["val"]))
     train_metrics = compute_metrics(train_pred, bundle.y_seconds["train"], bundle.target_columns)
     val_metrics = compute_metrics(val_pred, bundle.y_seconds["val"], bundle.target_columns)
-    ended_at = datetime.now(timezone.utc)
-
     pd.concat(histories, ignore_index=True).to_csv(run_dir / "logs" / "training_history.csv", index=False)
     pd.concat(histories, ignore_index=True).to_csv(run_dir / "training_history.csv", index=False)
     write_json(run_dir / "config_used.json", config)
@@ -207,6 +206,24 @@ def train(config_path):
             },
         },
     )
+    bundle.frames["train"].head(500).to_csv(run_dir / "dataset_preview.csv", index=False)
+    process_completed_at = datetime.now(timezone.utc)
+    train_duration_seconds = time.perf_counter() - process_started_perf
+    runtime_record = {
+        "schema_version": "ai_estimate_runtime_v1",
+        "method_id": "Method_XGBoost",
+        "stage": "train",
+        "run_id": run_dir.name,
+        "started_at_utc": process_started_at.isoformat(),
+        "completed_at_utc": process_completed_at.isoformat(),
+        "duration_seconds": train_duration_seconds,
+        "device": "cpu",
+        "train_rows": int(len(bundle.frames["train"])),
+        "validation_rows": int(len(bundle.frames["val"])),
+        "targets_trained": int(len(bundle.target_columns)),
+        "timing_scope": "config and dataset loading, model training, checkpointing, metrics, provenance, and artifact writes",
+    }
+    write_json(run_dir / "train_runtime.json", runtime_record)
     write_json(
         run_dir / "run_manifest.json",
         {
@@ -214,17 +231,17 @@ def train(config_path):
             "method_id": "Method_XGBoost",
             "dataset_id": bundle.source_manifest["dataset_id"],
             "seed": int(config["train"]["random_seed"]),
-            "started_at_utc": started_at.isoformat(),
-            "completed_at_utc": ended_at.isoformat(),
-            "duration_seconds": (ended_at - started_at).total_seconds(),
+            "started_at_utc": process_started_at.isoformat(),
+            "completed_at_utc": process_completed_at.isoformat(),
+            "duration_seconds": train_duration_seconds,
             "status": "trained",
             "research_valid": False,
             "research_valid_reason": "Training complete; canonical test evaluation is a separate stage.",
         },
     )
-    bundle.frames["train"].head(500).to_csv(run_dir / "dataset_preview.csv", index=False)
     print(f"[AI_Estimate][XGBoost][Train] run={run_dir}")
     print(f"[AI_Estimate][XGBoost][Train] val_mae={val_metrics['mae_overall_s']:.3f}s")
+    print(f"[AI_Estimate][XGBoost][Train] duration={train_duration_seconds:.6f}s")
     return run_dir
 
 

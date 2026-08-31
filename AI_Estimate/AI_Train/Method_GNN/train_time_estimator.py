@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -161,6 +162,8 @@ def collate_graphs(batch):
 # ---------------------------------------------------------------------------
 
 def train(config_path):
+    process_started_at = datetime.now(timezone.utc)
+    process_started_perf = time.perf_counter()
     config_path = Path(config_path).resolve()
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -284,8 +287,28 @@ def train(config_path):
         "input_dim": input_dim
     }, output_dir / "metadata.pth")
 
+    process_completed_at = datetime.now(timezone.utc)
+    train_duration_seconds = time.perf_counter() - process_started_perf
+    with open(output_dir / "train_runtime.json", "w", encoding="utf-8") as f:
+        json.dump({
+            "schema_version": "ai_estimate_runtime_v1",
+            "method_id": "Method_GNN",
+            "stage": "train",
+            "run_id": output_dir.name,
+            "started_at_utc": process_started_at.isoformat(),
+            "completed_at_utc": process_completed_at.isoformat(),
+            "duration_seconds": train_duration_seconds,
+            "device": str(device),
+            "train_rows": int(len(train_ds)),
+            "validation_rows": int(len(val_ds)),
+            "epochs_completed": int(len(history_df)),
+            "timing_scope": "config and graph-dataset loading, model training, checkpointing, and artifact writes",
+        }, f, indent=2)
+
     print(f"[AI_Estimate][GNN][Train] Best Val Loss: {best_val_loss:.6f}")
     print(f"[AI_Estimate][GNN][Train] Run: {output_dir}")
+    print(f"[AI_Estimate][GNN][Train] Duration: {train_duration_seconds:.6f}s")
+    return output_dir
 
 # ---------------------------------------------------------------------------
 # Entry Point

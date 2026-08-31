@@ -3,6 +3,7 @@ import ctypes
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -220,6 +221,8 @@ class RealSecondsMAECallback(keras.callbacks.Callback):
 # ---------------------------------------------------------------------------
 
 def train(config_path):
+    process_started_at = datetime.now(timezone.utc)
+    process_started_perf = time.perf_counter()
     config_path = Path(config_path).resolve()
     config      = read_json(config_path)
     train_cfg   = config.get("train", {})
@@ -331,8 +334,25 @@ def train(config_path):
         "best": {"train": train_metrics, "val": val_metrics},
         "final_test": test_metrics,
     })
+    process_completed_at = datetime.now(timezone.utc)
+    train_duration_seconds = time.perf_counter() - process_started_perf
+    write_json(run_dir / "train_runtime.json", {
+        "schema_version": "ai_estimate_runtime_v1",
+        "method_id": "Method_MLP_Keras",
+        "stage": "train",
+        "run_id": run_dir.name,
+        "started_at_utc": process_started_at.isoformat(),
+        "completed_at_utc": process_completed_at.isoformat(),
+        "duration_seconds": train_duration_seconds,
+        "device": "cuda" if tf.config.list_physical_devices("GPU") else "cpu",
+        "train_rows": int(len(bundle.train_df)),
+        "validation_rows": int(len(bundle.val_df)),
+        "epochs_completed": int(len(history_df)),
+        "timing_scope": "config and dataset loading, model training, checkpointing, metrics, and artifact writes",
+    })
     print(f"[AI_Estimate][Keras][Train] best_val_mae={val_metrics['mae_overall_s']:.3f}s")
     print(f"[AI_Estimate][Keras][Train] final_test_mae={test_metrics['mae_overall_s']:.3f}s")
+    print(f"[AI_Estimate][Keras][Train] duration={train_duration_seconds:.6f}s")
     return run_dir
 
 

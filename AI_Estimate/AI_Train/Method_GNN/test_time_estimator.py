@@ -3,6 +3,8 @@ import ctypes
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -102,6 +104,8 @@ def compute_metrics(pred_s, true_s, target_columns):
 # ---------------------------------------------------------------------------
 
 def test(config_path, checkpoint_path=None, output_dir=None):
+    process_started_at = datetime.now(timezone.utc)
+    process_started_perf = time.perf_counter()
     config_path = Path(config_path).resolve()
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -181,9 +185,25 @@ def test(config_path, checkpoint_path=None, output_dir=None):
     pd.DataFrame(all_rows).to_csv(eval_dir / "predictions.csv", index=False)
     with open(eval_dir / "test_metrics.json", "w") as f:
         json.dump(test_metrics, f, indent=2)
+    process_completed_at = datetime.now(timezone.utc)
+    test_duration_seconds = time.perf_counter() - process_started_perf
+    with open(eval_dir / "test_runtime.json", "w", encoding="utf-8") as f:
+        json.dump({
+            "schema_version": "ai_estimate_runtime_v1",
+            "method_id": "Method_GNN",
+            "stage": "test",
+            "run_id": run_dir.name,
+            "started_at_utc": process_started_at.isoformat(),
+            "completed_at_utc": process_completed_at.isoformat(),
+            "duration_seconds": test_duration_seconds,
+            "device": str(device),
+            "test_rows": int(len(all_rows)),
+            "timing_scope": "config, graph-dataset, and checkpoint loading, full-test inference, metrics, and prediction artifact writes",
+        }, f, indent=2)
 
     print(json.dumps(test_metrics, indent=2))
     print(f"[AI_Estimate][GNN][Test] Results saved to: {eval_dir}")
+    print(f"[AI_Estimate][GNN][Test] Duration: {test_duration_seconds:.6f}s")
     return eval_dir
 
 # ---------------------------------------------------------------------------
