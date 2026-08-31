@@ -18,6 +18,12 @@ Formatted data is split into isolated files:
 
 The split is plan-level to avoid leaking the same geometry into Train, Val, and Test.
 
+The canonical estimate dataset used by current Data Estimate 2 comparisons is:
+
+- `Dataset/Data_Estimate_2/Train/data_estimate.csv` (2,603 scenarios / 412 plans)
+- `Dataset/Data_Estimate_2/Val/data_estimate.csv` (439 scenarios / 60 plans)
+- `Dataset/Data_Estimate_2/Test/data_estimate.csv` (862 scenarios / 117 plans)
+
 Data split is expected to be prepared already under:
 - `Dataset/Data_Estimate/Train/data_estimate.csv`
 - `Dataset/Data_Estimate/Val/data_estimate.csv`
@@ -43,6 +49,14 @@ Run testing (Keras):
 python AI_Estimate/AI_Train/Method_MLP_Keras/test_time_estimator.py --config AI_Estimate/AI_Train/Method_MLP_Keras/config_train.json
 ```
 
+Run the vanilla XGBoost baseline (configuration check is the safe default):
+
+```bash
+python AI_Estimate/AI_Train/Method_XGBoost/run_pipeline.py --stage plan
+python AI_Estimate/AI_Train/Method_XGBoost/run_pipeline.py --stage train
+python AI_Estimate/AI_Train/Method_XGBoost/run_pipeline.py --stage evaluate --run-path <run_dir>
+```
+
 Create result plots (choose method):
 ```bash
 python AI_Estimate/AI_Train/Method_MLP_PyTorch/visual_time_estimator.py --run-dir AI_Estimate/AI_result/Method_MLP_PyTorch/outputs/<run_name>
@@ -57,3 +71,4 @@ streamlit run AI_Estimate/Streamlit_ui/app.py
 Outputs are now isolated by method:
 - `AI_Estimate/AI_result/Method_MLP_PyTorch/outputs/<run_name>`
 - `AI_Estimate/AI_result/Method_MLP_Keras/outputs/<run_name>`
+- `AI_Estimate/AI_result/Method_XGBoost/outputs/<run_name>`

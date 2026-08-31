@@ -1,6 +1,33 @@
 # AI Technique Notes
 
-วันที่อัปเดต: 2026-08-06
+วันที่อัปเดต: 2026-08-31
+
+## Method_XGBoost สำหรับ Data_Estimate_2
+
+- เพิ่ม `AI_Estimate/AI_Train/Method_XGBoost` เป็น vanilla `gbtree` baseline แยกจาก MLP และ GNN
+- ใช้ input 17 features ชุดเดียวกับ MLP แต่ไม่ทำ Z-score ที่ input เพราะ tree split ไม่ขึ้นกับสเกลเชิงเส้น
+- ใช้ `log1p` กับ target และ `expm1` เพื่อคืนผลเป็นวินาที
+- ฝึก regressor แยก 3 ตัวสำหรับ `min_agent_time_s`, `mean_agent_time_s`, และ `max_agent_time_s`
+- ค่าเริ่มต้นไม่บังคับเรียง output เพื่อเก็บ vanilla model behavior; evaluation บันทึก target-order violation rate
+- training ใช้เฉพาะ train/validation ส่วน canonical test 862 scenarios / 117 plans ใช้ใน explicit evaluation stage
+- output เก็บ checkpoint ต่อ target, resolved config, dataset/hash snapshot, environment, code provenance, metrics และ UI-compatible `test_eval/predictions.csv`
+- `run_pipeline.py` มี `plan`, `train`, `evaluate`, `all`, `--dry-run` และ interactive menu โดยค่าเริ่มต้นไม่เริ่ม train
+
+Full run ที่ตรวจแล้ว:
+
+- run ID: `run_20260831T085815Z_seed042`
+- dataset ID: `data_estimate_2_housegan_canonical_imagebase_split_v1`
+- seed: `42`
+- train/validation/test: `2,603 / 439 / 862` scenarios
+- test floor plans: `117`
+- best boosting iterations สำหรับ min/mean/max: `111 / 125 / 136`
+- test MAE / MSE / RMSE รวม: `2.897421 s / 21.389708 s² / 4.624901 s`
+- vanilla raw target-order violations: `249/862` rows (`28.8863%`); ไม่มี post-model ordering correction
+- evaluation manifest ระบุ `research_valid: true`
+- artifact: `AI_Estimate/AI_result/Method_XGBoost/outputs/run_20260831T085815Z_seed042`
+- `UI_PerformanceCompare/Streamlit/views/summary_output.py` แสดง XGBoost ร่วมกับ MLP/GNN ใน overall metrics, per-output metrics, parity plots, error distribution, occupancy tables และแสดงคำเตือน raw target-order violation โดยไม่ซ่อนด้วย post-processing
+- parity plots และ error-distribution plot ใน Summary Output ใช้ cached Matplotlib PNG แทน interactive Altair; preview เป็น static image และมีปุ่มดาวน์โหลด PNG สำหรับนำไปใช้ในรายงาน
+- ตัวเลือก run ใน Summary Output ใช้ multiselect ช่องเดียวเหมือน Image Based Output รองรับการเลือกหลาย model/run และค่าเริ่มต้นเป็น full MLP, GNN และ XGBoost runs
 
 เอกสารนี้สรุปการแก้ไข pipeline ของ `Method_LSTM_SF_01` ที่ทำวันนี้ พร้อมเหตุผลและวิธีรันหลังแก้
 

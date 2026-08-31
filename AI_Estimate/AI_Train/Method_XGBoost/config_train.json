@@ -1,0 +1,74 @@
+{
+  "method": {
+    "id": "Method_XGBoost",
+    "display_name": "XGBoost",
+    "implementation": "vanilla_gbtree_independent_targets"
+  },
+  "data": {
+    "data_estimate_root": "../../../Dataset/Data_Estimate_2",
+    "dataset_id": "data_estimate_2_housegan_canonical_imagebase_split_v1",
+    "filter_status": "success",
+    "expected_rows": {
+      "train": 2603,
+      "val": 439,
+      "test": 862
+    },
+    "expected_plans": {
+      "train": 412,
+      "val": 60,
+      "test": 117
+    }
+  },
+  "features": {
+    "numeric": [
+      "computed_agents",
+      "topology_hop_distance",
+      "topology_centerline_distance_m",
+      "straight_distance_m",
+      "detour_ratio",
+      "distance_gap_m",
+      "number_of_rooms_between_A_B",
+      "door_count_between_A_B",
+      "min_door_width_between_A_B",
+      "walkable_area_near_path",
+      "bottleneck_score",
+      "agent_density_near_path",
+      "area_per_agent",
+      "door_pressure_per_agent"
+    ],
+    "categorical": ["variant_id"],
+    "target": ["min_agent_time_s", "mean_agent_time_s", "max_agent_time_s"],
+    "input_scaling": "none",
+    "target_transform": "log1p",
+    "enforce_target_order": false
+  },
+  "model": {
+    "booster": "gbtree",
+    "objective": "reg:squarederror",
+    "n_estimators": 500,
+    "learning_rate": 0.05,
+    "max_depth": 6,
+    "min_child_weight": 1.0,
+    "subsample": 1.0,
+    "colsample_bytree": 1.0,
+    "reg_alpha": 0.0,
+    "reg_lambda": 1.0,
+    "tree_method": "hist",
+    "n_jobs": -1
+  },
+  "train": {
+    "random_seed": 42,
+    "smoke_test": false,
+    "early_stopping_rounds": 30,
+    "eval_metric": "rmse",
+    "verbose": false
+  },
+  "evaluation": {
+    "split": "test",
+    "protocol_version": "travel_time_v1"
+  },
+  "output": {
+    "root": "../../AI_result/Method_XGBoost/outputs",
+    "run_name": "auto"
+  }
+}

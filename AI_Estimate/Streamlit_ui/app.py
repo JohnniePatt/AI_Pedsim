@@ -37,6 +37,12 @@ METHODS = {
         "result_root": MODULE_ROOT / "AI_result" / "Method_GNN" / "outputs",
         "checkpoint_name": "best_result.pth",
     },
+    "Method_XGBoost": {
+        "name": "XGBoost",
+        "train_dir": TRAIN_ROOT / "Method_XGBoost",
+        "result_root": MODULE_ROOT / "AI_result" / "Method_XGBoost" / "outputs",
+        "checkpoint_name": "best_result.json",
+    },
 }
 
 st.set_page_config(page_title="AI_Estimate", layout="wide")
