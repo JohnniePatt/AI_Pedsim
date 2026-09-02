@@ -3,6 +3,8 @@ import json
 import pathlib
 import csv
 import argparse
+import time
+from datetime import datetime, timezone
 import torch
 import numpy as np
 from PIL import Image
@@ -77,6 +79,9 @@ def main():
 
     metrics_rows = []
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_started = time.perf_counter()
     with torch.no_grad():
         for input_a, target_b, filenames in tqdm(test_loader, desc="Testing"):
             fname = filenames[0]
@@ -102,6 +107,26 @@ def main():
             m = tensor_density_metrics(target_np, pred_np)
             m["file_name"] = fname
             metrics_rows.append(m)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_wall_time_s = time.perf_counter() - test_started
+
+    runtime_row = {
+        "method_id": "Method_pix2pix_WGAN-GP",
+        "split": "test",
+        "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
+        "sample_count": len(metrics_rows),
+        "test_wall_time_s": f"{test_wall_time_s:.6f}",
+        "mean_wall_time_per_sample_s": f"{test_wall_time_s / len(metrics_rows):.9f}" if metrics_rows else "nan",
+        "device_type": device.type,
+        "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "measured_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(run_dir / "test_runtime.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=runtime_row.keys())
+        writer.writeheader()
+        writer.writerow(runtime_row)
 
     # Save per-image metrics
     csv_headers = ["file_name", "mae", "mse", "rmse", "psnr", "ssim"]
@@ -132,6 +157,7 @@ def main():
     print(f"📊 Average MAE (L1): {avg_mae:.6f}")
     print(f"📊 Average MSE:      {avg_mse:.6f}")
     print(f"📊 Average SSIM:     {avg_ssim:.6f}")
+    print(f"⏱️ Test wall time:    {test_wall_time_s:.3f} s ({len(metrics_rows)} samples)")
 
     # Trigger compute_walkable_metrics.py
     try:

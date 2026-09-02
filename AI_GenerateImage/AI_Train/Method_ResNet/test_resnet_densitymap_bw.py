@@ -3,6 +3,8 @@ import json
 import pathlib
 import csv
 import argparse
+import time
+from datetime import datetime, timezone
 import torch
 import torch.nn as nn
 import numpy as np
@@ -83,6 +85,9 @@ def main():
     rows = []
     print(f"\n--- Evaluating Method_ResNet Test Set ({len(test_dataset)} samples) ---")
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_started = time.perf_counter()
     with torch.no_grad():
         for real_a, real_b, filenames in tqdm(test_loader, desc="Testing"):
             real_a, real_b = real_a.to(device), real_b.to(device)
@@ -125,6 +130,26 @@ def main():
                 colorjet_arr = convert_bw_to_colorjet(pred_b[0, 0])
                 c_img = Image.fromarray(colorjet_arr, mode="RGB")
                 c_img.save(test_result_colorjet / fname)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_wall_time_s = time.perf_counter() - test_started
+
+    runtime_row = {
+        "method_id": "Method_ResNet",
+        "split": "test",
+        "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
+        "sample_count": len(rows),
+        "test_wall_time_s": f"{test_wall_time_s:.6f}",
+        "mean_wall_time_per_sample_s": f"{test_wall_time_s / len(rows):.9f}" if rows else "nan",
+        "device_type": device.type,
+        "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "measured_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(run_dir / "test_runtime.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=runtime_row.keys())
+        writer.writeheader()
+        writer.writerow(runtime_row)
 
     # Save CSV evaluation files
     summary_dict = {}
@@ -167,6 +192,7 @@ def main():
     print(f"📊 Average MAE (L1): {summary_dict.get('MAE', 0.0):.6f}")
     print(f"📊 Average MSE:      {summary_dict.get('MSE', 0.0):.6f}")
     print(f"📊 Average SSIM:     {summary_dict.get('SSIM', 0.0):.6f}")
+    print(f"⏱️ Test wall time:    {test_wall_time_s:.3f} s ({len(rows)} samples)")
     print(f"📁 BW Predictions saved to:       {test_result_bw}")
     if args.save_colorjet:
         print(f"🎨 COLORJET Predictions saved to: {test_result_colorjet}")

@@ -9,7 +9,9 @@ import pathlib
 import argparse
 import json
 import math
-from datetime import datetime
+import csv
+import time
+from datetime import datetime, timezone
 
 try:
     import lpips
@@ -426,6 +428,9 @@ def run_evaluation(run_path, config_file=None):
         for old_png in d.glob("*.png"):
             old_png.unlink()
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_started = time.perf_counter()
     with torch.no_grad():
         for i, (ta, tb, orig_size, file_name_batch, source_b_path_batch) in enumerate(test_loader):
             ta, tb = ta.to(device), tb.to(device)
@@ -496,6 +501,28 @@ def run_evaluation(run_path, config_file=None):
                 res_f.save(pred_dir / file_name)
                 res_a.save(input_dir / file_name)
                 res_b.save(target_dir / file_name)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_wall_time_s = time.perf_counter() - test_started
+
+    runtime_row = {
+        "method_id": "Method_pix2pixHD",
+        "split": "test",
+        "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
+        "sample_count": len(per_image_metrics),
+        "test_wall_time_s": f"{test_wall_time_s:.6f}",
+        "mean_wall_time_per_sample_s": (
+            f"{test_wall_time_s / len(per_image_metrics):.9f}" if per_image_metrics else "nan"
+        ),
+        "device_type": device.type,
+        "device_name": device_name,
+        "checkpoint_path": str(best_ckpt.resolve()),
+        "measured_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(config.CURRENT_RUN_DIR / "test_runtime.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=runtime_row.keys())
+        writer.writeheader()
+        writer.writerow(runtime_row)
 
     # Scoring
     n_test = len(test_loader)
@@ -540,6 +567,7 @@ def run_evaluation(run_path, config_file=None):
     )
     print(f"? [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")
     print(f"✅ [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")
+    print(f"⏱️ [RUNTIME] Test wall time: {test_wall_time_s:.3f} s ({len(per_image_metrics)} samples)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

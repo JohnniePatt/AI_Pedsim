@@ -1,5 +1,7 @@
 import argparse
 import pathlib
+import time
+from datetime import datetime, timezone
 import torch
 import csv
 import math
@@ -70,6 +72,9 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
 
     rows = []
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_started = time.perf_counter()
     with torch.no_grad():
         for i, (a, b, name) in enumerate(tqdm(test_loader, desc="Testing")):
             a = a.to(device)
@@ -116,6 +121,26 @@ def main():
                 p_img = Image.fromarray(p_img_arr, mode="L").resize(orig_size, Image.LANCZOS)
                 _to_colorjet(np.array(p_img)).save(pred_dir / name[0])
                 p_img.convert("RGB").save(pred_dir / f"MASK_{name[0]}")
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    test_wall_time_s = time.perf_counter() - test_started
+
+    runtime_row = {
+        "method_id": "Method_PlainUnet",
+        "split": "test",
+        "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
+        "sample_count": len(rows),
+        "test_wall_time_s": f"{test_wall_time_s:.6f}",
+        "mean_wall_time_per_sample_s": f"{test_wall_time_s / len(rows):.9f}" if rows else "nan",
+        "device_type": device.type,
+        "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "measured_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(run_path / "test_runtime.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=runtime_row.keys())
+        writer.writeheader()
+        writer.writerow(runtime_row)
 
     if rows:
         summary = {k: np.mean([r[k] for r in rows if not (isinstance(r[k], float) and math.isnan(r[k]))]) for k in rows[0].keys() if k != "file_name"}
@@ -141,6 +166,8 @@ def main():
             writer = csv.writer(f)
             writer.writerow(["metric", "value"])
             for k, v in summary.items(): writer.writerow([k, "nan" if math.isnan(v) else f"{v:.6f}"])
+
+    print(f"[RUNTIME] Test wall time: {test_wall_time_s:.3f} s ({len(rows)} samples)")
 
 if __name__ == "__main__":
     main()

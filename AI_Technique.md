@@ -852,3 +852,30 @@ active train_cases 128 train_batches 64 val_cases 32 val_batches 4 epochs 20
 - ถ้าเจอ `FloatingPointError: non-finite loss` ให้ดู `case_id` ใน error เพื่อไล่ตรวจข้อมูล case นั้นต่อ
 - Default config ใหม่ออกแบบมาเพื่อ debug และ sanity training ก่อน ไม่ใช่ผลวิจัย final
 - Full config เดิมยังอยู่ที่ `config_full.json`
+
+## Image-model test runtime artifact
+
+Test scripts ของ `Method_pix2pixHD`, `Method_ResNet`, `Method_pix2pix_WGAN-GP`
+และ `Method_PlainUnet` บันทึก runtime ลงใน `<run_dir>/test_runtime.csv`
+โดยใช้ checkpoint เดิมและไม่เรียกขั้นตอน training
+
+ตัวจับเวลาใช้ `time.perf_counter()` ครอบ test loop และเรียก
+`torch.cuda.synchronize()` ก่อนเริ่มและหลังจบเมื่อใช้ CUDA ขอบเขตเวลา
+`test_wall_time_s` รวม data loading ระหว่าง iteration, model inference,
+metric calculation, post-processing และการเขียนภาพ แต่ไม่รวมการโหลด checkpoint,
+การเขียน evaluation summary หลัง loop และ walkable-metric post-processing
+
+คอลัมน์ในไฟล์ประกอบด้วย:
+
+```text
+method_id
+split
+timing_scope
+sample_count
+test_wall_time_s
+mean_wall_time_per_sample_s
+device_type
+device_name
+checkpoint_path
+measured_at_utc
+```
