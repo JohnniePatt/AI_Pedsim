@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
+import gc
 import importlib.metadata
 import importlib.util
 import json
@@ -17,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import numpy as np
 from shapely.geometry import shape
 
@@ -26,9 +30,10 @@ DEFAULT_REFERENCE = PROJECT_ROOT / "Dataset_TimeCalculate" / "Total_RefFileName.
 DEFAULT_OUTPUT_CSV = PROJECT_ROOT / "Dataset_TimeCalculate" / "JuPedSim_Runtime.csv"
 GENERATOR_PATH = PROJECT_ROOT / "GeneratePlan_HouseGAN" / "Simulation" / "density_housegan_sim.py"
 PROTECTED_ROOTS = (PROJECT_ROOT / "Dataset", PROJECT_ROOT / "Geo_scenario")
+REQUIRED_JUPEDSIM_VERSION = "1.3.2"
 
 RESULT_COLUMNS = [
-    "run_id",
+    "senario_name",
     "recorded_at_utc",
     "benchmark_iteration",
     "split",
@@ -44,6 +49,9 @@ RESULT_COLUMNS = [
     "plan_setup_wall_time_s",
     "setup_wall_time_s",
     "simulation_wall_time_s",
+    "sqlite_save_wall_time_s",
+    "trajectory_plot_wall_time_s",
+    "density_heatmap_wall_time_s",
     "total_wall_time_s",
     "simulated_duration_s",
     "real_time_factor",
@@ -63,34 +71,29 @@ def utc_now() -> datetime:
 
 
 def utc_text() -> str:
-    return utc_now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def new_run_id() -> str:
-    return utc_now().strftime("run_%Y%m%dT%H%M%SZ")
+    return utc_now().isoformat()
 
 
 def is_relative_to(path: Path, root: Path) -> bool:
     try:
-        path.relative_to(root)
+        path.resolve().relative_to(root.resolve())
         return True
     except ValueError:
         return False
 
 
 def assert_safe_output(path: Path) -> None:
-    resolved = path.resolve()
-    for protected in PROTECTED_ROOTS:
-        if is_relative_to(resolved, protected.resolve()):
-            raise ValueError(f"Output is inside protected source tree: {resolved}")
+    for root in PROTECTED_ROOTS:
+        if is_relative_to(path, root):
+            raise ValueError(f"Refusing to write to protected dataset path: {path}")
 
 
 def load_generator_module():
     if not GENERATOR_PATH.is_file():
-        raise FileNotFoundError(f"Missing JuPedSim generator: {GENERATOR_PATH}")
-    spec = importlib.util.spec_from_file_location("housegan_density_sim_benchmark_source", GENERATOR_PATH)
+        raise FileNotFoundError(f"Missing simulation generator: {GENERATOR_PATH}")
+    spec = importlib.util.spec_from_file_location("density_housegan_sim", GENERATOR_PATH)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load generator module: {GENERATOR_PATH}")
+        raise ImportError(f"Unable to load module spec from {GENERATOR_PATH}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -101,14 +104,17 @@ def read_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
-def read_references(path: Path, split: str, limit: int | None) -> list[dict[str, str]]:
+def read_references(
+    path: Path, split: str = "all", limit: int | None = None
+) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        rows = [row for row in csv.DictReader(handle) if row.get("split") == split]
-    rows = [row for row in rows if row.get("status") == "success"]
+        rows = [row for row in csv.DictReader(handle) if row.get("status") == "success"]
+    if split != "all":
+        rows = [row for row in rows if row.get("split") == split]
     if limit is not None:
         rows = rows[:limit]
     if not rows:
-        raise ValueError(f"No successful references selected for split={split!r}")
+        raise ValueError(f"No matching successful references found in {path}")
     return rows
 
 
@@ -119,25 +125,94 @@ def package_version(name: str) -> str:
         return "unknown"
 
 
+def memory_percent() -> float:
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.is_file():
+        return 0.0
+    values: dict[str, float] = {}
+    for line in meminfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        token = rest.strip().split(" ")[0]
+        try:
+            values[key] = float(token)
+        except ValueError:
+            continue
+    total = values.get("MemTotal", 0.0)
+    available = values.get("MemAvailable", values.get("MemFree", 0.0))
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(100.0, ((total - available) / total) * 100.0))
+
+
+def cleanup_runtime_memory() -> None:
+    pyplot = sys.modules.get("matplotlib.pyplot")
+    if pyplot is not None:
+        pyplot.close("all")
+    gc.collect()
+
+
+def stage_prefix(progress_label: str, reference_id: str, stage: str) -> str:
+    prefix = f"{progress_label} " if progress_label else ""
+    return f"{prefix}[ram={memory_percent():.1f}%] [stage={stage}] {reference_id}"
+
+
+def run_with_stage_heartbeat(
+    stage: str,
+    reference_id: str,
+    progress_label: str,
+    progress_interval_s: float,
+    func: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[Any, float]:
+    started_ns = time.perf_counter_ns()
+    print(f"{stage_prefix(progress_label, reference_id, stage)} start", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        while True:
+            try:
+                result = future.result(timeout=progress_interval_s)
+                elapsed_s = (time.perf_counter_ns() - started_ns) / 1_000_000_000
+                print(
+                    f"{stage_prefix(progress_label, reference_id, stage)} done elapsed={elapsed_s:.3f}s",
+                    flush=True,
+                )
+                return result, elapsed_s
+            except concurrent.futures.TimeoutError:
+                elapsed_s = (time.perf_counter_ns() - started_ns) / 1_000_000_000
+                print(
+                    f"{stage_prefix(progress_label, reference_id, stage)} running elapsed={elapsed_s:.1f}s",
+                    flush=True,
+                )
+
+
+def require_jupedsim_version() -> str:
+    version = package_version("jupedsim")
+    if version != REQUIRED_JUPEDSIM_VERSION:
+        raise RuntimeError(
+            f"JuPedSim version mismatch: this benchmark requires exact version "
+            f"{REQUIRED_JUPEDSIM_VERSION}, but found {version} in the current Python environment. "
+            f"Please install or activate an environment with: python3 -m pip install jupedsim=={REQUIRED_JUPEDSIM_VERSION}"
+        )
+    return version
+
+
 def machine_info() -> dict[str, str]:
-    cpu = platform.processor().strip()
-    if not cpu and Path("/proc/cpuinfo").is_file():
-        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").splitlines():
-            if line.lower().startswith("model name"):
-                cpu = line.split(":", 1)[-1].strip()
-                break
+    cpu = platform.processor() or platform.machine() or "unknown"
     return {
         "hostname": platform.node(),
-        "os": platform.platform(),
-        "cpu": cpu or "unknown",
+        "os": f"{platform.system()} {platform.release()}",
+        "cpu": cpu,
         "python_version": platform.python_version(),
-        "jupedsim_version": package_version("jupedsim"),
+        "jupedsim_version": require_jupedsim_version(),
     }
 
 
 def close_writer(simulation: Any) -> None:
     writer = getattr(simulation, "_writer", None)
-    if writer is not None:
+    if writer is not None and hasattr(writer, "close"):
         writer.close()
 
 
@@ -167,7 +242,11 @@ def load_plan_context(generator: Any, plan: str) -> tuple[dict[str, Any], float]
     )
     _, node_polys = generator.build_route_graph(corridor_polys, room_polys, doors_data)
     elapsed = (time.perf_counter_ns() - started) / 1_000_000_000
-    return {"walkable_area": walkable_area, "node_polys": node_polys, "config": config}, elapsed
+    return {
+        "config": config,
+        "walkable_area": walkable_area,
+        "node_polys": node_polys,
+    }, elapsed
 
 
 def simulate_reference(
@@ -177,6 +256,8 @@ def simulate_reference(
     temp_sqlite: Path,
     timeout_minutes_override: float | None,
     no_progress_timeout_s: float,
+    progress_label: str,
+    progress_interval_s: float,
 ) -> dict[str, Any]:
     import jupedsim as jps
 
@@ -262,6 +343,14 @@ def simulate_reference(
     iterations = 0
     status = "success"
     error = ""
+    loop_finished_ns = simulation_started
+    sqlite_save_s = 0.0
+    last_heartbeat_ns = simulation_started
+    print(
+        f"{stage_prefix(progress_label, reference['reference_id'], 'simulation')} "
+        f"start agents={agent_count}",
+        flush=True,
+    )
 
     try:
         while simulation.agent_count() > 0:
@@ -272,6 +361,14 @@ def simulate_reference(
             if current_count < last_count:
                 last_count = current_count
                 last_progress_ns = now_ns
+            if (now_ns - last_heartbeat_ns) / 1_000_000_000 >= progress_interval_s:
+                elapsed_s = (now_ns - simulation_started) / 1_000_000_000
+                print(
+                    f"{stage_prefix(progress_label, reference['reference_id'], 'simulation')} "
+                    f"running elapsed={elapsed_s:.1f}s agents_left={current_count} iterations={iterations}",
+                    flush=True,
+                )
+                last_heartbeat_ns = now_ns
             if (now_ns - simulation_started) / 1_000_000_000 > timeout_minutes * 60:
                 status = "timeout"
                 error = f"wall-clock timeout after {timeout_minutes:g} minutes"
@@ -281,52 +378,145 @@ def simulate_reference(
                 error = f"no agent progress for {no_progress_timeout_s:g} seconds"
                 break
     finally:
+        loop_finished_ns = time.perf_counter_ns()
+        sqlite_save_started = time.perf_counter_ns()
+        print(
+            f"{stage_prefix(progress_label, reference['reference_id'], 'sqlite_save')} start",
+            flush=True,
+        )
         close_writer(simulation)
+        sqlite_save_s = (time.perf_counter_ns() - sqlite_save_started) / 1_000_000_000
+        print(
+            f"{stage_prefix(progress_label, reference['reference_id'], 'sqlite_save')} "
+            f"done elapsed={sqlite_save_s:.3f}s",
+            flush=True,
+        )
 
-    simulation_s = (time.perf_counter_ns() - simulation_started) / 1_000_000_000
+    simulation_s = (loop_finished_ns - simulation_started) / 1_000_000_000
+    print(
+        f"{stage_prefix(progress_label, reference['reference_id'], 'simulation')} "
+        f"done status={status} elapsed={simulation_s:.3f}s iterations={iterations}",
+        flush=True,
+    )
     return {
         "seed": seed,
         "agent_count": agent_count,
         "status": status,
         "setup_wall_time_s": setup_s,
         "simulation_wall_time_s": simulation_s,
+        "sqlite_save_wall_time_s": sqlite_save_s,
         "iterations": iterations,
         "error": error,
     }
 
 
-def completed_keys(result_csv: Path) -> set[tuple[str, str]]:
-    if not result_csv.is_file():
-        return set()
-    with result_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+def generate_density_heatmap(
+    trajectory_data: Any,
+    loaded_walkable_area: Any,
+    output_path: Path,
+    dpi: int,
+    grid_size: float,
+) -> None:
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import pedpy
+
+    individual_speed = pedpy.compute_individual_speed(
+        traj_data=trajectory_data,
+        frame_step=5,
+        speed_calculation=pedpy.SpeedCalculation.BORDER_SINGLE_SIDED,
+    )
+    individual_voronoi_cells = pedpy.compute_individual_voronoi_polygons(
+        traj_data=trajectory_data,
+        walkable_area=loaded_walkable_area,
+        cut_off=pedpy.Cutoff(radius=0.8, quad_segments=3),
+    )
+
+    sum_density = None
+    count = 0
+    for frame in individual_speed["frame"].unique()[::60]:
+        speed_f = individual_speed[individual_speed.frame == frame]
+        cells_f = individual_voronoi_cells[individual_voronoi_cells.frame == frame]
+        frame_data = pd.merge(cells_f, speed_f, on=["id", "frame"])
+        density_profile, _ = pedpy.compute_profiles(
+            individual_voronoi_speed_data=frame_data,
+            walkable_area=loaded_walkable_area.polygon,
+            grid_size=grid_size,
+            speed_method=pedpy.SpeedMethod.ARITHMETIC,
+        )
+        if sum_density is None:
+            sum_density = np.copy(density_profile[0])
+        else:
+            sum_density += density_profile[0]
+        count += 1
+
+    if count <= 0 or sum_density is None:
+        return
+
+    mean_density_map = sum_density / count
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(8, 8))
+    pedpy.plot_profiles(
+        walkable_area=loaded_walkable_area,
+        profiles=[mean_density_map],
+        axes=ax,
+        label=r"$\rho$ / 1/$m^2$",
+        vmin=0,
+        vmax=5,
+        title="Average Density",
+    )
+    plt.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def empty_result_row(senario_name: str) -> dict[str, Any]:
+    row = {column: "" for column in RESULT_COLUMNS}
+    row["senario_name"] = senario_name
+    return row
+
+
+def read_result_rows(path: Path, references: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return [empty_result_row(reference_id) for reference_id in references]
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames != RESULT_COLUMNS:
-            raise ValueError(
-                f"Existing result CSV has an incompatible header: {result_csv}"
-            )
-        return {
-            (row["reference_id"], row["benchmark_iteration"])
-            for row in reader
-            if row.get("status") == "success"
-        }
+        fieldnames = reader.fieldnames or []
+        if "senario_name" not in fieldnames and "reference_id" not in fieldnames:
+            raise ValueError(f"Existing result CSV must contain senario_name or reference_id: {path}")
+        rows: list[dict[str, Any]] = []
+        for raw_row in reader:
+            senario_name = raw_row.get("senario_name") or raw_row.get("reference_id") or ""
+            if not senario_name:
+                continue
+            row = empty_result_row(senario_name)
+            for column in RESULT_COLUMNS:
+                if column in raw_row:
+                    row[column] = raw_row.get(column, "")
+            row["senario_name"] = senario_name
+            rows.append(row)
+    if not rows:
+        raise ValueError(f"Existing result CSV has no scenario rows: {path}")
+    missing = [row["senario_name"] for row in rows if row["senario_name"] not in references]
+    if missing:
+        preview = ", ".join(missing[:5])
+        raise ValueError(
+            f"{len(missing)} senario_name value(s) are missing from the reference CSV, "
+            f"for example: {preview}"
+        )
+    return rows
 
 
-def append_result(path: Path, row: dict[str, Any]) -> None:
-    new_file = not path.exists()
-    with path.open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=RESULT_COLUMNS, lineterminator="\n")
-        if new_file:
-            writer.writeheader()
-        writer.writerow({column: row.get(column, "") for column in RESULT_COLUMNS})
-        handle.flush()
-        os.fsync(handle.fileno())
+def reset_result_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [empty_result_row(str(row["senario_name"])) for row in rows]
 
 
-def initialize_result(path: Path) -> None:
-    """Replace only the benchmark CSV after the user explicitly selects mode 0."""
+def write_result_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        csv.DictWriter(handle, fieldnames=RESULT_COLUMNS, lineterminator="\n").writeheader()
+        writer = csv.DictWriter(handle, fieldnames=RESULT_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column, "") for column in RESULT_COLUMNS})
         handle.flush()
         os.fsync(handle.fileno())
 
@@ -340,11 +530,20 @@ def choose_interactive_mode() -> str:
     return {"0": "overwrite", "1": "missing", "2": "exit"}.get(choice, "invalid")
 
 
-def confirm_interactive_run(mode: str, selected: int, pending: int, result_csv: Path) -> bool:
+def confirm_interactive_run(
+    mode: str,
+    selected: int,
+    pending: int,
+    result_csv: Path,
+    max_attempts: int,
+    ram_cache_clear_threshold_percent: float,
+) -> bool:
     print("\nสรุปก่อนรัน")
     print(f"  mode: {mode}")
     print(f"  reference ที่เลือก: {selected}")
     print(f"  simulation ที่ต้องรัน: {pending}")
+    print(f"  retry ต่อ simulation: สูงสุด {max_attempts} attempt")
+    print(f"  ล้าง plan cache เมื่อ RAM >= {ram_cache_clear_threshold_percent:.1f}%")
     print(f"  ไฟล์ผลลัพธ์ถาวร: {result_csv}")
     print("  ห้ามเขียนข้อมูลลง Dataset/ และ Geo_scenario/")
     return input("พิมพ์ RUN เพื่อเริ่ม: ").strip() == "RUN"
@@ -362,12 +561,30 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Explicit non-interactive mode. Without this flag, an interactive menu is shown on a TTY.",
     )
-    parser.add_argument("--split", choices=("train", "val", "test"), default="test")
+    parser.add_argument("--split", choices=("all", "train", "val", "test"), default="all")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--postprocess-dpi", type=int, default=220)
+    parser.add_argument(
+        "--stage-progress-seconds",
+        type=float,
+        default=10.0,
+        help="Print a heartbeat for long-running simulation/postprocess stages at this interval.",
+    )
     parser.add_argument("--timeout-minutes", type=float, default=None)
     parser.add_argument("--no-progress-timeout-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--ram-cache-clear-threshold-percent",
+        type=float,
+        default=85.0,
+        help="Clear the in-process plan cache before a reference when system RAM usage is at least this percent.",
+    )
+    parser.add_argument(
+        "--max-attempts-per-reference",
+        type=int,
+        default=2,
+        help="Retry the same reference up to this many attempts before moving to the next one.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -375,10 +592,16 @@ def parse_args() -> argparse.Namespace:
 def validate_args(args: argparse.Namespace) -> None:
     if args.limit is not None and args.limit < 1:
         raise ValueError("--limit must be at least 1")
-    if args.repeats < 1:
-        raise ValueError("--repeats must be at least 1")
     if args.warmup < 0:
         raise ValueError("--warmup cannot be negative")
+    if args.postprocess_dpi < 1:
+        raise ValueError("--postprocess-dpi must be at least 1")
+    if args.stage_progress_seconds <= 0:
+        raise ValueError("--stage-progress-seconds must be positive")
+    if args.max_attempts_per_reference < 1:
+        raise ValueError("--max-attempts-per-reference must be at least 1")
+    if args.ram_cache_clear_threshold_percent <= 0 or args.ram_cache_clear_threshold_percent > 100:
+        raise ValueError("--ram-cache-clear-threshold-percent must be in (0, 100]")
     if args.no_progress_timeout_seconds <= 0:
         raise ValueError("--no-progress-timeout-seconds must be positive")
     if args.timeout_minutes is not None and args.timeout_minutes <= 0:
@@ -388,12 +611,27 @@ def validate_args(args: argparse.Namespace) -> None:
 def main() -> int:
     args = parse_args()
     validate_args(args)
+    require_jupedsim_version()
     reference_csv = args.reference_csv.resolve()
     result_csv = args.output_csv.resolve()
     assert_safe_output(result_csv)
     if not reference_csv.is_file():
         raise FileNotFoundError(f"Missing reference CSV: {reference_csv}")
-    references = read_references(reference_csv, args.split, args.limit)
+
+    all_references_list = read_references(reference_csv, "all")
+    references_map = {row["reference_id"]: row for row in all_references_list}
+
+    result_rows = read_result_rows(result_csv, references_map)
+    row_index_by_senario = {row["senario_name"]: i for i, row in enumerate(result_rows)}
+    selected_references: list[dict[str, str]] = []
+    for row in result_rows:
+        reference = references_map[row["senario_name"]]
+        if args.split == "all" or reference.get("split") == args.split:
+            selected_references.append(reference)
+    if args.limit is not None:
+        selected_references = selected_references[: args.limit]
+    if not selected_references:
+        raise ValueError(f"No selected references match split={args.split!r}")
 
     if args.dry_run:
         print(
@@ -402,10 +640,13 @@ def main() -> int:
                     "mode": "dry-run",
                     "reference_csv": str(reference_csv),
                     "split": args.split,
-                    "selected_references": len(references),
-                    "repeats": args.repeats,
+                    "selected_references": len(selected_references),
                     "warmup": args.warmup,
-                    "planned_rows": len(references) * args.repeats,
+                    "postprocess_dpi": args.postprocess_dpi,
+                    "stage_progress_seconds": args.stage_progress_seconds,
+                    "max_attempts_per_reference": args.max_attempts_per_reference,
+                    "ram_cache_clear_threshold_percent": args.ram_cache_clear_threshold_percent,
+                    "planned_rows": len(selected_references),
                     "output_csv": str(result_csv),
                     "source_writes": False,
                 },
@@ -430,37 +671,65 @@ def main() -> int:
     else:
         mode = args.mode
 
-    existing_done = completed_keys(result_csv)
-    all_keys = {
-        (reference["reference_id"], str(iteration))
-        for iteration in range(1, args.repeats + 1)
-        for reference in references
-    }
-    done = set() if mode == "overwrite" else existing_done
-    pending = len(all_keys - done)
-    if interactive and not confirm_interactive_run(mode, len(all_keys), pending, result_csv):
+    if mode == "overwrite":
+        result_rows = reset_result_rows(result_rows)
+        write_result_rows(result_csv, result_rows)
+
+    # Determine pending scenarios
+    pending_references = []
+    for ref in selected_references:
+        senario_name = ref["reference_id"]
+        idx = row_index_by_senario.get(senario_name)
+        if idx is None:
+            continue
+        existing_status = result_rows[idx].get("status")
+        if mode == "overwrite" or existing_status != "success":
+            pending_references.append(ref)
+
+    pending = len(pending_references)
+    if interactive and not confirm_interactive_run(
+        mode,
+        len(selected_references),
+        pending,
+        result_csv,
+        args.max_attempts_per_reference,
+        args.ram_cache_clear_threshold_percent,
+    ):
         print("Confirmation not received. Nothing was run.")
         return 0
     if pending == 0:
         print(f"All selected references already have successful results in {result_csv}")
         return 0
 
-    if mode == "overwrite":
-        initialize_result(result_csv)
-    else:
-        result_csv.parent.mkdir(parents=True, exist_ok=True)
-
-    run_id = new_run_id()
     generator = load_generator_module()
     environment = machine_info()
     plan_cache: dict[str, dict[str, Any]] = {}
 
-    def execute(reference: dict[str, str], iteration: int, record: bool) -> None:
+    def execute(
+        reference: dict[str, str],
+        iteration: int,
+        progress_label: str = "",
+    ) -> dict[str, Any]:
         nonlocal plan_cache
+        cleanup_runtime_memory()
+        ram_before_s = memory_percent()
+        if ram_before_s >= args.ram_cache_clear_threshold_percent and plan_cache:
+            plan_cache.clear()
+            cleanup_runtime_memory()
+            ram_before_s = memory_percent()
         plan = reference["plan"]
         plan_setup_s = 0.0
         if plan not in plan_cache:
+            print(
+                f"{stage_prefix(progress_label, reference['reference_id'], 'plan_setup')} start plan={plan}",
+                flush=True,
+            )
             plan_cache[plan], plan_setup_s = load_plan_context(generator, plan)
+            print(
+                f"{stage_prefix(progress_label, reference['reference_id'], 'plan_setup')} "
+                f"done elapsed={plan_setup_s:.3f}s plan={plan}",
+                flush=True,
+            )
 
         temp_deleted = False
         benchmark: dict[str, Any] = {
@@ -469,9 +738,13 @@ def main() -> int:
             "status": "error",
             "setup_wall_time_s": 0.0,
             "simulation_wall_time_s": 0.0,
+            "sqlite_save_wall_time_s": 0.0,
             "iterations": 0,
             "error": "",
         }
+        trajectory_plot_s = 0.0
+        density_heatmap_s = 0.0
+
         with tempfile.TemporaryDirectory(prefix="jupedsim_runtime_") as temp_directory:
             temp_sqlite = Path(temp_directory) / "trajectory.sqlite"
             try:
@@ -482,7 +755,37 @@ def main() -> int:
                     temp_sqlite,
                     args.timeout_minutes,
                     args.no_progress_timeout_seconds,
+                    progress_label,
+                    args.stage_progress_seconds,
                 )
+                if benchmark["status"] == "success":
+                    temp_traj_dir = Path(temp_directory) / "traj_out"
+                    temp_traj_dir.mkdir(parents=True, exist_ok=True)
+                    (trajectory_data, loaded_walkable_area), trajectory_plot_s = run_with_stage_heartbeat(
+                        "trajectory_plot",
+                        reference["reference_id"],
+                        progress_label,
+                        args.stage_progress_seconds,
+                        generator.generate_trajectory_plot,
+                        temp_sqlite,
+                        reference["reference_id"],
+                        temp_traj_dir,
+                        args.postprocess_dpi,
+                    )
+
+                    temp_density_png = Path(temp_directory) / "density.png"
+                    _, density_heatmap_s = run_with_stage_heartbeat(
+                        "density_heatmap",
+                        reference["reference_id"],
+                        progress_label,
+                        args.stage_progress_seconds,
+                        generate_density_heatmap,
+                        trajectory_data,
+                        loaded_walkable_area,
+                        temp_density_png,
+                        dpi=args.postprocess_dpi,
+                        grid_size=float(plan_cache[plan]["config"].get("grid_size", 0.5)),
+                    )
             except Exception as exc:
                 benchmark["status"] = "error"
                 benchmark["error"] = f"{type(exc).__name__}: {exc}"
@@ -492,10 +795,13 @@ def main() -> int:
             plan_setup_s
             + float(benchmark.get("setup_wall_time_s", 0.0))
             + float(benchmark.get("simulation_wall_time_s", 0.0))
+            + float(benchmark.get("sqlite_save_wall_time_s", 0.0))
+            + trajectory_plot_s
+            + density_heatmap_s
         )
         simulated_duration_s = float(reference["simulated_duration_s"])
         row = {
-            "run_id": run_id,
+            "senario_name": reference["reference_id"],
             "recorded_at_utc": utc_text(),
             "benchmark_iteration": iteration,
             "split": reference["split"],
@@ -511,6 +817,9 @@ def main() -> int:
             "plan_setup_wall_time_s": f"{plan_setup_s:.9f}",
             "setup_wall_time_s": f"{float(benchmark.get('setup_wall_time_s', 0.0)):.9f}",
             "simulation_wall_time_s": f"{float(benchmark.get('simulation_wall_time_s', 0.0)):.9f}",
+            "sqlite_save_wall_time_s": f"{float(benchmark.get('sqlite_save_wall_time_s', 0.0)):.9f}",
+            "trajectory_plot_wall_time_s": f"{trajectory_plot_s:.9f}",
+            "density_heatmap_wall_time_s": f"{density_heatmap_s:.9f}",
             "total_wall_time_s": f"{total_s:.9f}",
             "simulated_duration_s": f"{simulated_duration_s:.9f}",
             "real_time_factor": f"{simulated_duration_s / total_s:.9f}" if total_s > 0 else "",
@@ -519,25 +828,53 @@ def main() -> int:
             "error": benchmark.get("error", ""),
             **environment,
         }
-        if record:
-            append_result(result_csv, row)
-            print(
-                f"[{row['status']}] {reference['reference_id']} "
-                f"total={row['total_wall_time_s']}s temp_deleted={row['temp_output_deleted']}"
+        cleanup_runtime_memory()
+        ram_after_s = memory_percent()
+        prefix = f"{progress_label} " if progress_label else ""
+        print(
+            f"{prefix}[ram={ram_after_s:.1f}%] [{row['status']}] {reference['reference_id']} "
+            f"total={row['total_wall_time_s']}s temp_deleted={row['temp_output_deleted']}"
+        )
+        return row
+
+    if args.warmup > 0 and selected_references:
+        for warmup_index in range(args.warmup):
+            print(f"[warmup {warmup_index + 1}/{args.warmup}] {selected_references[0]['reference_id']}")
+            execute(selected_references[0], 0)
+        plan_cache.clear()
+
+    completed_attempts = 0
+    for reference in pending_references:
+        completed_attempts += 1
+        final_row: dict[str, Any] | None = None
+        for attempt in range(1, args.max_attempts_per_reference + 1):
+            attempt_label = (
+                f" retry={attempt}/{args.max_attempts_per_reference}"
+                if attempt > 1
+                else ""
             )
+            final_row = execute(
+                reference,
+                1,
+                progress_label=f"[{completed_attempts}/{pending}]{attempt_label}",
+            )
+            if final_row["status"] == "success":
+                break
+            if attempt < args.max_attempts_per_reference:
+                print(
+                    f"[{completed_attempts}/{pending}] retrying "
+                    f"{reference['reference_id']} after status={final_row['status']}"
+                )
+        if final_row is None:
+            raise RuntimeError("Internal error: no benchmark attempt was executed")
 
-    for warmup_index in range(args.warmup):
-        print(f"[warmup {warmup_index + 1}/{args.warmup}] {references[0]['reference_id']}")
-        execute(references[0], 0, record=False)
-    plan_cache.clear()
-
-    for iteration in range(1, args.repeats + 1):
-        for reference in references:
-            key = (reference["reference_id"], str(iteration))
-            if key in done:
-                print(f"[skip] {reference['reference_id']} iteration={iteration}")
-                continue
-            execute(reference, iteration, record=True)
+        # Update result_rows in-place and write to disk
+        senario_name = reference["reference_id"]
+        idx = row_index_by_senario.get(senario_name)
+        if idx is None:
+            raise RuntimeError(f"Missing senario_name in result template: {senario_name}")
+        result_rows[idx] = final_row
+        write_result_rows(result_csv, result_rows)
 
     print(f"Results: {result_csv}")
     return 0

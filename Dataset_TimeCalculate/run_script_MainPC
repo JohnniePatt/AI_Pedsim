@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /home/johnfaqpc/programming/AI_Pedsim
+exec /home/johnfaqpc/programming/AI_Pedsim/.venv_sim/bin/python3 Dataset_TimeCalculate/src/benchmark_jupedsim_runtime.py "$@"
