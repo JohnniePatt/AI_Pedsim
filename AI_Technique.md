@@ -10,17 +10,49 @@
 - inventory ที่ตรวจแล้วคือ Train `2,603 / 412`, Validation `439 / 60` และ
   Test `862 / 117` scenarios/plans รวม 3,904 reference IDs ที่ไม่ซ้ำ
 - `Dataset_TimeCalculate/src/benchmark_jupedsim_runtime.py` วัดด้วย
-  `time.perf_counter_ns()` แบบ sequential และแยก plan setup, scenario setup,
-  simulation loop และ total wall-clock time
+  `time.perf_counter_ns()` แบบ sequential โดยเติมผลกลับลงแถวเดิมของ
+  `Dataset_TimeCalculate/JuPedSim_Runtime.csv` ตามคอลัมน์ `senario_name`
+- ตารางผลลัพธ์แยก timing เป็น `plan_setup_wall_time_s`, `setup_wall_time_s`,
+  `simulation_wall_time_s`, `sqlite_save_wall_time_s`, `trajectory_plot_wall_time_s`,
+  `density_heatmap_wall_time_s` และ `total_wall_time_s`; density heatmap วัดเฉพาะ density map
+  ไม่รวม speed heatmap, spawn/exit plot หรือ offset-area plot
 - benchmark อ่าน geometry/metadata เดิมแบบ read-only, เขียน SQLite เฉพาะใน system
   temporary directory และลบทิ้งหลังจบแต่ละ scenario ผลถาวรมีเพียง
   `Dataset_TimeCalculate/JuPedSim_Runtime.csv`
-- มี timeout/deadlock guard, per-scenario CSV flush, `--dry-run`, `--limit`, โหมดรันเฉพาะ
-  reference ที่ยังไม่มีผล success, warm-up และ repeat โดยค่าเริ่มต้นเลือก canonical test split
+- มี timeout/deadlock guard, `--dry-run`, `--limit`, โหมดรันเฉพาะ reference ที่ยังไม่มีผล
+  success และ warm-up โดยค่าเริ่มต้นอ่านทุก split ตามลำดับแถวใน CSV template
+- หลังจบแต่ละ scenario script จะเขียน `JuPedSim_Runtime.csv` ใหม่ทั้งไฟล์ด้วย schema เดิมและแถวเดิม
+  เพื่อให้ผลล่าสุดถูกเก็บทันทีโดยไม่สร้างแถวเพิ่มนอก template
+- stdout ของแต่ละ simulation แสดง progress prefix ตามจำนวนงานที่ต้องรันจริงและมี heartbeat ราย stage เช่น
+  `[1/861] [ram=42.5%] [success] plan_... total=...s temp_deleted=true`; แถวที่ skip เพราะมีผล
+  success แล้วไม่ถูกนับในตัวหารนี้
+- stage ที่อาจนาน เช่น `simulation`, `sqlite_save`, `trajectory_plot` และ `density_heatmap`
+  จะพิมพ์ `start`, `running elapsed=...s` และ `done elapsed=...s` ตามค่า
+  `--stage-progress-seconds` เพื่อให้รู้ว่า process ค้างอยู่ตรงไหน
+- ก่อนแต่ละ attempt script จะปิด Matplotlib figure ที่ค้างอยู่ถ้ามีและเรียก `gc.collect()` เพื่อล้าง object
+  ที่ไม่ถูกใช้งานแล้วใน process; ถ้า RAM ใช้เกิน threshold ค่าเริ่มต้น 85% จะล้าง in-process
+  `plan_cache` ก่อนเริ่ม reference ถัดไปด้วย
+- ถ้า reference หนึ่งรันไม่สำเร็จ (`error`, `timeout` หรือ `deadlock`) script จะ retry reference เดิมทันที
+  ก่อนขยับไป reference ถัดไป โดยค่าเริ่มต้นลองสูงสุด 2 attempts ต่อ reference และเขียน
+  `JuPedSim_Runtime.csv` เฉพาะผล success หรือผลสุดท้ายหลัง retry ครบแล้วลงแถว `senario_name`
+  เดิมเท่านั้น
+- เพิ่ม shortcut `Dataset_TimeCalculate/run_script_MainPC` สำหรับรันด้วย interpreter ที่ pin JuPedSim `1.3.2`:
+  `cd Dataset_TimeCalculate && ./run_script_MainPC`
 - Smoke test หนึ่ง scenario อยู่ใน `Dataset_TimeCalculate/JuPedSim_Runtime.csv` และใช้เพื่อตรวจ pipeline เท่านั้น:
   status `success`, total wall time `1.709014730 s`, temporary output ถูกลบ และ SHA-256
   ของ source dataset CSV, route metadata และ source SQLite ไม่เปลี่ยน ผลนี้ยังไม่ใช่ full-test
   computational-efficiency result
+- Follow-up error เมื่อรันต่อบน environment ที่มี JuPedSim `1.1.1`: แถวที่เหลือใน
+  `JuPedSim_Runtime.csv` ล้มด้วย
+  `TypeError: CollisionFreeSpeedModelAgentParameters.__init__() got an unexpected keyword argument 'desired_speed'`
+  เพราะ benchmark protocol ต้องใช้ JuPedSim `1.3.2` เท่านั้น แต่ interpreter ที่รันตอนนั้นเห็น
+  JuPedSim `1.1.1`
+- แก้ `Dataset_TimeCalculate/src/benchmark_jupedsim_runtime.py` ให้ตรวจ version ตั้งแต่ต้นและหยุดทันที
+  หากไม่ใช่ `jupedsim==1.3.2` เพื่อป้องกันการสร้าง runtime artifact ที่ปน package version
+- สถานะ CSV ปัจจุบันหลัง error มี success เดิม 1 แถวและ error 861 แถว; mode `missing`
+  จะ rerun เฉพาะ reference ที่ยังไม่มี success ได้หลังเปิด environment ถูกต้อง แต่ถ้าต้องการ artifact
+  สะอาดสำหรับรายงานให้ใช้ mode `overwrite` เพื่อเขียนทับเฉพาะ
+  `Dataset_TimeCalculate/JuPedSim_Runtime.csv`
 
 ## Process runtime instrumentation สำหรับ MLP, GNN และ XGBoost
 
