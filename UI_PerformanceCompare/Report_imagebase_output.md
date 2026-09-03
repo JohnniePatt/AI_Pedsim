@@ -196,17 +196,25 @@ The paper's qualitative diagnosis remains applicable to the four included models
 
 ## 10. Computational efficiency
 
-Timing is reported for 862 test scenarios. AI models ran on an NVIDIA RTX 3080; JuPedSim ran on an Intel Core i9 12th-generation CPU.
+Timing is reported from the stored artifacts for 862 test scenarios. AI
+`test_pipeline_wall_time_s` was measured on an NVIDIA GeForce RTX 5070 Laptop GPU. The JuPedSim artifact records
+the platform as `x86_64` under WSL2 but does not preserve the exact CPU model.
+The comparison uses total runtime: JuPedSim `total_wall_time_s`, including setup,
+simulation, SQLite output, trajectory plotting, and density-heatmap generation,
+versus each AI run's recorded test pipeline.
 
-| Method | Average time/sample (s) | Total time (s) | Speedup vs. JuPedSim |
+| Method | Average runtime/sample (s) | Total Runtime (s) | Speedup vs. JuPedSim |
 | :--- | ---: | ---: | ---: |
-| JuPedSim | 29.57000 | 25,489.32 | 1.0x |
-| Plain U-Net | 0.01486 | 12.81 | 1,990x |
-| Pix2Pix (WGAN-GP) | 0.01486 | 12.81 | 1,990x |
-| ResNet-9 | 0.06100 | 52.58 | 484x |
-| pix2pixHD | 0.06100 | 52.58 | 484x |
+| JuPedSim simulation + outputs | 27.435581066 | 23,649.470879 | 1.0x |
+| Plain U-Net | 0.018853886 | 16.252050 | 1,455.2x |
+| Pix2Pix (WGAN-GP) | 0.018272152 | 15.750595 | 1,501.5x |
+| ResNet-9 | 0.029068077 | 25.056682 | 943.8x |
+| pix2pixHD | 0.040986074 | 35.329996 | 669.4x |
 
-The paired methods have identical inference times because discriminators are used only during training. The timing comparison demonstrates workflow acceleration but confounds algorithm and hardware; it is not a controlled CPU-versus-CPU or GPU-versus-GPU benchmark.
+The values are independently measured rather than copied. The comparison still
+confounds algorithm and hardware and is not a controlled CPU-versus-CPU or
+GPU-versus-GPU benchmark. Legacy and factorial AI runs also record slightly different
+test-pipeline boundaries, which must remain visible in their timing artifacts.
 
 ---
 

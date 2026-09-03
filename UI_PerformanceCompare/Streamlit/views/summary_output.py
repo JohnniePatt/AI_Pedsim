@@ -13,6 +13,7 @@ import streamlit as st
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULT_ROOT = PROJECT_ROOT / "AI_Estimate" / "AI_result"
+JUPEDSIM_RUNTIME = PROJECT_ROOT / "Dataset_TimeCalculate" / "JuPedSim_Runtime.csv"
 
 TARGETS = {
     "Fastest": "min_agent_time_s",
@@ -221,105 +222,95 @@ def _load_computational_efficiency(path: str) -> dict | None:
     return payload if any(value is not None for value in payload.values()) else None
 
 
-def _format_seconds(value) -> str:
-    try:
-        return f"{float(value):.6f}"
-    except (TypeError, ValueError):
-        return "Not measured"
-
-
-def _format_process_per_scenario(duration, scenarios) -> str:
-    try:
-        duration = float(duration)
-        scenarios = int(scenarios)
-    except (TypeError, ValueError):
-        return "Not measured"
-    return f"{duration * 1000.0 / scenarios:.3f}" if scenarios > 0 else "Not measured"
-
-
-def _training_work(payload: dict | None) -> str:
-    if not payload:
-        return "Not measured"
-    if payload.get("epochs_completed") is not None:
-        return f"{int(payload['epochs_completed'])} epochs"
-    if payload.get("targets_trained") is not None:
-        return f"{int(payload['targets_trained'])} targets"
-    return "Recorded"
-
-
 def _render_computational_efficiency(runs: list[EstimateRun]):
-    rows = []
-    full_stage_timings = 0
-    simulation_timings = 0
+    if not JUPEDSIM_RUNTIME.exists():
+        st.warning("JuPedSim runtime artifact is missing.")
+        return
+    try:
+        simulation_frame = pd.read_csv(JUPEDSIM_RUNTIME)
+    except (OSError, pd.errors.ParserError) as error:
+        st.warning(f"Cannot read JuPedSim runtime: {error}")
+        return
+    required = {"split", "status", "reference_id", "simulation_wall_time_s"}
+    if not required.issubset(simulation_frame.columns):
+        st.warning("JuPedSim runtime schema is incomplete.")
+        return
+    test_simulation = simulation_frame[
+        (simulation_frame["split"] == "test") & (simulation_frame["status"] == "success")
+    ].copy()
+    if "recorded_at_utc" in test_simulation.columns:
+        test_simulation = test_simulation.sort_values("recorded_at_utc")
+    test_simulation = test_simulation.drop_duplicates("reference_id", keep="last")
+    simulation_values = pd.to_numeric(
+        test_simulation["simulation_wall_time_s"], errors="coerce"
+    ).dropna()
+    if len(simulation_values) != 862 or test_simulation["reference_id"].nunique() != 862:
+        st.warning("JuPedSim runtime does not contain exactly 862 successful canonical test cases.")
+        return
+
+    simulation_average = float(simulation_values.mean())
+    simulation_cpu = str(test_simulation.iloc[-1].get("cpu", "CPU"))
+    rows = [{
+        "name": "JuPedSim (simulation only)",
+        "hardware": f"CPU ({simulation_cpu}; model not recorded)",
+        "samples": 862,
+        "total_s": float(simulation_values.sum()),
+        "average_s": simulation_average,
+        "speedup": 1.0,
+    }]
+    missing = []
     for run in runs:
         payload = _load_computational_efficiency(str(run.path))
-        if payload is None:
-            rows.append(
-                {
-                    "Model": run.model,
-                    "Run": run.run_name,
-                    "Device": "Not measured",
-                    "Train rows": "Not measured",
-                    "Training work": "Not measured",
-                    "Train process (s)": "Not measured",
-                    "Test scenarios": "Not measured",
-                    "Test process (s)": "Not measured",
-                    "Test process/scenario (ms)": "Not measured",
-                    "Simulation wall time (s)": "Not measured",
-                    "Speed-up": "Not evaluated",
-                    "Status": "Not evaluated",
-                }
-            )
+        test = (payload or {}).get("test") or {}
+        try:
+            samples = int(test["test_rows"])
+            total_s = float(test["duration_seconds"])
+        except (KeyError, TypeError, ValueError):
+            missing.append(run.model)
             continue
+        if samples != 862:
+            missing.append(f"{run.model} ({samples} cases)")
+            continue
+        average_s = total_s / samples
+        device = str(test.get("device", "not recorded")).lower()
+        if "cuda" in device or "gpu" in device:
+            hardware = "GPU (CUDA; model not recorded)"
+        elif "cpu" in device:
+            hardware = "CPU (model not recorded)"
+        else:
+            hardware = f"Unknown ({device})"
+        rows.append({
+            "name": run.model,
+            "hardware": hardware,
+            "samples": samples,
+            "total_s": total_s,
+            "average_s": average_s,
+            "speedup": simulation_average / average_s,
+        })
 
-        train = payload.get("train") or {}
-        test = payload.get("test") or {}
-        legacy = payload.get("legacy") or {}
-        if train and test:
-            full_stage_timings += 1
-        simulation_wall_time = legacy.get("simulation_wall_time_total_s")
-        if simulation_wall_time is not None:
-            simulation_timings += 1
-        status = "Full Train/Test timing" if train and test else "Partial timing"
-        rows.append(
-            {
-                "Model": run.model,
-                "Run": run.run_name,
-                "Device": train.get("device", test.get("device", "Not measured")),
-                "Train rows": train.get("train_rows", "Not measured"),
-                "Training work": _training_work(train),
-                "Train process (s)": _format_seconds(train.get("duration_seconds")),
-                "Test scenarios": test.get("test_rows", legacy.get("scenario_count", "Not measured")),
-                "Test process (s)": _format_seconds(test.get("duration_seconds")),
-                "Test process/scenario (ms)": _format_process_per_scenario(
-                    test.get("duration_seconds"), test.get("test_rows")
-                ),
-                "Simulation wall time (s)": _format_seconds(simulation_wall_time),
-                "Speed-up": legacy.get("speedup_vs_simulation", "Not evaluated"),
-                "Status": status,
-            }
+    lines = [
+        "| Method / Model | Hardware | Samples | Total Runtime (s) | Avg Total Runtime / Sample (s) | Speedup |",
+        "| :--- | :--- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        speedup = "1.0×" if row["speedup"] == 1.0 else f"**{row['speedup']:,.1f}×**"
+        lines.append(
+            f"| **{row['name']}** | {row['hardware']} | {row['samples']:,} | {row['total_s']:,.6f} | "
+            f"{row['average_s']:.9f} | {speedup} |"
         )
-
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    if full_stage_timings == 0:
-        st.info(
-            "Full Train/Test runtime artifacts are not available for the selected runs."
-        )
-    elif full_stage_timings < len(runs):
-        st.warning(
-            f"Full Train/Test timing is available for {full_stage_timings}/{len(runs)} selected runs."
-        )
-    if simulation_timings == 0:
-        st.info(
-            "AI Train/Test process timings are measured, but JuPedSim computational wall time has not been measured. "
-            "The simulation_duration_s field is simulated pedestrian time, not compute runtime, so Simulation and "
-            "Speed-up remain Not measured / Not evaluated."
-        )
+    st.markdown("\n".join(lines))
     st.caption(
-        "AI process timing includes config/dataset/checkpoint loading, full-stage execution, metrics, and artifact "
-        "writes after entering the Train/Test function. Device and timing scope come from each run artifact. "
-        "A valid Simulation-vs-AI speed-up additionally requires JuPedSim wall-clock measurements under a locked protocol."
+        "Artifact-backed comparison. JuPedSim uses simulation_wall_time_s only, excluding trajectory "
+        "plotting and density-heatmap generation. AI time comes from each selected MLP/GNN/XGBoost "
+        "test_runtime.json and includes configuration, dataset/checkpoint loading, inference, metrics, "
+        "and prediction writes because inference-only timing was not recorded for these runs."
     )
+    st.caption(
+        "Hardware type comes from each runtime artifact. Exact GPU/CPU product names were not "
+        "recorded for these AI_Estimate/JuPedSim runs, so the table does not infer them."
+    )
+    if missing:
+        st.warning("Missing or non-canonical runtime: " + ", ".join(missing))
 
 
 def _render_target_order_status(frame: pd.DataFrame, runs: list[EstimateRun]):

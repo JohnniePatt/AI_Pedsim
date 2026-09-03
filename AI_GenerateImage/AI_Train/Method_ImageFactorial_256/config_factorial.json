@@ -1,0 +1,52 @@
+{
+  "experiment_id": "image_2x2_factorial_256_v1_seed42",
+  "dataset_id": "housegan_canonical_imagebase_split_v1",
+  "dataset_root": "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN",
+  "image_size": 256,
+  "epochs": 50,
+  "batch_size": 8,
+  "learning_rate": 0.0002,
+  "beta1": 0.5,
+  "beta2": 0.999,
+  "lambda_l1": 100.0,
+  "lambda_gp": 10.0,
+  "seeds": [42],
+  "num_workers_train": 4,
+  "num_workers_eval": 2,
+  "protocol_id": "image_density_factorial_256_v1",
+  "timing_protocol_id": "image_test_runtime_v2",
+  "cells": [
+    {
+      "cell_id": "unet_l1",
+      "method": "Plain U-Net",
+      "method_dir": "Method_PlainUnet",
+      "run_stem": "PlainUNet",
+      "architecture": "unet",
+      "objective": "l1"
+    },
+    {
+      "cell_id": "unet_wgangp",
+      "method": "Pix2Pix WGAN-GP",
+      "method_dir": "Method_pix2pix_WGAN-GP",
+      "run_stem": "Pix2Pix_WGAN-GP",
+      "architecture": "unet",
+      "objective": "wgangp_l1"
+    },
+    {
+      "cell_id": "resnet_l1",
+      "method": "ResNet-9",
+      "method_dir": "Method_ResNet",
+      "run_stem": "ResNet9",
+      "architecture": "resnet9",
+      "objective": "l1"
+    },
+    {
+      "cell_id": "resnet_wgangp",
+      "method": "Pix2PixHD factorial variant",
+      "method_dir": "Method_pix2pixHD",
+      "run_stem": "Pix2PixHD",
+      "architecture": "resnet9",
+      "objective": "wgangp_l1"
+    }
+  ]
+}

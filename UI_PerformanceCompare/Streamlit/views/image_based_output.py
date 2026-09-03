@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 import numpy as np
 
 import altair as alt
@@ -16,7 +18,7 @@ from utils.metrics_loader import (
     load_summary,
     metric_summary_from_per_image,
 )
-from utils.result_scanner import RunInfo, discover_runs, get_run_by_label
+from utils.result_scanner import PROJECT_ROOT, RunInfo, discover_runs, get_run_by_label
 
 
 LOWER_IS_BETTER = {"MAE", "MSE", "RMSE", "LPIPS"}
@@ -32,6 +34,168 @@ RUN_COLOR_RANGE = [
     "#ca8a04",
     "#4b5563",
 ]
+MODEL_PERFORMANCE_LOCK = PROJECT_ROOT / "AI_GenerateImage" / "model_performance_compare_lock.json"
+JUPEDSIM_RUNTIME = PROJECT_ROOT / "Dataset_TimeCalculate" / "JuPedSim_Runtime.csv"
+FACTORIAL_SUFFIX = "__model_evaluate_256_factorial"
+METHOD_DISPLAY_NAMES = {
+    "Method_pix2pix": "Pix2Pix",
+    "Method_pix2pix_WGAN-GP": "Pix2Pix WGAN-GP",
+    "Method_ResNet": "ResNet-9",
+    "Method_pix2pixHD": "Pix2PixHD",
+    "Method_PlainUnet": "Plain U-Net",
+    "Method_pix2pixhd_No_D": "Pix2PixHD (No D)",
+}
+
+
+def _run_display_name(run: RunInfo) -> str:
+    entry = _locked_entry_for_run(run)
+    if entry and entry.get("display_name"):
+        return str(entry["display_name"])
+    if run.run_name.endswith(FACTORIAL_SUFFIX) and run.method == "Method_pix2pixHD":
+        return "Pix2PixHD factorial variant"
+    return METHOD_DISPLAY_NAMES.get(run.method, run.method)
+
+
+def _load_model_performance_lock() -> dict:
+    # This file is deliberately read on every rerun. Caching it leaves an already-open
+    # Streamlit session pinned to a superseded model set after the lock is updated.
+    if not MODEL_PERFORMANCE_LOCK.exists():
+        return {}
+    try:
+        payload = json.loads(MODEL_PERFORMANCE_LOCK.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if payload.get("status") == "active" else {}
+
+
+def _locked_entry_for_run(run: RunInfo) -> dict:
+    run_path = run.path.resolve()
+    for entry in _load_model_performance_lock().get("runs", []):
+        candidate = (PROJECT_ROOT / entry.get("run_dir", "")).resolve()
+        if candidate == run_path:
+            return entry
+    return {}
+
+
+def _metrics_path_for_run(run: RunInfo):
+    entry = _locked_entry_for_run(run)
+    metrics_dir = entry.get("metrics_dir")
+    return (PROJECT_ROOT / metrics_dir).resolve() if metrics_dir else run.path
+
+
+def _load_ai_runtime(run: RunInfo) -> dict:
+    runtime_path = run.path / "test_runtime.csv"
+    if not runtime_path.exists():
+        return {}
+    try:
+        frame = pd.read_csv(runtime_path)
+    except Exception:
+        return {}
+    if frame.empty:
+        return {}
+    row = frame.iloc[-1]
+    required = ["sample_count", "test_pipeline_wall_time_s"]
+    if any(column not in frame.columns for column in required):
+        return {}
+    try:
+        sample_count = int(row["sample_count"])
+        total_s = float(row["test_pipeline_wall_time_s"])
+        return {
+            "sample_count": sample_count,
+            "total_s": total_s,
+            "average_s": total_s / sample_count,
+            "device": str(row.get("device_name", row.get("device_type", "Unknown GPU"))),
+            "measured_at_utc": str(row.get("measured_at_utc", "")),
+        }
+    except (TypeError, ValueError):
+        return {}
+
+
+@st.cache_data
+def _load_jupedsim_runtime() -> dict:
+    if not JUPEDSIM_RUNTIME.exists():
+        return {}
+    try:
+        frame = pd.read_csv(JUPEDSIM_RUNTIME)
+    except Exception:
+        return {}
+    required = {"split", "status", "reference_id", "total_wall_time_s"}
+    if not required.issubset(frame.columns):
+        return {}
+    test = frame[(frame["split"] == "test") & (frame["status"] == "success")].copy()
+    if "recorded_at_utc" in test.columns:
+        test = test.sort_values("recorded_at_utc")
+    test = test.drop_duplicates("reference_id", keep="last")
+    values = pd.to_numeric(test["total_wall_time_s"], errors="coerce").dropna()
+    if len(values) != 862 or test["reference_id"].nunique() != 862:
+        return {}
+    return {
+        "sample_count": 862,
+        "total_s": float(values.sum()),
+        "average_s": float(values.mean()),
+        "device": str(test.iloc[-1].get("cpu", "CPU")),
+        "jupedsim_version": str(test.iloc[-1].get("jupedsim_version", "")),
+    }
+
+
+def _show_computational_efficiency(selected_runs: list[RunInfo]) -> None:
+    st.markdown("### Computational Efficiency Comparison (Simulation vs AI)")
+    jupedsim = _load_jupedsim_runtime()
+    if not jupedsim:
+        st.warning("Canonical JuPedSim runtime is missing or does not contain exactly 862 successful test cases.")
+        return
+
+    rows = [{
+        "name": "JuPedSim (simulation + outputs)",
+        **jupedsim,
+        "speedup": 1.0,
+    }]
+    missing = []
+    for run in selected_runs:
+        runtime = _load_ai_runtime(run)
+        if not runtime or runtime["sample_count"] != 862:
+            missing.append(_run_display_name(run))
+            continue
+        rows.append({
+            "name": _run_display_name(run),
+            **runtime,
+            "speedup": jupedsim["average_s"] / runtime["average_s"],
+        })
+
+    md_lines = [
+        "| Method / Model | Samples | Total Runtime (s) | Avg Total Runtime / Sample (s) | Speedup |",
+        "| :--- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        speedup = "1.0×" if row["speedup"] == 1.0 else f"**{row['speedup']:,.1f}×**"
+        md_lines.append(
+            f"| **{row['name']}** | {row['sample_count']:,} | {row['total_s']:,.6f} | "
+            f"{row['average_s']:.9f} | {speedup} |"
+        )
+    st.markdown("\n".join(md_lines))
+    st.caption(
+        "Artifact-backed total-runtime comparison: JuPedSim uses total_wall_time_s, including "
+        "setup, simulation, SQLite output, trajectory plotting, and density-heatmap generation. "
+        "AI models use test_pipeline_wall_time_s, including inference, metrics, post-processing, "
+        "and image output within the timing scope recorded by each run."
+    )
+    ai_devices = sorted({row["device"] for row in rows[1:]})
+    if ai_devices:
+        st.caption("AI device recorded in test_runtime.csv: " + ", ".join(ai_devices))
+    if missing:
+        st.warning("Runtime artifact missing or not canonical (862 cases): " + ", ".join(missing))
+
+
+def _locked_run_labels(runs: list[RunInfo]) -> list[str]:
+    lock = _load_model_performance_lock()
+    labels_by_path = {run.path.resolve(): run.label for run in runs}
+    labels = []
+    for entry in lock.get("runs", []):
+        run_path = (PROJECT_ROOT / entry.get("run_dir", "")).resolve()
+        label = labels_by_path.get(run_path)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
 
 
 def _format_metric(value: float, metric: str) -> str:
@@ -45,6 +209,9 @@ def _format_metric(value: float, metric: str) -> str:
 def _default_runs(runs: list[RunInfo]) -> list[str]:
     if not runs:
         return []
+    locked_defaults = _locked_run_labels(runs)
+    if locked_defaults:
+        return locked_defaults
     preferred_order = [
         "Method_pix2pixHD",
         "Method_ResNet",
@@ -53,7 +220,17 @@ def _default_runs(runs: list[RunInfo]) -> list[str]:
     ]
     defaults = []
     for method in preferred_order:
-        match = next((r.label for r in runs if r.method == method or r.label.startswith(f"{method} / ")), None)
+        method_runs = [r for r in runs if r.method == method]
+        factorial_locked = next(
+            (r for r in method_runs if r.run_name.endswith("__model_evaluate_256_factorial")),
+            None,
+        )
+        legacy_locked = next(
+            (r for r in method_runs if r.run_name.endswith("_model_evaluate_256")),
+            None,
+        )
+        match = (factorial_locked or legacy_locked or (method_runs[0] if method_runs else None))
+        match = match.label if match else None
         if match and match not in defaults:
             defaults.append(match)
     if defaults:
@@ -62,10 +239,11 @@ def _default_runs(runs: list[RunInfo]) -> list[str]:
 
 
 def _summary_cards(run: RunInfo, per_image: pd.DataFrame):
-    st.markdown(f"**{run.label}**")
+    st.markdown(f"**{_run_display_name(run)}**")
+    st.caption(run.run_name)
     summary = metric_summary_from_per_image(per_image)
     if summary.empty:
-        summary_file = load_summary(run.path)
+        summary_file = load_summary(_metrics_path_for_run(run))
         if summary_file.empty:
             st.info("No metric summary found.")
             return
@@ -445,7 +623,7 @@ def _show_occupancy_level_analysis(
         level_summary = []
         for run in selected_runs:
             run_data = level_df[level_df["run"] == run.label]
-            row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+            row = {"Model": _run_display_name(run)}
             for m in metric_options:
                 if not run_data.empty and m in run_data.columns:
                     row[m] = float(run_data[m].mean())
@@ -629,7 +807,7 @@ def _show_error_vs_route_length_analysis(
     corr_rows = []
     for run in selected_runs:
         run_df = df_copy[df_copy["run"] == run.label]
-        row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+        row = {"Model": _run_display_name(run)}
         for m in error_metrics:
             col_name = f"{m}_r"
             if not run_df.empty:
@@ -712,7 +890,7 @@ def _show_error_vs_route_length_analysis(
 def _combined_per_image(selected_runs: list[RunInfo]) -> pd.DataFrame:
     frames = []
     for run in selected_runs:
-        per_image = load_per_image(run.path)
+        per_image = load_per_image(_metrics_path_for_run(run))
         if not per_image.empty:
             frames.append(attach_run_label(per_image, run.label))
     if not frames:
@@ -724,7 +902,7 @@ def _combined_per_image_walkable(selected_runs: list[RunInfo]) -> pd.DataFrame:
     from utils.metrics_loader import load_walkable_per_image
     frames = []
     for run in selected_runs:
-        per_image = load_walkable_per_image(run.path)
+        per_image = load_walkable_per_image(_metrics_path_for_run(run))
         if not per_image.empty:
             frames.append(attach_run_label(per_image, run.label))
     if not frames:
@@ -969,6 +1147,10 @@ def _show_image_compare(selected_runs: list[RunInfo], file_name: str, show_layou
 
     for idx, (label, pred_path, method, run_name) in enumerate(predictions, start=2):
         short_name = METHOD_SHORT_NAMES.get(method, method)
+        for entry in _load_model_performance_lock().get("runs", []):
+            if Path(entry.get("run_dir", "")).name == run_name:
+                short_name = entry.get("display_name", short_name)
+                break
         cols[idx].markdown(f"**{short_name}**")
         if pred_path:
             pred_img = _apply_jet_colormap(pred_path)
@@ -1013,7 +1195,7 @@ def _show_walkable_summary_table(combined: pd.DataFrame, selected_runs: list[Run
         if not csv_sum.exists():
             csv_sum = run_path / "logs" / "test_evaluation_walkable_summary.csv"
 
-        row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+        row = {"Model": _run_display_name(run)}
         if csv_sum.exists():
             try:
                 df_s = pd.read_csv(csv_sum)
@@ -1089,9 +1271,10 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     # Compute mean for each run (preferring test_evaluation_summary.csv if available)
     table_rows = []
     for run in selected_runs:
-        summary_csv = run.path / "test_evaluation_summary.csv"
+        metrics_path = _metrics_path_for_run(run)
+        summary_csv = metrics_path / "test_evaluation_summary.csv"
         if not summary_csv.exists():
-            summary_csv = run.path / "logs" / "test_evaluation_summary.csv"
+            summary_csv = metrics_path / "logs" / "test_evaluation_summary.csv"
             
         summary_dict = {}
         if summary_csv.exists():
@@ -1109,7 +1292,7 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
                 pass
 
         run_data = combined[combined["run"] == run.label]
-        row = {"Model": METHOD_DISPLAY_NAMES.get(run.method, run.method)}
+        row = {"Model": _run_display_name(run)}
         for m in available_metrics:
             m_upper = m.upper()
             if m_upper in summary_dict:
@@ -1179,22 +1362,7 @@ def _show_summary_table(combined: pd.DataFrame, selected_runs: list[RunInfo]):
     _show_walkable_summary_table(combined, selected_runs)
     st.markdown("")
 
-    st.markdown("### Computational Efficiency Comparison (Simulation vs AI)")
-    st.markdown(
-        "Performance comparison between traditional physics-based simulation (JuPedSim) "
-        "and various generative AI models on the test set of 862 samples (measured on NVIDIA GPU for AI models, and CPU for JuPedSim)."
-    )
-    
-    time_md_lines = [
-        "| Method / Model | Avg Time per Sample (s) | Total Time (s) | Speedup Factor |",
-        "| :--- | :---: | :---: | :---: |",
-        "| **JuPedSim (Traditional Sim)** | 29.57000 | 25,489.32 | 1.0x |",
-        "| **pix2pixHD** | 0.06100 | 52.58 | **484x** |",
-        "| **ResNet-9** | 0.06100 | 52.58 | **484x** |",
-        "| **Pix2Pix (WGAN-GP)** | 0.01486 | 12.81 | **1,990x** |",
-        "| **Plain U-Net** | 0.01486 | 12.81 | **1,990x** |"
-    ]
-    st.markdown("\n".join(time_md_lines))
+    _show_computational_efficiency(selected_runs)
     st.markdown("")
 
 
@@ -1446,11 +1614,22 @@ def render_image_based_output():
         st.error("No evaluated runs found under AI_GenerateImage/AI_Result.")
         return
 
+    performance_lock = _load_model_performance_lock()
+    if performance_lock:
+        st.info(
+            "Default comparison is locked to the corrected representative 2×2 set: "
+            "the corrected shared-generator U-Net pair plus the original ResNet-9/Pix2PixHD pair. "
+            "All metrics shown use the same 256×256 post-hoc protocol over the canonical "
+            "862-case test set. This is a descriptive method-family comparison, not a strict "
+            "component-isolated factorial; legacy seeds are not recorded."
+        )
+
     labels = [r.label for r in runs]
     selected_labels = st.multiselect(
         "Select model runs to compare",
         labels,
         default=_default_runs(runs),
+        key=f"image_compare_runs_{performance_lock.get('lock_id', 'unlocked')}",
         help="Pick one or more evaluated runs that contain test metrics and image outputs.",
     )
 
@@ -1514,7 +1693,7 @@ def render_image_based_output():
             col = color_cols[idx % len(color_cols)]
             with col:
                 method_name = run.method
-                method_display = METHOD_DISPLAY_NAMES.get(method_name, method_name)
+                method_display = _run_display_name(run)
                 default_color = DEFAULT_COLORS.get(method_name, "#4b5563")
                 state_key = f"color_{run.label}"
                 if state_key not in st.session_state:
@@ -1532,7 +1711,7 @@ def render_image_based_output():
     summary_cols = st.columns(len(selected_runs))
     for col, run in zip(summary_cols, selected_runs):
         with col:
-            _summary_cards(run, load_per_image(run.path))
+            _summary_cards(run, load_per_image(_metrics_path_for_run(run)))
 
     st.markdown("### Per-image Metrics")
     table_cols = ["run", "file_name"] + [m for m in METRIC_ORDER if m in combined.columns]

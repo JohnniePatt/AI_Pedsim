@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-def compute_walkable_for_runs():
+def compute_walkable_for_runs(run_paths=None):
     script_dir = pathlib.Path(__file__).parent.resolve()
     project_root = script_dir.parent
     sys.path.append(str(project_root / "UI_PerformanceCompare" / "Streamlit"))
@@ -16,19 +16,26 @@ def compute_walkable_for_runs():
 
     result_root = project_root / "AI_GenerateImage" / "AI_Result"
 
-    # Discover active runs for each method
-    active_runs = [
-        result_root / "Method_ResNet" / "outputs" / "run_ResNet_20260808_025204",
-        result_root / "Method_pix2pixHD" / "outputs" / "run_HD_20260517_133538_BestForBW",
-        result_root / "Method_PlainUnet" / "outputs" / "run_PlainUNet_20260708_211818",
-        result_root / "Method_pix2pixhd_No_D" / "outputs" / "run_HD_NoD_20260709_180550",
-        result_root / "Method_CVAE" / "outputs" / "run_CVAE_20260627_193237_config2",
-        result_root / "Method_pix2pix" / "outputs" / "run_pix2pix_20260808_015920",
-    ]
-    for method_dir in result_root.glob("Method_*"):
-        latest_runs = sorted(list((method_dir / "outputs").glob("run_*")))
-        if latest_runs:
-            active_runs.append(latest_runs[-1])
+    if run_paths is not None:
+        active_runs = [pathlib.Path(path).resolve() for path in run_paths]
+    else:
+        # Discover active runs for each method (legacy behavior).
+        active_runs = [
+            result_root / "Method_ResNet" / "outputs" / "run_ResNet_20260808_025204_model_evaluate_256",
+            result_root / "Method_pix2pixHD" / "outputs" / "run_HD_20260517_133538_BestForBW_model_evaluate_256",
+            result_root / "Method_PlainUnet" / "outputs" / "run_PlainUNet_20260708_211818_model_evaluate_256",
+            result_root / "Method_pix2pix_WGAN-GP" / "outputs" / "run_20260902T174646Z_seed042_model_evaluate_256",
+            result_root / "Method_pix2pixhd_No_D" / "outputs" / "run_HD_NoD_20260709_180550",
+            result_root / "Method_CVAE" / "outputs" / "run_CVAE_20260627_193237_config2",
+            result_root / "Method_pix2pix" / "outputs" / "run_pix2pix_20260808_015920",
+        ]
+        for method_dir in result_root.glob("Method_*"):
+            latest_runs = sorted(
+                (method_dir / "outputs").glob("run_*"),
+                key=lambda path: path.stat().st_mtime,
+            )
+            if latest_runs:
+                active_runs.append(latest_runs[-1])
 
     seen = set()
     runs = []

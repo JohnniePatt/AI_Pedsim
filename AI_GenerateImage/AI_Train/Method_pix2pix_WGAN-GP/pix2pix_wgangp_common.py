@@ -42,10 +42,15 @@ def convert_bw_to_colorjet(bw_tensor_or_array: torch.Tensor | np.ndarray) -> np.
     rgb = (np.stack([r, g, b], axis=-1) * 255.0).clip(0, 255).astype(np.uint8)
     return rgb
 
-def make_run_dirs(script_dir: pathlib.Path, method_name: str = "Method_pix2pix_WGAN-GP") -> dict[str, pathlib.Path]:
+def make_run_dirs(
+    script_dir: pathlib.Path,
+    method_name: str = "Method_pix2pix_WGAN-GP",
+    run_name: str | None = None,
+) -> dict[str, pathlib.Path]:
     project_root = resolve_project_root(script_dir)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"run_pix2pix_wgangp_{timestamp}"
+    if run_name is None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_name = f"run_pix2pix_wgangp_{timestamp}"
     runs_root = project_root / "AI_GenerateImage" / "AI_Result" / method_name / "outputs"
     current_run_dir = runs_root / run_name
     paths = {

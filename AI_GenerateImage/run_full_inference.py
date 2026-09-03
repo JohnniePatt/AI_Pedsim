@@ -8,12 +8,12 @@ commands = [
     # {
     #     "name": "pix2pixHD",
     #     "dir": "Method_pix2pixHD",
-    #     "cmd": ["/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3", "test_pix2pixHD_densitymap_bw.py", "--run_path", "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_pix2pixHD/outputs/run_HD_20260517_133538_BestForBW", "--config", "config_test_03_bw.json"]
+    #     "cmd": ["/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3", "test_pix2pixHD_densitymap_bw.py", "--run_path", "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_pix2pixHD/outputs/run_HD_20260517_133538_BestForBW_model_evaluate_256", "--config", "config_test_03_bw.json"]
     # },
     {
         "name": "Plain U-Net",
         "dir": "Method_PlainUnet",
-        "cmd": ["/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3", "test_PlainUnet_densitymap.py", "--run_path", "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260708_211818"]
+        "cmd": ["/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3", "test_PlainUnet_densitymap.py", "--run_path", "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260708_211818_model_evaluate_256"]
     },
     # {
     #     "name": "pix2pixHD (No D)",

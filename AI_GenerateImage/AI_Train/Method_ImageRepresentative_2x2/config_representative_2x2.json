@@ -1,0 +1,54 @@
+{
+  "comparison_id": "corrected_representative_2x2_256_v1",
+  "dataset_id": "housegan_canonical_imagebase_split_v1",
+  "dataset_root": "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN",
+  "split": "test",
+  "image_size": 256,
+  "prediction_source": "saved_uint8_png",
+  "resize_interpolation": "bilinear",
+  "walkable_mask": "sum_of_resized_input_rgb_channels_gt_zero",
+  "metric_protocol": "image_density_representative_common_png_256_v1",
+  "lpips_network": "alex",
+  "runs": [
+    {
+      "cell_id": "resnet_adversarial_representative",
+      "display_name": "Pix2PixHD (original full method)",
+      "method_id": "Method_pix2pixHD",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_pix2pixHD/outputs/run_HD_20260517_133538_BestForBW_model_evaluate_256",
+      "checkpoint": "checkpoints/generator_best.pth",
+      "checkpoint_sha256": "2e302f9b374ac0914b8f6856f59a7477fd7d90586f689c947e8872b16383e1d0",
+      "seed": null,
+      "provenance_status": "legacy_seed_not_recorded"
+    },
+    {
+      "cell_id": "resnet_reconstruction_representative",
+      "display_name": "ResNet-9 (original)",
+      "method_id": "Method_ResNet",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_ResNet/outputs/run_ResNet_20260808_025204_model_evaluate_256",
+      "checkpoint": "checkpoints/best_loss.pt",
+      "checkpoint_sha256": "ed319e045c555eb2b5c6650d1e14213e6a0a04238873f41d4b0d8b0a9e44988c",
+      "seed": null,
+      "provenance_status": "legacy_seed_not_recorded"
+    },
+    {
+      "cell_id": "unet_adversarial_corrected",
+      "display_name": "Pix2Pix WGAN-GP (corrected shared U-Net)",
+      "method_id": "Method_pix2pix_WGAN-GP",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_pix2pix_WGAN-GP/outputs/run_Pix2Pix_WGAN-GP_20260903T023509Z_seed042__model_evaluate_256_factorial",
+      "checkpoint": "checkpoints/best_model.pt",
+      "checkpoint_sha256": "47e93e00d14c3fa3d0ac360f086ff917e41ca5367a0ad3ec982ecc70b229c1c5",
+      "seed": 42,
+      "provenance_status": "complete"
+    },
+    {
+      "cell_id": "unet_reconstruction_corrected",
+      "display_name": "Plain U-Net (corrected shared U-Net)",
+      "method_id": "Method_PlainUnet",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260903T023509Z_seed042__model_evaluate_256_factorial",
+      "checkpoint": "checkpoints/best_model.pt",
+      "checkpoint_sha256": "c20a68c49a1e8531ba69b694d26e59729842f55c170734725f8f3ad9efceb48d",
+      "seed": 42,
+      "provenance_status": "complete"
+    }
+  ]
+}

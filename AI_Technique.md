@@ -1,6 +1,6 @@
 # AI Technique Notes
 
-วันที่อัปเดต: 2026-08-31
+วันที่อัปเดต: 2026-09-03
 
 ## JuPedSim wall-clock benchmark สำหรับ Data_Estimate_2
 
@@ -73,11 +73,24 @@ Full rerun บน `data_estimate_2_housegan_canonical_imagebase_split_v1`:
 | GNN | `run_20260831_192423` | CUDA | 2,603 / 300 | 121.946285 s | 862 / 117 | 2.941674 s |
 | XGBoost | `run_20260831T122725Z_seed042` | CPU | 2,603 / 3 targets | 3.140157 s | 862 / 117 | 1.376539 s |
 
-`UI_PerformanceCompare/Streamlit/views/summary_output.py` อ่าน `train_runtime.json`
-และ `test_runtime.json` ของ selected runs โดยตรงในหัวข้อ Computational Efficiency Comparison
-พร้อมแสดง device, train rows/work, Train/Test process time และ amortized Test process/scenario.
-ค่า Simulation wall time และ Speed-up แสดง `Not measured` / `Not evaluated` จนกว่าจะมี
-JuPedSim wall-clock artifact ที่ใช้ protocol เดียวกัน; ไม่ใช้ `simulation_duration_s` แทน compute time
+`UI_PerformanceCompare/Streamlit/views/summary_output.py` แสดงเฉพาะ MLP, GNN และ
+XGBoost ที่ผู้ใช้เลือก ไม่แสดง image models ตารางอ่าน `duration_seconds` และ
+`test_rows` จาก `<run>/test_eval/test_runtime.json` โดยตรง และเทียบกับ JuPedSim
+`simulation_wall_time_s` จาก canonical test 862 เคสใน
+`Dataset_TimeCalculate/JuPedSim_Runtime.csv` โดยไม่รวม trajectory image และ
+density heatmap:
+
+| Method | Hardware | Samples | Total Runtime (s) | Average/sample (s) | Speedup |
+|---|---|---:|---:|---:|---:|
+| JuPedSim simulation only | CPU (`x86_64`; model not recorded) | 862 | 6,049.220102 | 7.017656731 | 1.0x |
+| MLP | GPU (CUDA; model not recorded) | 862 | 3.687032 | 0.004277299 | 1,640.7x |
+| GNN | GPU (CUDA; model not recorded) | 862 | 2.941674 | 0.003412615 | 2,056.4x |
+| XGBoost | CPU (model not recorded) | 862 | 1.376539 | 0.001596913 | 4,394.5x |
+
+ห้ามใช้ `simulation_duration_s` แทน compute time และห้ามเรียกตัวเลข AI ชุดนี้ว่า
+inference-only หรือ `Time Generate` เพราะ runtime schema ปัจจุบันรวม config/dataset/
+checkpoint loading, inference, metrics และ prediction writes Hardware column อ่านจาก
+runtime artifact เท่านั้น โดย artifact รุ่นนี้ไม่ได้บันทึกชื่อ GPU/CPU product model เต็ม
 
 หมายเหตุ: เวลานี้เป็น end-to-end process timing ไม่ใช่ warmed-up forward-pass latency และ
 MLP/GNN ใช้ GPU ขณะที่ XGBoost config นี้ใช้ CPU จึงต้องรายงาน device ควบคู่ตัวเลขเสมอ
@@ -891,11 +904,17 @@ Test scripts ของ `Method_pix2pixHD`, `Method_ResNet`, `Method_pix2pix_WGAN
 และ `Method_PlainUnet` บันทึก runtime ลงใน `<run_dir>/test_runtime.csv`
 โดยใช้ checkpoint เดิมและไม่เรียกขั้นตอน training
 
-ตัวจับเวลาใช้ `time.perf_counter()` ครอบ test loop และเรียก
-`torch.cuda.synchronize()` ก่อนเริ่มและหลังจบเมื่อใช้ CUDA ขอบเขตเวลา
-`test_wall_time_s` รวม data loading ระหว่าง iteration, model inference,
-metric calculation, post-processing และการเขียนภาพ แต่ไม่รวมการโหลด checkpoint,
-การเขียน evaluation summary หลัง loop และ walkable-metric post-processing
+ตัวจับเวลาใช้ `time.perf_counter()` และเรียก `torch.cuda.synchronize()` รอบ forward
+เมื่อใช้ CUDA สำหรับ legacy test scripts ค่า `test_pipeline_wall_time_s` ครอบ test
+loop ซึ่งรวม data loading ระหว่าง iteration, model inference, metric calculation,
+post-processing และการเขียนภาพ แต่ไม่รวม checkpoint loading และ summary หลัง loop
+ส่วน factorial timing protocol `image_test_runtime_v2` ขยายขอบเขต
+`test_pipeline_wall_time_s` ตั้งแต่ checkpoint loading จนเขียน metric summary เสร็จ
+ดังนั้นห้ามเปรียบเทียบ pipeline time ข้ามสอง protocol โดยไม่ระบุ scope
+
+`metrics_wall_time_s` คือเวลาที่จับครอบการคำนวณ metric และ
+`runtime_excluding_metrics_s` คำนวณจาก pipeline time ลบ metric time ตามขอบเขตของ
+แต่ละ protocol
 
 คอลัมน์ในไฟล์ประกอบด้วย:
 
@@ -904,10 +923,157 @@ method_id
 split
 timing_scope
 sample_count
-test_wall_time_s
-mean_wall_time_per_sample_s
+Time Generate
+Average Time Generate Per Image
+test_pipeline_wall_time_s
+metrics_wall_time_s
+runtime_excluding_metrics_s
+mean_runtime_excluding_metrics_per_image_s
 device_type
 device_name
 checkpoint_path
 measured_at_utc
 ```
+
+`Time Generate` เป็นวินาทีรวมเฉพาะ model forward pass จาก input tensor ไปยัง
+output tensor ส่วน `Average Time Generate Per Image` คือ `Time Generate` หารด้วย
+`sample_count` ทั้งสองค่าไม่รวม data loading, metric calculation, post-processing,
+resize หรือการเขียนไฟล์ และใช้ CUDA synchronization ก่อนและหลัง forward pass
+เมื่อรันบน GPU
+
+Plain U-Net test ใช้ `image_size` จาก config ที่บันทึกใน checkpoint เป็นค่าเริ่มต้น
+เพื่อให้ resolution ของการประเมินตรงกับการฝึก โดย run
+`run_PlainUNet_20260708_211818_model_evaluate_256` ใช้ 256 x 256 ทั้งนี้ยังสามารถระบุ
+`--image_size` เพื่อ override สำหรับการทดสอบแบบไม่ใช่ protocol หลักได้
+
+## Pix2Pix WGAN-GP canonical 256 run
+
+ใช้ config `AI_GenerateImage/AI_Train/Method_pix2pix_WGAN-GP/config_train_256.json`
+สำหรับการเปรียบเทียบ image models ที่ resolution 256 x 256 โดยคง architecture
+และ objective เดิมของ Pix2Pix WGAN-GP ไว้ Config กำหนด 50 epochs, batch size 4,
+learning rate 0.0002, seed 42, L1 weight 100 และ gradient-penalty weight 10
+
+run ที่ฝึกและประเมินแล้วคือ:
+
+```text
+AI_GenerateImage/AI_Result/Method_pix2pix_WGAN-GP/outputs/run_20260902T174646Z_seed042_model_evaluate_256
+```
+
+ใช้ canonical dataset ID `housegan_canonical_imagebase_split_v1` โดยตรวจได้
+2,603 train scenarios/412 plans, 439 validation scenarios/60 plans และ
+862 test scenarios/117 plans ไม่มี plan overlap ระหว่าง split เลือก checkpoint
+ด้วย validation L1 และใช้ checkpoint resolution เป็นค่าเริ่มต้นของ test เพื่อไม่ให้
+config test เก่าที่ 512 เปลี่ยน protocol โดยไม่ตั้งใจ
+
+เวลาฝึก 50 epochs เท่ากับ 2,752.300 วินาที (45 นาที 52.300 วินาที)
+ส่วน runtime ของ test และ metric อยู่ใน `test_runtime.csv`,
+`test_evaluation_summary.csv` และ `test_evaluation_walkable_summary.csv`
+ภายใน run ดังกล่าว
+
+ผล PNG เป็น uint8 ขณะที่ metric หลักคำนวณจาก tensor float ก่อนบันทึก ใน test run นี้
+มี 14 จาก 862 prediction ที่ quantize เป็นภาพดำล้วน โดย target ของเคสเหล่านั้นมี
+ค่าสูงสุดเพียง 1--2/255 ดังนั้น walkable metric และ LPIPS ซึ่งอ่าน PNG กลับมา
+มี quantization เป็นข้อจำกัดร่วมของ image-output protocol ปัจจุบัน หากเปลี่ยนไปเก็บ
+float prediction เช่น `.npy` ต้องออก protocol version ใหม่และประเมินทั้งสี่วิธีใหม่
+
+## Locked image-model comparison runs at 256
+
+run ที่เลือกสำหรับการเปรียบเทียบ image models ถูกล็อกด้วย suffix
+`_model_evaluate_256` และบันทึก checkpoint hashes ไว้ใน
+`AI_GenerateImage/model_evaluate_256_lock.json` หน้า Image Based Output จะเลือก
+run ที่มี suffix นี้เป็นค่าเริ่มต้นก่อน run อื่นของ method เดียวกัน
+
+## Image-model 2x2 factorial pilot (seed 42)
+
+รัน factorial แบบควบคุมที่ 256 x 256 เสร็จเมื่อ 2026-09-03 โดยใช้ seed 42
+เพียง seed เดียวก่อน ตาม experiment ต่อไปนี้:
+
+```text
+AI_GenerateImage/AI_Result/FactorialExperiments/experiment_20260903T023509Z_image_2x2_factorial_256_v1
+```
+
+Factors คือ generator architecture (`U-Net`, `ResNet-9`) และ objective
+(`L1-only`, `WGAN-GP + 100 x L1`) ทั้งสี่ cell ใช้ canonical dataset,
+50 epochs, batch size 8, learning rate 0.0002 และ preprocessing/test protocol
+เดียวกัน คู่ U-Net มี generator และ initial-weight hash เดียวกัน ส่วนคู่ ResNet-9
+มี generator และ initial-weight hash เดียวกัน Architecture-specific width และ
+normalization ถูกเก็บเป็นส่วนหนึ่งของ architecture factor ตาม protocol นี้
+
+ทั้งสี่ run ผ่าน canonical test 862 scenarios/117 floor plans และถูกล็อกด้วย suffix
+`__model_evaluate_256_factorial` แล้ว ผลรวมอยู่ใน `factorial_results.csv` และ
+factorial contrasts อยู่ใน `factorial_effects_per_seed.csv` รอบนี้เป็นหลักฐานจาก
+หนึ่ง seed จึงยังไม่สามารถประมาณ between-seed variance หรือ 95% confidence interval
+และห้ามสรุปเป็นผล factorial หลาย seed จนกว่าจะรัน seed เพิ่ม
+
+runtime ล่าสุดใช้ timing protocol `image_test_runtime_v2` โดย
+`test_pipeline_wall_time_s` จับตั้งแต่โหลด checkpoint จนเขียน metric summary เสร็จ
+`metrics_wall_time_s` รวม pointwise/walkable metrics และ LPIPS ส่วน
+`runtime_excluding_metrics_s` คือเวลารวมลบเวลา metric และ `Time Generate`
+ครอบเฉพาะ CUDA-synchronized Generator forward เท่านั้น Runtime รอบแรกที่จับเฉพาะ
+prediction/output loop ถูกเก็บไว้ใน evaluation directory รุ่นเดิมเพื่อ audit
+
+ผล factorial seed 42 ชุดนี้ยังคงเก็บไว้เป็น artifact สำหรับวิเคราะห์แบบควบคุม แต่
+ไม่ได้เป็น default ของหน้า Model Performance Compare หลังเปลี่ยนมาใช้ corrected
+representative comparison ด้านล่าง
+
+## Corrected representative 2x2 image comparison
+
+หน้า `Image Based Output` ใช้ `AI_GenerateImage/model_performance_compare_lock.json`
+เป็น source of truth และล็อกชุดเปรียบเทียบดังนี้:
+
+- Plain U-Net และ Pix2Pix WGAN-GP ใช้ run ใหม่จาก factorial seed 42 ซึ่งมี U-Net
+  generator เดียวกัน
+- ResNet-9 และ Pix2PixHD ใช้ run เดิมที่เป็นตัวแทน full method ของงานวิจัยเดิม
+
+ไม่ได้เทรนโมเดลใดเพิ่ม การประเมินกลางอ่าน prediction PNG ที่มีอยู่แล้วของทั้งสี่ run
+และคำนวณใหม่ด้วย protocol เดียวกันที่ 256 x 256 บน canonical test 862 scenarios /
+117 floor plans ผลและ provenance อยู่ที่:
+
+```text
+AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1
+```
+
+เนื่องจาก legacy run ของ ResNet-9 และ Pix2PixHD ไม่มี seed ใน modern provenance
+manifest จึงตั้ง `research_valid: false` สำหรับ comparison นี้ แม้ checkpoint hash,
+prediction ครบ 862 เคส และ canonical split จะผ่านการตรวจทั้งหมด ผลชุดนี้ใช้เป็น
+descriptive method-family representative comparison เท่านั้น ไม่ควรเรียกว่า strict
+component-isolated factorial และไม่ควรใช้ประมาณ between-seed variance
+
+### Common metric results used by UI
+
+หน้า Model Performance Compare ต้องอ่าน metric จาก `metrics_dir` ใน
+`AI_GenerateImage/model_performance_compare_lock.json` ไม่อ่าน summary เก่าภายใน
+model run โดยตรง ผล common protocol ที่ตรวจแล้วคือ:
+
+| Model | MAE ↓ | MSE ↓ | RMSE ↓ | SSIM ↑ | PSNR ↑ | LPIPS ↓ |
+|---|---:|---:|---:|---:|---:|---:|
+| Pix2PixHD original | 0.001183742 | 0.000065567 | 0.005326096 | 0.966899452 | 50.319583 | 0.031825769 |
+| ResNet-9 original | 0.001508158 | 0.000112525 | 0.007073946 | 0.941230171 | 48.833877 | 0.039555877 |
+| Pix2Pix WGAN-GP corrected | 0.001390986 | 0.000097260 | 0.006793838 | 0.939124211 | 47.407402 | 0.040317798 |
+| Plain U-Net corrected | 0.001413836 | 0.000104061 | 0.006992483 | 0.936194998 | 47.169595 | 0.041960682 |
+
+หาก UI แสดงชื่อ `Pix2PixHD factorial variant`, ResNet-9 MAE ประมาณ `0.0009` หรือ
+LPIPS เป็นค่าว่าง แปลว่ายังใช้ strict-factorial selection เก่าจาก Streamlit widget
+state ไม่ใช่ corrected representative set ปัจจุบัน UI จึงอ่าน lock ใหม่ทุก rerun
+โดยไม่ cache และผูก multiselect key กับ `lock_id`; เมื่อเปลี่ยน lock ระบบจะสร้าง
+widget state ใหม่อัตโนมัติ
+
+### Verified computational efficiency for Image Based Output (total runtime)
+
+ตารางประสิทธิภาพใช้ข้อมูลจริงจาก `<run>/test_runtime.csv` และ
+`Dataset_TimeCalculate/JuPedSim_Runtime.csv` เท่านั้น โดยเทียบ AI
+`test_pipeline_wall_time_s` กับ JuPedSim `total_wall_time_s` บน test 862 เคส
+เพื่อรวม simulation และการสร้าง density heatmap/trajectory output:
+
+| Method | Total Runtime (s) | Average/sample (s) | Speedup vs JuPedSim |
+|---|---:|---:|---:|
+| JuPedSim simulation + outputs | 23,649.470879 | 27.435581066 | 1.0x |
+| Pix2PixHD original | 35.329996 | 0.040986074 | 669.4x |
+| ResNet-9 original | 25.056682 | 0.029068077 | 943.8x |
+| Pix2Pix WGAN-GP corrected | 15.750595 | 0.018272152 | 1,501.5x |
+| Plain U-Net corrected | 16.252050 | 0.018853886 | 1,455.2x |
+
+AI วัดบน `NVIDIA GeForce RTX 5070 Laptop GPU` ตาม `device_name` ใน runtime
+artifact ส่วน JuPedSim artifact ระบุเพียง `x86_64`, WSL2 และ JuPedSim 1.3.2
+ไม่ระบุ CPU model เต็ม ห้ามใช้ค่า hard-code รุ่นเก่า `29.57`, `0.06100` หรือ
+`0.01486` และห้ามอ้าง RTX 3080 สำหรับผลชุดนี้

@@ -1,0 +1,52 @@
+{
+  "lock_id": "image_model_performance_corrected_representative_2x2_256_v1",
+  "status": "active",
+  "selection_scope": "image_based_model_performance_compare",
+  "comparison_type": "corrected_representative_2x2",
+  "comparison_dir": "AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1",
+  "dataset_id": "housegan_canonical_imagebase_split_v1",
+  "protocol_id": "image_density_representative_common_png_256_v1",
+  "image_size": 256,
+  "test_case_count": 862,
+  "floorplan_count": 117,
+  "research_valid": false,
+  "research_validity_note": "The two retained legacy runs do not record seeds in modern provenance manifests; use as a descriptive method-family comparison, not a strict component-isolated factorial.",
+  "runs": [
+    {
+      "cell_id": "resnet_adversarial_representative",
+      "display_name": "Pix2PixHD (original full method)",
+      "method_id": "Method_pix2pixHD",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_pix2pixHD/outputs/run_HD_20260517_133538_BestForBW_model_evaluate_256",
+      "metrics_dir": "AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1/runs/resnet_adversarial_representative",
+      "checkpoint_sha256": "2e302f9b374ac0914b8f6856f59a7477fd7d90586f689c947e8872b16383e1d0",
+      "seed": null
+    },
+    {
+      "cell_id": "resnet_reconstruction_representative",
+      "display_name": "ResNet-9 (original)",
+      "method_id": "Method_ResNet",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_ResNet/outputs/run_ResNet_20260808_025204_model_evaluate_256",
+      "metrics_dir": "AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1/runs/resnet_reconstruction_representative",
+      "checkpoint_sha256": "ed319e045c555eb2b5c6650d1e14213e6a0a04238873f41d4b0d8b0a9e44988c",
+      "seed": null
+    },
+    {
+      "cell_id": "unet_adversarial_corrected",
+      "display_name": "Pix2Pix WGAN-GP (corrected shared U-Net)",
+      "method_id": "Method_pix2pix_WGAN-GP",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_pix2pix_WGAN-GP/outputs/run_Pix2Pix_WGAN-GP_20260903T023509Z_seed042__model_evaluate_256_factorial",
+      "metrics_dir": "AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1/runs/unet_adversarial_corrected",
+      "checkpoint_sha256": "47e93e00d14c3fa3d0ac360f086ff917e41ca5367a0ad3ec982ecc70b229c1c5",
+      "seed": 42
+    },
+    {
+      "cell_id": "unet_reconstruction_corrected",
+      "display_name": "Plain U-Net (corrected shared U-Net)",
+      "method_id": "Method_PlainUnet",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260903T023509Z_seed042__model_evaluate_256_factorial",
+      "metrics_dir": "AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1/runs/unet_reconstruction_corrected",
+      "checkpoint_sha256": "c20a68c49a1e8531ba69b694d26e59729842f55c170734725f8f3ad9efceb48d",
+      "seed": 42
+    }
+  ]
+}

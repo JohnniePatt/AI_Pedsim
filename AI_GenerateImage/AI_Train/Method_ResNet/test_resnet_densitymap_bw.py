@@ -83,6 +83,8 @@ def main():
         lpips_model = None
 
     rows = []
+    metrics_wall_time_s = 0.0
+    time_generate_s = 0.0
     print(f"\n--- Evaluating Method_ResNet Test Set ({len(test_dataset)} samples) ---")
 
     if device.type == "cuda":
@@ -91,12 +93,21 @@ def main():
     with torch.no_grad():
         for real_a, real_b, filenames in tqdm(test_loader, desc="Testing"):
             real_a, real_b = real_a.to(device), real_b.to(device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            generate_started = time.perf_counter()
             pred_b = model(real_a)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            time_generate_s += time.perf_counter() - generate_started
 
             fname = filenames[0]
             b_arr = real_b.cpu().numpy()[0, 0]
             pred_arr = pred_b.cpu().numpy()[0, 0]
 
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            metrics_started = time.perf_counter()
             metrics = tensor_density_metrics(b_arr, pred_arr)
             lpips_val = float("nan")
             if lpips_model is not None:
@@ -106,6 +117,9 @@ def main():
                     lpips_val = float(lpips_model(pred_t, true_t).mean().item())
                 except Exception:
                     pass
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            metrics_wall_time_s += time.perf_counter() - metrics_started
 
             row = {
                 "file_name": fname,
@@ -133,14 +147,21 @@ def main():
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     test_wall_time_s = time.perf_counter() - test_started
+    runtime_excluding_metrics_s = max(0.0, test_wall_time_s - metrics_wall_time_s)
 
     runtime_row = {
         "method_id": "Method_ResNet",
         "split": "test",
         "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
         "sample_count": len(rows),
-        "test_wall_time_s": f"{test_wall_time_s:.6f}",
-        "mean_wall_time_per_sample_s": f"{test_wall_time_s / len(rows):.9f}" if rows else "nan",
+        "Time Generate": f"{time_generate_s:.6f}",
+        "Average Time Generate Per Image": f"{time_generate_s / len(rows):.9f}" if rows else "nan",
+        "test_pipeline_wall_time_s": f"{test_wall_time_s:.6f}",
+        "metrics_wall_time_s": f"{metrics_wall_time_s:.6f}",
+        "runtime_excluding_metrics_s": f"{runtime_excluding_metrics_s:.6f}",
+        "mean_runtime_excluding_metrics_per_image_s": (
+            f"{runtime_excluding_metrics_s / len(rows):.9f}" if rows else "nan"
+        ),
         "device_type": device.type,
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
         "checkpoint_path": str(checkpoint_path.resolve()),
@@ -192,7 +213,9 @@ def main():
     print(f"📊 Average MAE (L1): {summary_dict.get('MAE', 0.0):.6f}")
     print(f"📊 Average MSE:      {summary_dict.get('MSE', 0.0):.6f}")
     print(f"📊 Average SSIM:     {summary_dict.get('SSIM', 0.0):.6f}")
-    print(f"⏱️ Test wall time:    {test_wall_time_s:.3f} s ({len(rows)} samples)")
+    print(f"⏱️ Full test pipeline: {test_wall_time_s:.3f} s ({len(rows)} samples)")
+    print(f"⏱️ Time Generate:      {time_generate_s:.3f} s")
+    print(f"⏱️ Excluding metrics:  {runtime_excluding_metrics_s:.3f} s")
     print(f"📁 BW Predictions saved to:       {test_result_bw}")
     if args.save_colorjet:
         print(f"🎨 COLORJET Predictions saved to: {test_result_colorjet}")

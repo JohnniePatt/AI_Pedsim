@@ -48,8 +48,8 @@ def run_inference():
         {
             "name": "Plain U-Net",
             "dir": "Method_PlainUnet",
-            "cmd": ["/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3", "test_PlainUnet_densitymap.py", "--run_path", "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260708_211818"],
-            "pred_dir": "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260708_211818/test_results/best_loss/predictions"
+            "cmd": ["/home/johnnie/programming/AI_Pedsim/AI_Pedsim-env/bin/python3", "test_PlainUnet_densitymap.py", "--run_path", "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260708_211818_model_evaluate_256"],
+            "pred_dir": "/home/johnnie/programming/AI_Pedsim/AI_Pedsim/AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260708_211818_model_evaluate_256/test_results/best_loss/predictions"
         },
         {
             "name": "CVAE",

@@ -60,7 +60,7 @@ def main():
     model.load_state_dict(state["model_state_dict"])
     model.eval()
 
-    image_size = args.image_size if args.image_size is not None else 512
+    image_size = args.image_size if args.image_size is not None else int(cfg.get("image_size", 256))
     print(f"[TEST] Using evaluation image size: {image_size}x{image_size}")
     test_loader = DataLoader(PlainUNetDataset(dataset_root, "test", image_size), batch_size=1, shuffle=False)
 
@@ -72,16 +72,27 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
 
     rows = []
+    metrics_wall_time_s = 0.0
+    time_generate_s = 0.0
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     test_started = time.perf_counter()
     with torch.no_grad():
         for i, (a, b, name) in enumerate(tqdm(test_loader, desc="Testing")):
             a = a.to(device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            generate_started = time.perf_counter()
             pred = torch.sigmoid(model(a))
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            time_generate_s += time.perf_counter() - generate_started
             pred_arr = pred.cpu().numpy()[0, 0]
             b_arr = b.numpy()[0, 0]
-            
+
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            metrics_started = time.perf_counter()
             metrics = tensor_density_metrics(b_arr, pred_arr)
             lpips_val = float("nan")
             if lpips_model is not None:
@@ -91,6 +102,9 @@ def main():
                     lpips_val = float(lpips_model(pred_t, true_t).mean().item())
                 except Exception as e:
                     print(f"[WARN] LPIPS calculation failed: {e}")
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            metrics_wall_time_s += time.perf_counter() - metrics_started
 
             rows.append({
                 "file_name": name[0],
@@ -124,14 +138,21 @@ def main():
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     test_wall_time_s = time.perf_counter() - test_started
+    runtime_excluding_metrics_s = max(0.0, test_wall_time_s - metrics_wall_time_s)
 
     runtime_row = {
         "method_id": "Method_PlainUnet",
         "split": "test",
         "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
         "sample_count": len(rows),
-        "test_wall_time_s": f"{test_wall_time_s:.6f}",
-        "mean_wall_time_per_sample_s": f"{test_wall_time_s / len(rows):.9f}" if rows else "nan",
+        "Time Generate": f"{time_generate_s:.6f}",
+        "Average Time Generate Per Image": f"{time_generate_s / len(rows):.9f}" if rows else "nan",
+        "test_pipeline_wall_time_s": f"{test_wall_time_s:.6f}",
+        "metrics_wall_time_s": f"{metrics_wall_time_s:.6f}",
+        "runtime_excluding_metrics_s": f"{runtime_excluding_metrics_s:.6f}",
+        "mean_runtime_excluding_metrics_per_image_s": (
+            f"{runtime_excluding_metrics_s / len(rows):.9f}" if rows else "nan"
+        ),
         "device_type": device.type,
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
         "checkpoint_path": str(checkpoint_path.resolve()),
@@ -167,7 +188,9 @@ def main():
             writer.writerow(["metric", "value"])
             for k, v in summary.items(): writer.writerow([k, "nan" if math.isnan(v) else f"{v:.6f}"])
 
-    print(f"[RUNTIME] Test wall time: {test_wall_time_s:.3f} s ({len(rows)} samples)")
+    print(f"[RUNTIME] Full test pipeline: {test_wall_time_s:.3f} s ({len(rows)} samples)")
+    print(f"[RUNTIME] Time Generate:      {time_generate_s:.3f} s")
+    print(f"[RUNTIME] Excluding metrics:  {runtime_excluding_metrics_s:.3f} s")
 
 if __name__ == "__main__":
     main()

@@ -404,6 +404,8 @@ def run_evaluation(run_path, config_file=None):
         "lpips": 0.0,
     }
     per_image_metrics = []
+    metrics_wall_time_s = 0.0
+    time_generate_s = 0.0
 
     lpips_model = None
     if LPIPS_AVAILABLE:
@@ -434,10 +436,19 @@ def run_evaluation(run_path, config_file=None):
     with torch.no_grad():
         for i, (ta, tb, orig_size, file_name_batch, source_b_path_batch) in enumerate(test_loader):
             ta, tb = ta.to(device), tb.to(device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            generate_started = time.perf_counter()
             tfb = generator(ta)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            time_generate_s += time.perf_counter() - generate_started
             tfb_bw = _to_bw_01(tfb)
             tb_bw = _to_bw_01(tb)
-            
+
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            metrics_started = time.perf_counter()
             test_metrics["mae"] += mae_criterion(tfb_bw, tb_bw).item()
             mse_val = mse_criterion(tfb_bw, tb_bw).item()
             test_metrics["mse"] += mse_val
@@ -476,6 +487,9 @@ def run_evaluation(run_path, config_file=None):
                 "psnr": float(psnr_val),
                 "lpips": float(lpips_val),
             })
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            metrics_wall_time_s += time.perf_counter() - metrics_started
             
             # Save all samples
             if True:
@@ -504,15 +518,22 @@ def run_evaluation(run_path, config_file=None):
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     test_wall_time_s = time.perf_counter() - test_started
+    runtime_excluding_metrics_s = max(0.0, test_wall_time_s - metrics_wall_time_s)
 
     runtime_row = {
         "method_id": "Method_pix2pixHD",
         "split": "test",
         "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
         "sample_count": len(per_image_metrics),
-        "test_wall_time_s": f"{test_wall_time_s:.6f}",
-        "mean_wall_time_per_sample_s": (
-            f"{test_wall_time_s / len(per_image_metrics):.9f}" if per_image_metrics else "nan"
+        "Time Generate": f"{time_generate_s:.6f}",
+        "Average Time Generate Per Image": (
+            f"{time_generate_s / len(per_image_metrics):.9f}" if per_image_metrics else "nan"
+        ),
+        "test_pipeline_wall_time_s": f"{test_wall_time_s:.6f}",
+        "metrics_wall_time_s": f"{metrics_wall_time_s:.6f}",
+        "runtime_excluding_metrics_s": f"{runtime_excluding_metrics_s:.6f}",
+        "mean_runtime_excluding_metrics_per_image_s": (
+            f"{runtime_excluding_metrics_s / len(per_image_metrics):.9f}" if per_image_metrics else "nan"
         ),
         "device_type": device.type,
         "device_name": device_name,
@@ -567,7 +588,9 @@ def run_evaluation(run_path, config_file=None):
     )
     print(f"? [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")
     print(f"✅ [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")
-    print(f"⏱️ [RUNTIME] Test wall time: {test_wall_time_s:.3f} s ({len(per_image_metrics)} samples)")
+    print(f"⏱️ [RUNTIME] Full test pipeline: {test_wall_time_s:.3f} s ({len(per_image_metrics)} samples)")
+    print(f"⏱️ [RUNTIME] Time Generate:      {time_generate_s:.3f} s")
+    print(f"⏱️ [RUNTIME] Excluding metrics:  {runtime_excluding_metrics_s:.3f} s")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

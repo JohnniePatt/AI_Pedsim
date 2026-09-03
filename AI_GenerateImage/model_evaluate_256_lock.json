@@ -1,0 +1,39 @@
+{
+  "lock_id": "image_model_evaluate_256_v1",
+  "status": "locked",
+  "resolution": 256,
+  "test_split": "test",
+  "test_case_count": 862,
+  "dataset_id": "housegan_canonical_imagebase_split_v1",
+  "comparison_scope": "selected completed image-model artifacts",
+  "runs": [
+    {
+      "method": "Plain U-Net",
+      "original_run_id": "run_PlainUNet_20260708_211818",
+      "locked_run_directory": "AI_GenerateImage/AI_Result/Method_PlainUnet/outputs/run_PlainUNet_20260708_211818_model_evaluate_256",
+      "checkpoint": "checkpoints/best_loss.pt",
+      "checkpoint_sha256": "c6bf229d3e3fff1ea28337f80c9afb4290c9a98e70426a6f4621676e51a5b05e"
+    },
+    {
+      "method": "ResNet-9",
+      "original_run_id": "run_ResNet_20260808_025204",
+      "locked_run_directory": "AI_GenerateImage/AI_Result/Method_ResNet/outputs/run_ResNet_20260808_025204_model_evaluate_256",
+      "checkpoint": "checkpoints/best_loss.pt",
+      "checkpoint_sha256": "ed319e045c555eb2b5c6650d1e14213e6a0a04238873f41d4b0d8b0a9e44988c"
+    },
+    {
+      "method": "Pix2PixHD",
+      "original_run_id": "run_HD_20260517_133538_BestForBW",
+      "locked_run_directory": "AI_GenerateImage/AI_Result/Method_pix2pixHD/outputs/run_HD_20260517_133538_BestForBW_model_evaluate_256",
+      "checkpoint": "checkpoints/generator_best.pth",
+      "checkpoint_sha256": "2e302f9b374ac0914b8f6856f59a7477fd7d90586f689c947e8872b16383e1d0"
+    },
+    {
+      "method": "Pix2Pix WGAN-GP",
+      "original_run_id": "run_20260902T174646Z_seed042",
+      "locked_run_directory": "AI_GenerateImage/AI_Result/Method_pix2pix_WGAN-GP/outputs/run_20260902T174646Z_seed042_model_evaluate_256",
+      "checkpoint": "checkpoints/best_loss.pt",
+      "checkpoint_sha256": "b49e417b2cf27edc2edbccfa926f01c7f8a9679caae5084d7312cc8379aa9183"
+    }
+  ]
+}
