@@ -592,7 +592,17 @@ def evaluate_one(run, cfg):
         f"eval_{cfg['dataset_id']}_test_{cfg['protocol_id']}_"
         f"seed{run['seed']:03d}_{timing_protocol_id}"
     )
-    evaluation_dir = paths["evaluations"] / evaluation_id
+    evaluation_dir_name = cfg.get("evaluation_dir_name", "eval_test_runtime_v2")
+    if (
+        not evaluation_dir_name
+        or evaluation_dir_name in {".", ".."}
+        or Path(evaluation_dir_name).name != evaluation_dir_name
+    ):
+        raise ValueError(
+            "evaluation_dir_name must be a single, non-empty directory name: "
+            f"{evaluation_dir_name!r}"
+        )
+    evaluation_dir = paths["evaluations"] / evaluation_dir_name
     evaluation_dir.mkdir(parents=True, exist_ok=True)
     with (run_dir / "test_runtime.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=runtime.keys()); writer.writeheader(); writer.writerow(runtime)
@@ -600,6 +610,7 @@ def evaluate_one(run, cfg):
         writer = csv.DictWriter(f, fieldnames=runtime.keys()); writer.writeheader(); writer.writerow(runtime)
     write_json(evaluation_dir / "evaluation_manifest.json", {
         "evaluation_id": evaluation_id,
+        "evaluation_directory": evaluation_dir_name,
         "cell_id": run["cell_id"],
         "seed": run["seed"],
         "dataset_id": cfg["dataset_id"],

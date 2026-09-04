@@ -15,6 +15,7 @@
   "num_workers_eval": 2,
   "protocol_id": "image_density_factorial_256_v1",
   "timing_protocol_id": "image_test_runtime_v2",
+  "evaluation_dir_name": "eval_test_runtime_v2",
   "cells": [
     {
       "cell_id": "unet_l1",

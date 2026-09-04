@@ -30,6 +30,11 @@ while `Time Generate` synchronizes CUDA around Generator forward only. The
 prediction/output loop is also retained separately as
 `prediction_output_loop_wall_time_s`.
 
+Runtime evaluation artifacts use the short directory
+`evaluations/eval_test_runtime_v2/` to remain copyable on Windows. The full
+dataset, protocol, seed, and timing identity remains in `evaluation_id` inside
+`evaluation_manifest.json`; shortening the directory does not change provenance.
+
 Normal entry point:
 
 ```bash

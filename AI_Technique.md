@@ -1012,6 +1012,11 @@ runtime ล่าสุดใช้ timing protocol `image_test_runtime_v2` โ�
 ครอบเฉพาะ CUDA-synchronized Generator forward เท่านั้น Runtime รอบแรกที่จับเฉพาะ
 prediction/output loop ถูกเก็บไว้ใน evaluation directory รุ่นเดิมเพื่อ audit
 
+evaluation runtime รุ่นปัจจุบันของทั้งสี่ factorial run ใช้ชื่อ directory แบบสั้น
+`evaluations/eval_test_runtime_v2/` เพื่อหลีกเลี่ยง Windows path-length limit โดย
+ค่า `evaluation_id` แบบเต็มซึ่งระบุ dataset, protocol, seed และ timing protocol
+ยังคงเก็บใน `evaluation_manifest.json` เพื่อรักษา provenance เดิม
+
 ผล factorial seed 42 ชุดนี้ยังคงเก็บไว้เป็น artifact สำหรับวิเคราะห์แบบควบคุม แต่
 ไม่ได้เป็น default ของหน้า Model Performance Compare หลังเปลี่ยนมาใช้ corrected
 representative comparison ด้านล่าง
