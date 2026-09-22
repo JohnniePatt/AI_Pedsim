@@ -1,0 +1,23 @@
+{
+  "method_id": "Method_ResNet_copyGenerator",
+  "dataset_id": "housegan_canonical_imagebase_split_v1",
+  "dataset_root": "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN",
+  "seed": 42,
+  "image_size": 256,
+  "input_channels": 3,
+  "output_channels": 3,
+  "resnet_blocks": 9,
+  "epochs": 50,
+  "batch_size": 8,
+  "learning_rate": 0.0002,
+  "beta1": 0.0,
+  "beta2": 0.9,
+  "l1_loss_weight": 10.0,
+  "density_foreground_weight": 30.0,
+  "density_intensity_weight": 10.0,
+  "density_foreground_threshold": 0.00392156862745098,
+  "num_workers_train": 4,
+  "num_workers_eval": 2,
+  "protocol_id": "pix2pixhd_generator_reconstruction_only_256_v1",
+  "timing_protocol_id": "image_test_runtime_v2"
+}

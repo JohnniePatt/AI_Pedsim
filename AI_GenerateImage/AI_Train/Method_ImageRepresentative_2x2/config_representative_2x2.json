@@ -1,5 +1,5 @@
 {
-  "comparison_id": "corrected_representative_2x2_256_v1",
+  "comparison_id": "generator_matched_representative_2x2_256_v2",
   "dataset_id": "housegan_canonical_imagebase_split_v1",
   "dataset_root": "Dataset/Data_ImageUNet/DensityMap_dataset/Topo_HouseGAN",
   "split": "test",
@@ -22,13 +22,13 @@
     },
     {
       "cell_id": "resnet_reconstruction_representative",
-      "display_name": "ResNet-9 (original)",
-      "method_id": "Method_ResNet",
-      "run_dir": "AI_GenerateImage/AI_Result/Method_ResNet/outputs/run_ResNet_20260808_025204_model_evaluate_256",
-      "checkpoint": "checkpoints/best_loss.pt",
-      "checkpoint_sha256": "ed319e045c555eb2b5c6650d1e14213e6a0a04238873f41d4b0d8b0a9e44988c",
-      "seed": null,
-      "provenance_status": "legacy_seed_not_recorded"
+      "display_name": "ResNet reconstruction (Pix2PixHD Generator, no D)",
+      "method_id": "Method_ResNet_copyGenerator",
+      "run_dir": "AI_GenerateImage/AI_Result/Method_ResNet_copyGenerator/outputs/run_20260905T104140Z_seed042",
+      "checkpoint": "checkpoints/best_model.pt",
+      "checkpoint_sha256": "02e1e4a11f01757de67da3379320267865f2bae5bd9eb28a50f5db755e1ba89f",
+      "seed": 42,
+      "provenance_status": "complete"
     },
     {
       "cell_id": "unet_adversarial_corrected",

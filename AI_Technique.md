@@ -1021,24 +1021,25 @@ evaluation runtime รุ่นปัจจุบันของทั้งส�
 ไม่ได้เป็น default ของหน้า Model Performance Compare หลังเปลี่ยนมาใช้ corrected
 representative comparison ด้านล่าง
 
-## Corrected representative 2x2 image comparison
+## Generator-matched representative 2x2 image comparison
 
 หน้า `Image Based Output` ใช้ `AI_GenerateImage/model_performance_compare_lock.json`
 เป็น source of truth และล็อกชุดเปรียบเทียบดังนี้:
 
 - Plain U-Net และ Pix2Pix WGAN-GP ใช้ run ใหม่จาก factorial seed 42 ซึ่งมี U-Net
   generator เดียวกัน
-- ResNet-9 และ Pix2PixHD ใช้ run เดิมที่เป็นตัวแทน full method ของงานวิจัยเดิม
+- `Method_ResNet_copyGenerator` ใช้ Generator definition จาก Pix2PixHD original
+  เหมือนกัน แต่ฝึกด้วย density-aware L1 เท่านั้นและไม่มี discriminator
 
-ไม่ได้เทรนโมเดลใดเพิ่ม การประเมินกลางอ่าน prediction PNG ที่มีอยู่แล้วของทั้งสี่ run
-และคำนวณใหม่ด้วย protocol เดียวกันที่ 256 x 256 บน canonical test 862 scenarios /
+ResNet reconstruction ใหม่ถูกฝึก seed 42 จำนวน 50 epochs, batch size 8 ที่ 256 x 256
+และคำนวณทั้งสี่โมเดลใหม่ด้วย protocol เดียวกันบน canonical test 862 scenarios /
 117 floor plans ผลและ provenance อยู่ที่:
 
 ```text
-AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1
+AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260905T121732Z_generator_matched_representative_2x2_256_v2
 ```
 
-เนื่องจาก legacy run ของ ResNet-9 และ Pix2PixHD ไม่มี seed ใน modern provenance
+เนื่องจาก Pix2PixHD original ไม่มี seed และ initial Generator hash ใน modern provenance
 manifest จึงตั้ง `research_valid: false` สำหรับ comparison นี้ แม้ checkpoint hash,
 prediction ครบ 862 เคส และ canonical split จะผ่านการตรวจทั้งหมด ผลชุดนี้ใช้เป็น
 descriptive method-family representative comparison เท่านั้น ไม่ควรเรียกว่า strict
@@ -1053,7 +1054,7 @@ model run โดยตรง ผล common protocol ที่ตรวจแล�
 | Model | MAE ↓ | MSE ↓ | RMSE ↓ | SSIM ↑ | PSNR ↑ | LPIPS ↓ |
 |---|---:|---:|---:|---:|---:|---:|
 | Pix2PixHD original | 0.001183742 | 0.000065567 | 0.005326096 | 0.966899452 | 50.319583 | 0.031825769 |
-| ResNet-9 original | 0.001508158 | 0.000112525 | 0.007073946 | 0.941230171 | 48.833877 | 0.039555877 |
+| ResNet reconstruction (Pix2PixHD Generator, no D) | 0.001175773 | 0.000062632 | 0.005222467 | 0.968228454 | 49.913904 | 0.029671985 |
 | Pix2Pix WGAN-GP corrected | 0.001390986 | 0.000097260 | 0.006793838 | 0.939124211 | 47.407402 | 0.040317798 |
 | Plain U-Net corrected | 0.001413836 | 0.000104061 | 0.006992483 | 0.936194998 | 47.169595 | 0.041960682 |
 
@@ -1074,7 +1075,7 @@ widget state ใหม่อัตโนมัติ
 |---|---:|---:|---:|
 | JuPedSim simulation + outputs | 23,649.470879 | 27.435581066 | 1.0x |
 | Pix2PixHD original | 35.329996 | 0.040986074 | 669.4x |
-| ResNet-9 original | 25.056682 | 0.029068077 | 943.8x |
+| ResNet reconstruction (Pix2PixHD Generator, no D) | 42.754811 | 0.049599549 | 553.1x |
 | Pix2Pix WGAN-GP corrected | 15.750595 | 0.018272152 | 1,501.5x |
 | Plain U-Net corrected | 16.252050 | 0.018853886 | 1,455.2x |
 
@@ -1082,3 +1083,86 @@ AI วัดบน `NVIDIA GeForce RTX 5070 Laptop GPU` ตาม `device_name` 
 artifact ส่วน JuPedSim artifact ระบุเพียง `x86_64`, WSL2 และ JuPedSim 1.3.2
 ไม่ระบุ CPU model เต็ม ห้ามใช้ค่า hard-code รุ่นเก่า `29.57`, `0.06100` หรือ
 `0.01486` และห้ามอ้าง RTX 3080 สำหรับผลชุดนี้
+
+## Image comparison: interpretation and thesis handoff
+
+อัปเดตการเลือก UI วันที่ 2026-09-06: กลับไปใช้ `Method_ResNet` run
+`run_ResNet_20260808_025204_model_evaluate_256` แทน copyGenerator ตามคำสั่งผู้ใช้
+lock ID คือ `image_model_performance_original_resnet_20260906`
+ทั้งสี่ entries ใช้ common metrics จาก comparison วันที่ 20260903T143319Z
+protocol `image_density_representative_common_png_256_v1` เดียวกัน ไม่มีการเทรนใหม่
+copyGenerator และผลวันที่ 2026-09-05 ด้านล่างยังเก็บเพื่อเปรียบเทียบย้อนหลัง
+ให้ตีความงานเป็นโมเดลตัวแทนสี่กลุ่มภายใต้กรอบ 2×2 ตามวัตถุประสงค์ผู้ใช้
+
+บันทึกข้อตกลงวันที่ 2026-09-05 ให้ยึดโมเดลจาก
+`AI_GenerateImage/model_performance_compare_lock.json` เป็นชุดที่ใช้รายงาน
+ResNet ปัจจุบันคือ `Method_ResNet_copyGenerator` ไม่ใช่ `Method_ResNet` เดิม
+run อยู่ที่ `AI_GenerateImage/AI_Result/Method_ResNet_copyGenerator/outputs/run_20260905T104140Z_seed042`
+checkpoint คือ `checkpoints/best_model.pt` SHA-256
+`02e1e4a11f01757de67da3379320267865f2bae5bd9eb28a50f5db755e1ba89f`
+ฝึกครบ 50 epochs เลือก best จาก validation ที่ epoch 50 และประเมิน canonical test
+862 scenarios/117 plans ภายใต้ `housegan_canonical_imagebase_split_v1`
+
+### Generator and loss contract
+
+Generator ใหม่คัดลอก architecture จาก Pix2PixHD: RGB 3→3 channels, 9 residual
+blocks, 3 down/3 up stages, InstanceNorm affine=True และ Tanh เริ่ม weights ใหม่
+ด้วย seed 42 ไม่ได้คัดลอก pretrained weights ของ Pix2PixHD
+ใช้ batch 8, image size 256, Adam lr=0.0002, betas=(0.0,0.9), density-aware L1
+weight=10, foreground weight=30 และ intensity weight=10
+ไม่มี discriminator, adversarial loss หรือ feature matching
+Pix2PixHD original ยังคงใช้ WGAN-GP, feature matching และ density-aware L1
+GP ใช้ฝึก discriminator; ตอน inference ทั้งคู่ใช้ Generator อย่างเดียว
+ผู้ใช้อนุมัติเพียง ResNet ใหม่หนึ่ง seed ไม่มีการขยายเป็น 3 seeds
+
+### Average versus per-image wins
+
+UI มี `Metric box plot` ต่อจาก `Metric sample scatter` แสดงสองกราฟต่อแถว
+ใช้ข้อมูลเดียวกับ scatter และสีตาม run ที่เลือก คำนวณ Q1/Q3 แยกแต่ละ run/metric
+whiskers สิ้นสุดที่ข้อมูลสุดขอบภายใน [Q1−1.5×IQR, Q3+1.5×IQR]
+จุดนอกช่วงเก็บ filename สำหรับ tooltip ไม่ลบจาก summary และไม่ถือเป็นข้อมูลผิด
+ค่า non-finite ไม่แสดงใน box plot; แกนตั้งแยกตาม metric และแสดง outliers ครบ
+
+protocol `image_density_representative_common_png_256_v1` อ่าน saved uint8 PNG
+และ resize bilinear เป็น 256×256 ก่อนคำนวณ metric รายภาพ แล้วเฉลี่ย 862 ค่า
+แต่ละภาพมีน้ำหนักเท่ากัน ไม่ใช่เฉลี่ยแต่ละ floor plan ให้มีน้ำหนักเท่ากัน
+RMSE ใน Summary คือ mean(sqrt(MSE_i)) และ PSNR คือ mean(-10 log10(MSE_i))
+โดยโค้ดมี epsilon floor จึงไม่ใช่ sqrt(mean(MSE_i)) หรือ PSNR จาก mean(MSE_i)
+SSIM เป็น global SSIM approximation ไม่ใช่ local-window SSIM
+การตรวจ Summary กับค่าเฉลี่ย per-image ครั้งก่อนพบความต่างต่ำกว่า 7.2e-15
+
+จำนวนอันดับหนึ่งเมื่อเทียบพร้อมกัน 4 โมเดลจาก common artifacts ชุด v2:
+
+| Model | MAE | MSE | RMSE | SSIM | PSNR | LPIPS |
+|---|---:|---:|---:|---:|---:|---:|
+| Pix2PixHD original | 363 | 405 | 405 | 411 | 405 | 322 |
+| ResNet copyGenerator | 254 | 369 | 369 | 351 | 369 | 356 |
+| Pix2Pix WGAN-GP | 122 | 51 | 51 | 47 | 51 | 99 |
+| Plain U-Net | 123 | 37 | 37 | 53 | 37 | 85 |
+
+ทุกคอลัมน์รวม 862 ภาพ เมื่อนับเฉพาะคู่ Pix2PixHD/ResNet ใหม่ MAE เป็น 487/375
+ภาพตามลำดับ จำนวนชนะไม่คิดขนาดส่วนต่าง จึงไม่ขัดกับ MAE เฉลี่ยของ ResNet ที่ต่ำกว่า
+ผลรองรับว่าแต่ละวิธีเด่นต่างเกณฑ์ ไม่รองรับข้ออ้างว่าตัวใดเหนือกว่าทุกด้าน
+หรือมีนัยสำคัญทางสถิติ ห้ามอนุมานความสม่ำเสมอหรือความสามารถเฉพาะภาพยากจาก
+จำนวนชนะและค่าเฉลี่ยเพียงอย่างเดียว
+
+### Thesis readiness and remaining checks
+
+สถานะ: implementation, training 50 epochs และ test artifacts เสร็จแล้ว
+พร้อมเริ่มเขียน methodology/results/discussion ในกรอบ descriptive comparison
+ยังไม่ถือเป็นการรับรองความพร้อมส่งเล่มหรือ strict 2×2 factorial:
+
+- ตรวจ checkpoint/prediction/dataset/code provenance ให้เชื่อมโยงครบก่อนส่งเล่ม
+  ค่า research_valid=True ใน run manifest อย่างเดียวไม่ทดแทนการตรวจนี้
+- Pix2PixHD original ไม่มี seed/initial hash และ protocol ระหว่างคู่ U-Net/ResNet
+  ยังมีความต่าง จึงแยก causal GAN effect หรือ factorial interaction ไม่ได้ครบ
+- ต้องตรวจและแก้การอ่าน walkable summary ใน UI: โค้ดที่ตรวจพบยังใช้ run.path
+  ขณะที่ full-image summary ใช้ metrics_dir จาก lock งานนี้ยังไม่ถือว่าแก้แล้ว
+- อธิบาย SSIM approximation, PNG quantization/resizing และ macro-average ให้ชัด
+  การเพิ่ม aggregate metrics ต้องแยกนิยาม/รุ่น ไม่เปลี่ยนสูตรย้อนหลังเพื่อเปลี่ยนผู้ชนะ
+- ระบุขอบเขตจับเวลาราย run และ hardware ตาม artifact ห้ามถือว่าทุก run จับ
+  checkpoint load, metric setup และ summary writing ครบเหมือนกัน
+- ตรวจภาพสำเร็จ/ผิดพลาดและรายงานอย่างสมดุล ก่อนอ้างรูปแบบความผิดพลาดเฉพาะกลุ่ม
+
+หาก proposal กำหนด strict factorial causal effect ต้องหารือกรอบข้อสรุปกับ
+อาจารย์ที่ปรึกษา ผลวิจัยไม่จำเป็นต้องให้ Pix2PixHD ชนะเพื่อมีคุณค่าทางวิชาการ

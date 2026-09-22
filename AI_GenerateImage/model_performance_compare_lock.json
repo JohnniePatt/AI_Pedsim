@@ -1,8 +1,8 @@
 {
-  "lock_id": "image_model_performance_corrected_representative_2x2_256_v1",
+  "lock_id": "image_model_performance_original_resnet_20260906",
   "status": "active",
   "selection_scope": "image_based_model_performance_compare",
-  "comparison_type": "corrected_representative_2x2",
+  "comparison_type": "representative_2x2",
   "comparison_dir": "AI_GenerateImage/AI_Result/RepresentativeComparisons/comparison_20260903T143319Z_corrected_representative_2x2_256_v1",
   "dataset_id": "housegan_canonical_imagebase_split_v1",
   "protocol_id": "image_density_representative_common_png_256_v1",
@@ -10,7 +10,7 @@
   "test_case_count": 862,
   "floorplan_count": 117,
   "research_valid": false,
-  "research_validity_note": "The two retained legacy runs do not record seeds in modern provenance manifests; use as a descriptive method-family comparison, not a strict component-isolated factorial.",
+  "research_validity_note": "Original ResNet-9 and Pix2PixHD seeds are not recorded. Four representative methods arranged in a 2x2 framework.",
   "runs": [
     {
       "cell_id": "resnet_adversarial_representative",

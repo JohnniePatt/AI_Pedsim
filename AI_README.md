@@ -3,9 +3,22 @@
 เอกสารนี้คือสรุปภาพรวมโปรเจกต์ + โครงสร้างไฟล์ + workflow ปัจจุบัน  
 เป้าหมายคือ: ถ้า chat history หาย สามารถเปิดไฟล์นี้แล้วทำงานต่อได้ทันที
 
-## สถานะล่าสุด: Image-model comparison (ตรวจแล้ว 2026-09-03)
+## การเลือก UI ล่าสุด — 2026-09-06
 
-หน้า `UI_PerformanceCompare/Streamlit` ใช้ชุด **corrected representative 2x2**
+ผู้ใช้ให้กลับไปเลือก `ResNet-9 (original)` จาก `Method_ResNet` เป็น baseline ใน UI
+run `run_ResNet_20260808_025204_model_evaluate_256` ใช้ Sigmoid/1-channel output
+ร่วมกับ Pix2PixHD, Pix2Pix WGAN-GP และ Plain U-Net โดยใช้ common metric artifacts
+จาก `comparison_20260903T143319Z_corrected_representative_2x2_256_v1`
+MAE=0.001508158, RMSE=0.007073946, SSIM=0.941230171, PSNR=48.833877,
+LPIPS=0.039555877 เป็นผลเดิมที่ประเมินแล้ว ไม่ได้เทรนหรือประเมินใหม่
+ResNet copyGenerator ยังคงอยู่และเลือกเพิ่มได้ใน UI
+กรอบงานคือการเลือกโมเดลตัวแทนสี่กลุ่มในตาราง 2×2
+รายละเอียดและตารางในส่วนวันที่ 2026-09-05 ด้านล่างเป็นประวัติชุด copyGenerator
+ให้ยึด lock ปัจจุบันเป็นแหล่งอ้างอิงการเลือก UI
+
+## ประวัติ Image-model comparison (2026-09-05)
+
+หน้า `UI_PerformanceCompare/Streamlit` ใช้ชุด **generator-matched representative 2x2**
 เป็นค่าเริ่มต้นจากไฟล์:
 
 ```text
@@ -16,32 +29,60 @@ AI_GenerateImage/model_performance_compare_lock.json
 
 1. `Plain U-Net (corrected shared U-Net)` — factorial run, seed 42
 2. `Pix2Pix WGAN-GP (corrected shared U-Net)` — factorial run, seed 42
-3. `ResNet-9 (original)` — original research run
+3. `ResNet reconstruction (Pix2PixHD Generator, no D)` — seed 42
 4. `Pix2PixHD (original full method)` — original research run
 
 คู่ U-Net ใช้ Generator architecture เดียวกันเพื่อแก้ปัญหาการเปรียบเทียบเดิม
-ส่วน ResNet-9/Pix2PixHD เก็บ original full-method implementation ตามงานวิจัยเดิม
-จึงต้องเรียกชุดนี้ว่า **method-family representative comparison** ไม่ใช่ strict
-component-isolated factorial
+คู่ ResNet ใช้ Generator definition เดียวกันในด้าน RGB output, affine InstanceNorm,
+ResNet 9 blocks และ Tanh output แต่ Pix2PixHD original ไม่ได้บันทึก seed/initial hash
+จึงยังต้องเรียกชุดนี้ว่า **generator-matched representative comparison** ไม่ใช่
+paired-seed factorial
 
-ไม่ได้เทรนโมเดลเพิ่มตอนสร้าง comparison นี้ ระบบอ่าน prediction ที่มีอยู่แล้วและ
-ประเมินใหม่ด้วย protocol `image_density_representative_common_png_256_v1` โดยใช้
+`Method_ResNet_copyGenerator` ถูกเทรนใหม่ด้วย seed 42, 50 epochs, batch size 8,
+density-aware L1 และไม่มี discriminator จากนั้นระบบประเมินทั้งชุดใหม่ด้วย protocol
+`image_density_representative_common_png_256_v1` โดยใช้
 saved uint8 PNG, resize แบบ bilinear เป็น 256 x 256 และ canonical HouseGAN test
 ครบ 862 scenarios / 117 floor plans ผลหลักคือ:
 
 | Model | MAE ↓ | SSIM ↑ | LPIPS ↓ |
 |---|---:|---:|---:|
-| Pix2PixHD (original full method) | **0.001184** | **0.966899** | **0.031826** |
+| ResNet reconstruction (Pix2PixHD Generator, no D) | **0.001176** | **0.968228** | **0.029672** |
+| Pix2PixHD (original full method) | 0.001184 | 0.966899 | 0.031826 |
 | Pix2Pix WGAN-GP (corrected shared U-Net) | 0.001391 | 0.939124 | 0.040318 |
 | Plain U-Net (corrected shared U-Net) | 0.001414 | 0.936195 | 0.041961 |
-| ResNet-9 (original) | 0.001508 | 0.941230 | 0.039556 |
 
 ผลและ provenance อยู่ที่:
 
 ```text
 AI_GenerateImage/AI_Result/RepresentativeComparisons/
-  comparison_20260903T143319Z_corrected_representative_2x2_256_v1/
+  comparison_20260905T121732Z_generator_matched_representative_2x2_256_v2/
 ```
+
+### ข้อสรุปและความพร้อมสำหรับเขียนวิทยานิพนธ์
+
+UI เพิ่ม `Metric box plot` ใต้ `Metric sample scatter` ใช้ per-image metrics
+ของโมเดลที่เลือก แสดง median, Q1–Q3, whiskers 1.5×IQR และ outliers ที่ชี้ดูชื่อภาพได้
+เพื่อประกอบการอ่านค่าเฉลี่ย โดยไม่ตัด outlier ออกจากผลประเมิน
+
+ตาราง `Model Benchmark Summary (Average)` เป็นค่าเฉลี่ย metric รายภาพทั้ง 862 ภาพ
+ส่วน `Metric compare` นับจำนวนภาพที่ได้อันดับหนึ่งในแต่ละ metric จากโมเดลที่เลือก
+จึงให้ผู้ชนะต่างกันได้: ResNet copyGenerator มีค่าเฉลี่ยดีกว่าใน MAE, MSE, RMSE,
+SSIM และ LPIPS ส่วน Pix2PixHD ชนะจำนวนภาพมากที่สุดใน MAE, MSE, RMSE, SSIM และ
+PSNR และมีค่าเฉลี่ย PSNR สูงที่สุด ห้ามตีความ win count ว่าเป็นค่าเฉลี่ยหรือเป็น
+หลักฐานความสม่ำเสมอ/ความสามารถในภาพยากโดยไม่มีการวิเคราะห์เพิ่ม
+
+ResNet ใหม่คัดลอกเฉพาะ architecture ของ Pix2PixHD ไม่ได้ใช้ pretrained weights
+และฝึกด้วย density-aware L1 ส่วน Pix2PixHD เดิมยังใช้ WGAN-GP และ feature matching
+ผู้ใช้กำหนดให้ทดลอง ResNet ใหม่เพียง seed 42 ไม่มีแผนขยายเป็น 3 seeds หรือเทรน
+Pix2PixHD ใหม่โดยอัตโนมัติ
+
+พร้อมเริ่มเขียนเล่มในขอบเขต descriptive comparison แต่ยังไม่รับรองฉบับสมบูรณ์:
+ต้องตรวจ provenance, นิยาม global SSIM/mean per-image metrics, ขอบเขต runtime
+และความสอดคล้องของทุกตาราง UI โดยเฉพาะ walkable summary ซึ่งยังพบการอ่านจาก run
+โดยตรงแทน common metrics directory รายละเอียดงานค้างอยู่ใน
+`AI_Technique.md` หัวข้อ “Image comparison: interpretation and thesis handoff”
+ค่า `research_valid: true` ใน manifest ราย run ไม่ใช่การรับรองความพร้อมทั้งเล่ม
+และ comparison ปัจจุบันยังเป็น `research_valid: false` ตามข้อจำกัด provenance
 
 ### Computational-time source of truth
 
@@ -58,7 +99,7 @@ simulation, SQLite output, trajectory plotting และ density-heatmap generat
 |---|---:|---:|---:|
 | JuPedSim simulation + outputs | 23,649.470879 | 27.435581066 | 1.0x |
 | Pix2PixHD | 35.329996 | 0.040986074 | 669.4x |
-| ResNet-9 | 25.056682 | 0.029068077 | 943.8x |
+| ResNet reconstruction (Pix2PixHD Generator, no D) | 42.754811 | 0.049599549 | 553.1x |
 | Pix2Pix WGAN-GP | 15.750595 | 0.018272152 | 1,501.5x |
 | Plain U-Net | 16.252050 | 0.018853886 | 1,455.2x |
 
@@ -66,8 +107,8 @@ AI runtime ชุดนี้วัดบน `NVIDIA GeForce RTX 5070 Laptop GPU
 ส่วน JuPedSim runtime เก็บ platform เป็น `x86_64` บน WSL2 แต่ไม่ได้เก็บชื่อ CPU
 รุ่นเต็ม จึงห้ามระบุว่าเป็น Intel Core i9 หากไม่มีหลักฐานเพิ่ม
 
-สถานะ comparison โดยรวมเป็น `research_valid: false` เพราะ legacy ResNet-9 และ
-Pix2PixHD ไม่มี seed ใน modern provenance manifest แม้ checkpoint hash, canonical
+สถานะ comparison โดยรวมเป็น `research_valid: false` เพราะ Pix2PixHD original
+ไม่มี seed/initial Generator hash ใน modern provenance manifest แม้ checkpoint hash, canonical
 split และ prediction 862 เคสจะตรวจครบ ผลใช้เป็น descriptive comparison ได้ แต่ยัง
 ไม่ควรอ้างเป็นผลหลาย seed หรือผล factorial เชิงสถิติ
 

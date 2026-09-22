@@ -269,7 +269,8 @@ def main() -> None:
                 **{f"walkable_{key}": value for key, value in run["walkable_summary"].items()},
             })
 
-    incomplete_legacy_provenance = any(run["provenance_status"] != "complete" for run in evaluated_runs)
+    incomplete_runs = [run for run in evaluated_runs if run["provenance_status"] != "complete"]
+    incomplete_legacy_provenance = bool(incomplete_runs)
     manifest = {
         "comparison_id": config["comparison_id"],
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -289,8 +290,9 @@ def main() -> None:
         "evaluation_config_sha256": sha256_file(output_dir / "evaluation_config.json"),
         "research_valid": not incomplete_legacy_provenance,
         "research_validity_note": (
-            "false: the two retained legacy runs do not record seeds in modern provenance manifests; "
-            "results are real and complete but limited to descriptive comparison"
+            "false: retained legacy run(s) do not record seeds in modern provenance manifests: "
+            + ", ".join(run["display_name"] for run in incomplete_runs)
+            + "; results are real and complete but limited to descriptive comparison"
             if incomplete_legacy_provenance else "all current research-validity checks passed"
         ),
         "runs": evaluated_runs,

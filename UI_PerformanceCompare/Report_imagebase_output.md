@@ -8,8 +8,14 @@
 
 **Dataset ID:** `housegan_canonical_imagebase_split_v1`
 
-**Updated:** 2026-08-09
+**Updated:** 2026-09-05
 **Paper source:** `ICCEA_FP_Image 4.pdf`
+
+> **Status note:** The detailed tables below describe the previous model selection
+> and are retained as historical analysis. The active UI source of truth is now
+> `AI_GenerateImage/model_performance_compare_lock.json`, backed by
+> `comparison_20260905T121732Z_generator_matched_representative_2x2_256_v2`, where
+> `Method_ResNet_copyGenerator` replaces the original ResNet-9 run.
 
 ---
 

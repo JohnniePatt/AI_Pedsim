@@ -44,6 +44,7 @@ METHOD_DISPLAY_NAMES = {
     "Method_pix2pixHD": "Pix2PixHD",
     "Method_PlainUnet": "Plain U-Net",
     "Method_pix2pixhd_No_D": "Pix2PixHD (No D)",
+    "Method_ResNet_copyGenerator": "ResNet reconstruction (Pix2PixHD Generator, no D)",
 }
 
 
@@ -214,6 +215,7 @@ def _default_runs(runs: list[RunInfo]) -> list[str]:
         return locked_defaults
     preferred_order = [
         "Method_pix2pixHD",
+        "Method_ResNet_copyGenerator",
         "Method_ResNet",
         "Method_pix2pix_WGAN-GP",
         "Method_PlainUnet"
@@ -570,6 +572,59 @@ def _show_sample_metric_scatters(df: pd.DataFrame, metric_options: list[str], ru
         for col, metric in zip(cols, metric_options[start:start + 2]):
             with col:
                 _sample_metric_scatter(df, metric, sample_order, run_colors)
+
+    _show_metric_box_plots(df, metric_options, run_colors)
+
+
+def _metric_box_chart(df: pd.DataFrame, metric: str, run_colors: dict[str, str]):
+    values = df[["run", "file_name", metric]].copy()
+    values[metric] = pd.to_numeric(values[metric], errors="coerce")
+    values = values[np.isfinite(values[metric])].copy()
+    if values.empty:
+        return None
+    # Flag outliers per run, preserving case names for point tooltips.
+    grouped = values.groupby("run")[metric]
+    q1 = grouped.transform(lambda column: column.quantile(0.25))
+    q3 = grouped.transform(lambda column: column.quantile(0.75))
+    iqr = q3 - q1
+    outliers = values[(values[metric] < q1 - 1.5 * iqr) |
+                      (values[metric] > q3 + 1.5 * iqr)]
+    runs = list(values["run"].unique())
+    scale = alt.Scale(domain=runs, range=[run_colors.get(run, "#4b5563") for run in runs])
+    encoding = dict(
+        x=alt.X("run:N", title="Model run", sort=runs,
+                axis=alt.Axis(labels=False, ticks=False)),
+        y=alt.Y(f"{metric}:Q", title=metric, scale=alt.Scale(zero=False)),
+        color=alt.Color("run:N", title="Run", scale=scale),
+    )
+    boxes = alt.Chart(values).mark_boxplot(extent=1.5, outliers=False, size=35).encode(**encoding)
+    points = alt.Chart(outliers).mark_circle(size=45, opacity=0.7).encode(
+        **encoding,
+        tooltip=[alt.Tooltip("run:N", title="Run"),
+                 alt.Tooltip("file_name:N", title="File"),
+                 alt.Tooltip(f"{metric}:Q", title=metric, format=".8f")],
+    )
+    return (boxes + points).properties(height=280)
+
+
+def _show_metric_box_plots(df: pd.DataFrame, metric_options: list[str], run_colors: dict[str, str]):
+    st.markdown("### Metric box plot")
+    st.caption(
+        "Box: middle 50% (Q1–Q3); line: median. Whiskers reach the most extreme "
+        "observations within 1.5×IQR of the box. Points beyond are outliers; hover "
+        "to identify the image. Outliers are retained, not necessarily errors. "
+        "MAE/MSE/RMSE/LPIPS: lower is better; SSIM/PSNR: higher is better."
+    )
+    for start in range(0, len(metric_options), 2):
+        cols = st.columns(2)
+        for col, metric in zip(cols, metric_options[start:start + 2]):
+            with col:
+                st.markdown(f"**{metric} distribution**")
+                chart = _metric_box_chart(df, metric, run_colors)
+                if chart is None:
+                    st.info(f"No finite values for {metric}.")
+                else:
+                    st.altair_chart(chart, use_container_width=True)
 
 
 def _show_occupancy_level_analysis(
@@ -1617,11 +1672,12 @@ def render_image_based_output():
     performance_lock = _load_model_performance_lock()
     if performance_lock:
         st.info(
-            "Default comparison is locked to the corrected representative 2×2 set: "
-            "the corrected shared-generator U-Net pair plus the original ResNet-9/Pix2PixHD pair. "
+            "Default comparison uses four representative methods in a 2×2 framework: "
+            + ", ".join(entry["display_name"] for entry in performance_lock.get("runs", []))
+            + ". "
             "All metrics shown use the same 256×256 post-hoc protocol over the canonical "
-            "862-case test set. This is a descriptive method-family comparison, not a strict "
-            "component-isolated factorial; legacy seeds are not recorded."
+            "862-case test set. "
+            + performance_lock.get("research_validity_note", "")
         )
 
     labels = [r.label for r in runs]
@@ -1639,6 +1695,7 @@ def render_image_based_output():
     # Sort selected runs in exact preferred order
     METHOD_ORDER = {
         "Method_pix2pixHD": 0,
+        "Method_ResNet_copyGenerator": 1,
         "Method_ResNet": 1,
         "Method_pix2pix_WGAN-GP": 2,
         "Method_PlainUnet": 3
