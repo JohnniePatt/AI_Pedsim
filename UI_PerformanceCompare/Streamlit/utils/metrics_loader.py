@@ -75,6 +75,9 @@ def load_per_image(run_path: Path) -> pd.DataFrame:
     for metric in METRIC_ORDER:
         if metric in df.columns:
             df[metric] = pd.to_numeric(df[metric], errors="coerce")
+    for extra in ("FOREGROUND_MAE", "HOTSPOT_IOU"):
+        if extra in df.columns:
+            df[extra] = pd.to_numeric(df[extra], errors="coerce")
     return df
 
 

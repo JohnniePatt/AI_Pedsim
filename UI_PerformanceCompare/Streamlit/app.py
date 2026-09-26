@@ -8,6 +8,7 @@ APP_DIR = pathlib.Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+from views.asa_report import render_asa_report
 from views.image_based_output import render_image_based_output
 from views.summary_output import render_summary_output
 from views.time_series_output import render_time_series_output
@@ -102,12 +103,14 @@ def main():
 
     page = st.sidebar.radio(
         "Menu",
-        ["Image based output", "Time series output", "Summary output"],
+        ["Image based output", "ASA report", "Time series output", "Summary output"],
         index=0,
     )
 
     if page == "Image based output":
         render_image_based_output()
+    elif page == "ASA report":
+        render_asa_report()
     elif page == "Summary output":
         render_summary_output()
     else:
