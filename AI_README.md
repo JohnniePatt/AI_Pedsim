@@ -114,6 +114,14 @@ split และ prediction 862 เคสจะตรวจครบ ผลใช
 
 ### Summary Output: MLP/GNN/XGBoost efficiency
 
+ใต้ `Model Performance Comparison` มีตารางแยก `N Agents`, `N/2 Agents` และ `1 Agent`
+สำหรับ runs ที่เลือก โดยคำนวณ MAE, MSE และ RMSE จาก `test_eval/predictions.csv` จริง
+ตาม `variant_label` และรวม error ของ fastest/average/slowest ภายในแต่ละกลุ่มด้วยสูตรเดียวกับตารางรวม
+จำนวน Scenarios นับเฉพาะแถวในกลุ่มนั้น และไฮไลต์ค่าต่ำสุดแยกแต่ละตาราง ไม่ต้องเทรนหรือทดสอบโมเดลใหม่
+ตาราง `Performance by Density and Target` ถัดมาแยก Fastest/Average/Slowest ภายในแต่ละ density
+และแสดง MAE (วินาที), MSE (วินาที²), RMSE (วินาที) ต่อโมเดลที่เลือก โดย RMSE = sqrt(MSE) ทุกแถว แถว All ใช้ error ทั้งหมดเหมือนตารางรวม
+ไม่ใช่ค่าเฉลี่ย RMSE ของแถวอื่น; หากเลือกหลาย run ของโมเดลเดียวกันจะระบุ run ในชื่อคอลัมน์แยกกัน
+
 ตาราง Computational Efficiency ในหน้า `Summary Output` เป็นคนละตารางกับ image
 models และต้องแสดงเฉพาะ MLP, GNN และ XGBoost ที่เลือกอยู่ ฝั่ง JuPedSim ใช้เฉพาะ
 `simulation_wall_time_s` ไม่รวม trajectory plotting หรือ density heatmap ส่วน AI

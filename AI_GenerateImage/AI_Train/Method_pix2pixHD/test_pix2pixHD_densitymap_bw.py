@@ -129,6 +129,9 @@ class TestConfig:
             # Try to auto-locate common project structure
             project_root = self.SCRIPT_DIR.parent.parent
             search_paths = [
+                project_root.parent / "Dataset" / "Data_ImageUNet" / "DensityMap_dataset" / "Topo_HouseGAN",
+                project_root / ".." / "Dataset" / "Data_ImageUNet" / "DensityMap_dataset" / "Topo_HouseGAN",
+                project_root / "Dataset" / "Data_ImageUNet" / "DensityMap_dataset" / "Topo_HouseGAN",
                 project_root / "Model_scenario_case" / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1",
                 project_root / "Prepare_data" / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1",
                 project_root / "Topo_bottleneck" / "trajectory_line_dataset" / "Cleandata_1"
@@ -477,6 +480,24 @@ def run_evaluation(run_path, config_file=None):
                     print(f"[WARN] LPIPS compute failed: {e}")
                     lpips_val = float("nan")
 
+            # Active region & Hotspot metrics (Reviewer 3)
+            fg_threshold = 1.0 / 255.0
+            fg_mask = (true_01 > fg_threshold)
+            if np.any(fg_mask):
+                fg_mae = float(np.mean(np.abs(pred_01[fg_mask] - true_01[fg_mask])))
+            else:
+                fg_mae = 0.0
+
+            hotspot_thresh = 0.20
+            target_hotspot = (true_01 >= hotspot_thresh)
+            pred_hotspot = (pred_01 >= hotspot_thresh)
+            intersection = np.logical_and(target_hotspot, pred_hotspot).sum()
+            union = np.logical_or(target_hotspot, pred_hotspot).sum()
+            if union > 0:
+                hotspot_iou = float(intersection / union)
+            else:
+                hotspot_iou = 1.0 if not np.any(target_hotspot) else 0.0
+
             file_name = str(file_name_batch[0])
             per_image_metrics.append({
                 "file_name": file_name,
@@ -486,6 +507,8 @@ def run_evaluation(run_path, config_file=None):
                 "ssim": float(ssim_val),
                 "psnr": float(psnr_val),
                 "lpips": float(lpips_val),
+                "foreground_mae": float(fg_mae),
+                "hotspot_iou": float(hotspot_iou),
             })
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
@@ -558,14 +581,21 @@ def run_evaluation(run_path, config_file=None):
     lpips_vals = [m["lpips"] for m in per_image_metrics if not math.isnan(m["lpips"])]
     lpips_score = (sum(lpips_vals) / len(lpips_vals)) if lpips_vals else float("nan")
 
+    fg_mae_vals = [m["foreground_mae"] for m in per_image_metrics if not math.isnan(m.get("foreground_mae", float("nan")))]
+    fg_mae_score = (sum(fg_mae_vals) / len(fg_mae_vals)) if fg_mae_vals else float("nan")
+    hotspot_iou_vals = [m["hotspot_iou"] for m in per_image_metrics if not math.isnan(m.get("hotspot_iou", float("nan")))]
+    hotspot_iou_score = (sum(hotspot_iou_vals) / len(hotspot_iou_vals)) if hotspot_iou_vals else float("nan")
+
     per_image_path = config.CURRENT_RUN_DIR / "test_evaluation_per_image.csv"
     with open(per_image_path, "w", encoding="utf-8") as f:
-        f.write("file_name,MAE,MSE,RMSE,SSIM,PSNR,LPIPS\n")
+        f.write("file_name,MAE,MSE,RMSE,SSIM,PSNR,LPIPS,Foreground_MAE,Hotspot_IoU\n")
         for row in per_image_metrics:
             lpips_txt = "nan" if math.isnan(row["lpips"]) else f"{row['lpips']:.6f}"
+            fg_mae_val = row.get("foreground_mae", float("nan"))
+            hotspot_iou_val = row.get("hotspot_iou", float("nan"))
             f.write(
                 f"{row['file_name']},{row['mae']:.6f},{row['mse']:.6f},{row['rmse']:.6f},{row['ssim']:.6f},"
-                f"{row['psnr']:.6f},{lpips_txt}\n"
+                f"{row['psnr']:.6f},{lpips_txt},{fg_mae_val:.6f},{hotspot_iou_val:.6f}\n"
             )
 
     score_path = config.CURRENT_RUN_DIR / "test_evaluation_summary.csv"
@@ -580,11 +610,39 @@ def run_evaluation(run_path, config_file=None):
             f.write("LPIPS,nan\n")
         else:
             f.write(f"LPIPS,{lpips_score:.6f}\n")
+        f.write(f"Foreground_MAE,{fg_mae_score:.6f}\n")
+        f.write(f"Hotspot_IoU,{hotspot_iou_score:.6f}\n")
+
+    if config.TEST_RESULT_DIR.resolve() != config.CURRENT_RUN_DIR.resolve():
+        with open(config.TEST_RESULT_DIR / "test_evaluation_summary.csv", "w", encoding="utf-8") as f:
+            f.write("metric,value\n")
+            f.write(f"MAE,{mae_score:.6f}\n")
+            f.write(f"MSE,{mse_score:.6f}\n")
+            f.write(f"RMSE,{rmse_score:.6f}\n")
+            f.write(f"SSIM,{ssim_score:.6f}\n")
+            f.write(f"PSNR,{psnr_score:.6f}\n")
+            if math.isnan(lpips_score):
+                f.write("LPIPS,nan\n")
+            else:
+                f.write(f"LPIPS,{lpips_score:.6f}\n")
+            f.write(f"Foreground_MAE,{fg_mae_score:.6f}\n")
+            f.write(f"Hotspot_IoU,{hotspot_iou_score:.6f}\n")
+        with open(config.TEST_RESULT_DIR / "test_evaluation_per_image.csv", "w", encoding="utf-8") as f:
+            f.write("file_name,MAE,MSE,RMSE,SSIM,PSNR,LPIPS,Foreground_MAE,Hotspot_IoU\n")
+            for row in per_image_metrics:
+                lpips_txt = "nan" if math.isnan(row["lpips"]) else f"{row['lpips']:.6f}"
+                fg_mae_val = row.get("foreground_mae", float("nan"))
+                hotspot_iou_val = row.get("hotspot_iou", float("nan"))
+                f.write(
+                    f"{row['file_name']},{row['mae']:.6f},{row['mse']:.6f},{row['rmse']:.6f},{row['ssim']:.6f},"
+                    f"{row['psnr']:.6f},{lpips_txt},{fg_mae_val:.6f},{hotspot_iou_val:.6f}\n"
+                )
 
     lpips_txt = "nan" if math.isnan(lpips_score) else f"{lpips_score:.4f}"
     print(
-        f"?? [EVAL] MAE={mae_score:.4f} | MSE={mse_score:.4f} | RMSE={rmse_score:.4f} | "
-        f"SSIM={ssim_score:.4f} | PSNR={psnr_score:.2f} | LPIPS={lpips_txt}"
+        f"📊 [EVAL] MAE={mae_score:.4f} | MSE={mse_score:.4f} | RMSE={rmse_score:.4f} | "
+        f"SSIM={ssim_score:.4f} | PSNR={psnr_score:.2f} | LPIPS={lpips_txt} | "
+        f"Foreground_MAE={fg_mae_score:.4f} | Hotspot_IoU={hotspot_iou_score:.4f}"
     )
     print(f"? [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")
     print(f"✅ [DONE] Evaluation results saved to {config.CURRENT_RUN_DIR}")

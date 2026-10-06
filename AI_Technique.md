@@ -127,6 +127,8 @@ Full run ที่ตรวจแล้ว:
 - `UI_PerformanceCompare/Streamlit/views/summary_output.py` แสดง XGBoost ร่วมกับ MLP/GNN ใน overall metrics, per-output metrics, parity plots, error distribution, occupancy tables และแสดงคำเตือน raw target-order violation โดยไม่ซ่อนด้วย post-processing
 - parity plots และ error-distribution plot ใน Summary Output ใช้ cached Matplotlib PNG แทน interactive Altair; preview เป็น static image และมีปุ่มดาวน์โหลด PNG สำหรับนำไปใช้ในรายงาน
 - ตัวเลือก run ใน Summary Output ใช้ multiselect ช่องเดียวเหมือน Image Based Output รองรับการเลือกหลาย model/run และค่าเริ่มต้นเป็น full MLP, GNN และ XGBoost runs
+- `Performance by Density and Target` ใช้ `_density_target_table` สร้าง 9 แถว (3 occupancy × 3 targets) และแถว All จาก predictions ของ run ที่เลือก; MAE/RMSE หน่วยวินาที และ MSE หน่วยวินาที² คำนวณผ่าน `_metric_row` โดย RMSE = sqrt(MSE) ทุกแถว และ All pool raw errors ก่อนคำนวณ ไม่เฉลี่ย RMSE; ไม่มีข้อมูลแสดง Missing และเลือกหลาย run ของ model เดียวกันจะสร้างคอลัมน์แยกด้วย run label
+- เพิ่มตารางแยก `N Agents`, `N/2 Agents`, `1 Agent` ต่อจาก `Model Performance Comparison` โดยใช้ `_condition_metrics` และ `_metric_table` กับ predictions ของ runs ที่เลือก ไม่เปลี่ยน checkpoint หรือ metric definition: MAE/MSE คำนวณจาก error ของ min/mean/max travel time ที่รวมกันภายในกลุ่ม และ RMSE = sqrt(MSE) ไม่ใช่เฉลี่ย RMSE ของแต่ละ output; Scenarios คือจำนวนแถวในกลุ่ม และกลุ่มที่ไม่มีข้อมูลแสดงสถานะ Missing แทนการสร้างค่า
 
 เอกสารนี้สรุปการแก้ไข pipeline ของ `Method_LSTM_SF_01` ที่ทำวันนี้ พร้อมเหตุผลและวิธีรันหลังแก้
 

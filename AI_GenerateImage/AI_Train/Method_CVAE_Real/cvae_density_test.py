@@ -1,8 +1,8 @@
 import argparse
 import csv
 import json
-import pathlib
 import math
+import pathlib
 import time
 from datetime import datetime, timezone
 
@@ -171,13 +171,20 @@ def main(default_config, target_representation, target_channels):
     parser.add_argument("--checkpoint_mode", type=str, default="best_mae", choices=["best_mae", "best_loss", "final"])
     parser.add_argument("--output_name", type=str, default="")
     parser.add_argument("--split", type=str, default="test", choices=["train", "validation", "test"])
-    parser.add_argument("--num_samples", type=int, default=None, help="Number of stochastic z samples per input. 1 uses z=0.")
+    parser.add_argument("--num_samples", type=int, default=None, help="Number of stochastic z samples per input.")
+    parser.add_argument("--latent_mode", type=str, default="random", choices=["random", "zero"], help="Latent sampling mode: 'random' or 'zero'.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible latent sampling.")
     parser.add_argument("--no_publish_final", action="store_true", help="Do not publish Pix2PixHD-style root final evaluation files.")
     args = parser.parse_args()
 
     cfg = TestConfig(args.run_path, args.config)
     configure_torch_backend(cfg)
     device = get_device()
+    seed = int(args.seed if args.seed is not None else getattr(cfg, "seed", 42))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
     checkpoint, checkpoint_label = resolve_checkpoint(cfg, args)
     state = torch.load(checkpoint, map_location=device)
     state_cfg = state.get("config", {}) if isinstance(state, dict) else {}
@@ -248,7 +255,7 @@ def main(default_config, target_representation, target_channels):
     print(f"[TARGET] {target_representation} channels={target_channels}")
     print(f"[CKPT] {checkpoint}")
     print(f"[OUTPUT] {result_dir}")
-    print(f"[SAMPLES] {num_samples}")
+    print(f"[LATENT] mode={args.latent_mode} samples={num_samples} seed={seed}")
     print("=" * 70)
 
     if device.type == "cuda":
@@ -269,9 +276,10 @@ def main(default_config, target_representation, target_channels):
                 torch.cuda.synchronize(device)
             gen_start = time.perf_counter()
             for sample_idx in range(num_samples):
-                z = None
-                if num_samples > 1:
+                if args.latent_mode == "random":
                     z = torch.randn((1, latent_dim), dtype=a_device.dtype, device=device)
+                else:
+                    z = torch.zeros((1, latent_dim), dtype=a_device.dtype, device=device)
                 logits = model.forward_infer(a_device, z=z)
                 sample_preds.append(torch.sigmoid(logits)[0].detach().cpu().numpy())
             if device.type == "cuda":
@@ -284,7 +292,6 @@ def main(default_config, target_representation, target_channels):
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             met_start = time.perf_counter()
-
             metrics = tensor_density_metrics(target, pred)
             scalar_metrics = tensor_density_metrics(
                 target.mean(axis=0, keepdims=True) if target.shape[0] > 1 else target,
@@ -313,7 +320,7 @@ def main(default_config, target_representation, target_channels):
             metrics["hotspot_iou"] = hotspot_iou
             scalar_metrics["foreground_mae"] = fg_mae
             scalar_metrics["hotspot_iou"] = hotspot_iou
-            
+
             lpips_val = float("nan")
             if lpips_model is not None:
                 try:
@@ -365,7 +372,7 @@ def main(default_config, target_representation, target_channels):
     runtime_excluding_metrics_s = max(0.0, test_wall_time_s - metrics_wall_time_s)
 
     runtime_row = {
-        "method_id": "Method_CVAE",
+        "method_id": "Method_CVAE_Real",
         "split": args.split,
         "timing_scope": "test_loop_including_data_inference_metrics_postprocess_and_image_write",
         "sample_count": len(rows),
@@ -382,6 +389,9 @@ def main(default_config, target_representation, target_channels):
         "device_type": device.type,
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
         "checkpoint_path": str(pathlib.Path(checkpoint).resolve()),
+        "latent_mode": args.latent_mode,
+        "seed": seed,
+        "num_samples": num_samples,
         "measured_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     with open(result_dir / "test_runtime.csv", "w", newline="", encoding="utf-8") as f:
@@ -407,6 +417,8 @@ def main(default_config, target_representation, target_channels):
     write_summary_csv(result_dir / "test_scalar_density_summary.csv", [scalar_summary])
     with open(result_dir / "test_evaluation_summary.json", "w", encoding="utf-8") as f:
         json.dump({"image_metrics": summary, "scalar_density_metrics": scalar_summary}, f, indent=4)
+
+    # Always write pix2pix style evaluation metrics for dashboard
     write_pix2pix_style_metrics(result_dir, rows, summary)
     write_pix2pix_style_metrics(cfg.CURRENT_RUN_DIR, rows, summary)
     if publish_final:

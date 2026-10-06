@@ -52,8 +52,8 @@ ASA_RUNS = [
     ),
     RunInfo(
         method="Method_CVAE",
-        run_name="run_CVAE_20260627_231030",
-        path=(PROJECT_ROOT / "AI_GenerateImage/AI_Result/Method_CVAE/outputs/run_CVAE_20260627_231030").resolve(),
+        run_name="run_CVAE_20260627_193237_config2",
+        path=(PROJECT_ROOT / "AI_GenerateImage/AI_Result/Method_CVAE/outputs/run_CVAE_20260627_193237_config2").resolve(),
     ),
 ]
 

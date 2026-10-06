@@ -122,7 +122,8 @@ def _metric_row(frame: pd.DataFrame, model: str, run: str, condition: str = "All
         error = frame[f"pred_{target}"] - frame[f"true_{target}"]
         errors.append(error.to_numpy())
         row[f"{display} MAE (s)"] = float(error.abs().mean())
-        row[f"{display} RMSE (s)"] = float(np.sqrt(np.square(error).mean()))
+        row[f"{display} MSE (s²)"] = float(np.square(error).mean())
+        row[f"{display} RMSE (s)"] = float(np.sqrt(row[f"{display} MSE (s²)"]))
     flattened = np.concatenate(errors)
     row["MAE (s)"] = float(np.abs(flattened).mean())
     row["MSE (s²)"] = float(np.square(flattened).mean())
@@ -187,6 +188,47 @@ def _metric_table(metrics: pd.DataFrame):
         ).apply(highlight_best, axis=0),
         use_container_width=True,
         hide_index=True,
+    )
+
+
+def _density_target_table(frame: pd.DataFrame, runs: list[EstimateRun]) -> pd.DataFrame:
+    """Compare individual targets by occupancy; pool raw errors only for All."""
+    rows = [
+        {"Density": condition, "Target": target}
+        for condition in CONDITION_ORDER for target in TARGETS
+    ] + [{"Density": "All", "Target": "All"}]
+    for run in runs:
+        # Keep separate columns when multiple runs of the same model are selected.
+        name = run.label if sum(r.model == run.model for r in runs) > 1 else run.model
+        run_frame = frame[frame["run"] == run.label]
+        for row in rows:
+            subset = run_frame if row["Density"] == "All" else run_frame[
+                run_frame["condition"] == row["Density"]
+            ]
+            values = _metric_row(subset, run.model, run.run_name) if not subset.empty else {}
+            prefix = "" if row["Target"] == "All" else f"{row['Target']} "
+            for metric in ("MAE", "MSE", "RMSE"):
+                unit = "s²" if metric == "MSE" else "s"
+                row[f"{name} {metric}"] = values.get(f"{prefix}{metric} ({unit})", np.nan)
+    return pd.DataFrame(rows)
+
+
+def _render_density_target_table(frame: pd.DataFrame, runs: list[EstimateRun]):
+    st.markdown("### Performance by Density and Target")
+    st.caption(
+        "MAE and RMSE are in seconds; MSE is in seconds squared. RMSE = sqrt(MSE). "
+        "All pools all scenarios and all three targets, matching the overall table; "
+        "it is not an average of the displayed RMSE values. Missing means no prediction data."
+    )
+    table = _density_target_table(frame, runs)
+    display = table.copy()
+    display.loc[display["Density"].duplicated(), "Density"] = ""
+    st.dataframe(
+        display.style.format({column: "{:.2f}" for column in table.columns[2:]}, na_rep="Missing")
+        .apply(lambda row: ["font-weight:700" if row["Target"] == "All" else ""] * len(row), axis=1),
+        hide_index=True,
+        use_container_width=True,
+        height=425,
     )
 
 
@@ -520,6 +562,25 @@ def render_summary_output():
     st.caption("Test-set errors recomputed from true/predicted travel times in predictions.csv; lower is better.")
     _metric_table(metrics)
 
+    condition_metrics = _condition_metrics(predictions, selected_runs)
+    st.caption(
+        "The following tables separate occupancy conditions. MAE, MSE, and RMSE pool "
+        "fastest, average, and slowest travel-time errors within each condition, "
+        "using the same calculation as the overall table. Lower is better."
+    )
+    for condition in CONDITION_ORDER:
+        st.markdown(f"### Model Performance Comparison — {condition}")
+        subset = (
+            condition_metrics[condition_metrics["Condition"] == condition]
+            if not condition_metrics.empty else pd.DataFrame()
+        )
+        if subset.empty:
+            st.info(f"No prediction data available for {condition} in the selected runs.")
+        else:
+            _metric_table(subset)
+
+    _render_density_target_table(predictions, selected_runs)
+
     st.markdown("### Run Summary")
     _summary_cards(metrics)
     _render_target_order_status(predictions, selected_runs)
@@ -554,7 +615,6 @@ def render_summary_output():
     _render_error_distribution(predictions, selected_runs)
 
     st.markdown("## Performance by Occupancy Condition")
-    condition_metrics = _condition_metrics(predictions, selected_runs)
     display_columns = ["Model", "Condition", "Scenarios", "MAE (s)", "MSE (s²)", "RMSE (s)"]
     st.dataframe(
         condition_metrics[display_columns].style.format(
